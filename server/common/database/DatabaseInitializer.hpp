@@ -662,9 +662,34 @@ private:
         // ==================== 首页 ====================
         int homeId = co_await insertMenu(db, "首页", 0, "page", "/home", "Home", "", "HomeOutlined", true, 0);
         co_await insertButton(db, "查看统计", homeId, "home:dashboard:query", 1);
+        co_await insertButton(db, "清理缓存", homeId, "system:cache:clear", 2);
+
+        // ==================== 链路管理 ====================
+        int linkId = co_await insertMenu(db, "链路管理", 0, "page", "/link", "Link", "", "LinkOutlined", false, 1);
+        co_await insertButton(db, "查询链路", linkId, "iot:link:query", 1);
+        co_await insertButton(db, "新增链路", linkId, "iot:link:add", 2);
+        co_await insertButton(db, "编辑链路", linkId, "iot:link:edit", 3);
+        co_await insertButton(db, "删除链路", linkId, "iot:link:delete", 4);
+
+        // ==================== 协议配置 ====================
+        int protocolId = co_await insertMenu(db, "协议配置", 0, "menu", "/iot", "", "", "ApiOutlined", false, 2);
+
+        // SL651配置
+        int sl651Id = co_await insertMenu(db, "SL651配置", protocolId, "page", "/iot/sl651", "SL651Config", "", "SettingOutlined", false, 0);
+        co_await insertButton(db, "查询配置", sl651Id, "iot:protocol:query", 1);
+        co_await insertButton(db, "新增配置", sl651Id, "iot:protocol:add", 2);
+        co_await insertButton(db, "编辑配置", sl651Id, "iot:protocol:edit", 3);
+        co_await insertButton(db, "删除配置", sl651Id, "iot:protocol:delete", 4);
+
+        // ==================== 设备管理 ====================
+        int deviceId = co_await insertMenu(db, "设备管理", 0, "page", "/device", "Device", "", "HddOutlined", false, 3);
+        co_await insertButton(db, "查询设备", deviceId, "iot:device:query", 1);
+        co_await insertButton(db, "新增设备", deviceId, "iot:device:add", 2);
+        co_await insertButton(db, "编辑设备", deviceId, "iot:device:edit", 3);
+        co_await insertButton(db, "删除设备", deviceId, "iot:device:delete", 4);
 
         // ==================== 系统管理 ====================
-        int systemId = co_await insertMenu(db, "系统管理", 0, "menu", "/system", "", "", "SettingOutlined", false, 1);
+        int systemId = co_await insertMenu(db, "系统管理", 0, "menu", "/system", "", "", "SettingOutlined", false, 999);
 
         // 菜单管理
         int menuId = co_await insertMenu(db, "菜单管理", systemId, "page", "/system/menu", "Menu", "", "MenuOutlined", false, 1);
@@ -694,30 +719,6 @@ private:
         co_await insertButton(db, "新增用户", userId, "system:user:add", 2);
         co_await insertButton(db, "编辑用户", userId, "system:user:edit", 3);
         co_await insertButton(db, "删除用户", userId, "system:user:delete", 4);
-
-        // ==================== IOT管理 ====================
-        int iotId = co_await insertMenu(db, "IOT管理", 0, "menu", "/iot", "", "", "ApiOutlined", false, 2);
-
-        // 链路管理
-        int linkId = co_await insertMenu(db, "链路管理", iotId, "page", "/iot/link", "Link", "", "LinkOutlined", false, 1);
-        co_await insertButton(db, "查询链路", linkId, "iot:link:query", 1);
-        co_await insertButton(db, "新增链路", linkId, "iot:link:add", 2);
-        co_await insertButton(db, "编辑链路", linkId, "iot:link:edit", 3);
-        co_await insertButton(db, "删除链路", linkId, "iot:link:delete", 4);
-
-        // SL651配置
-        int sl651Id = co_await insertMenu(db, "SL651配置", iotId, "page", "/iot/sl651", "SL651Config", "", "SettingOutlined", false, 2);
-        co_await insertButton(db, "查询配置", sl651Id, "iot:protocol:query", 1);
-        co_await insertButton(db, "新增配置", sl651Id, "iot:protocol:add", 2);
-        co_await insertButton(db, "编辑配置", sl651Id, "iot:protocol:edit", 3);
-        co_await insertButton(db, "删除配置", sl651Id, "iot:protocol:delete", 4);
-
-        // 设备管理
-        int deviceId = co_await insertMenu(db, "设备管理", iotId, "page", "/iot/device", "Device", "", "HddOutlined", false, 3);
-        co_await insertButton(db, "查询设备", deviceId, "iot:device:query", 1);
-        co_await insertButton(db, "新增设备", deviceId, "iot:device:add", 2);
-        co_await insertButton(db, "编辑设备", deviceId, "iot:device:edit", 3);
-        co_await insertButton(db, "删除设备", deviceId, "iot:device:delete", 4);
 
         // 为超级管理员角色分配所有菜单权限
         co_await db->execSqlCoro(

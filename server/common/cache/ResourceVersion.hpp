@@ -80,6 +80,18 @@ public:
     }
 
     /**
+     * @brief 重置所有版本号（清理缓存时调用）
+     */
+    void resetAll() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [key, version] : versions_) {
+            version = drogon::utils::getUuid();
+            LOG_DEBUG << "[ResourceVersion] " << key << " version reset to " << version;
+        }
+        LOG_INFO << "[ResourceVersion] All " << versions_.size() << " versions reset";
+    }
+
+    /**
      * @brief 从 Redis 加载版本号到内存（启动时调用）
      * @param keys 需要加载的资源 key 列表
      */

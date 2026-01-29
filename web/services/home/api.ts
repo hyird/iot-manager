@@ -20,3 +20,8 @@ export function getStats() {
 export function getSystemInfo() {
   return request.get<SystemInfo>(ENDPOINTS.SYSTEM);
 }
+
+/** 清理所有缓存 */
+export function clearCache() {
+  return request.post<string>("/api/home/cache/clear");
+}

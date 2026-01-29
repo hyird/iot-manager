@@ -5,6 +5,10 @@
 #include "common/database/DatabaseService.hpp"
 #include "common/utils/Response.hpp"
 #include "common/utils/AppException.hpp"
+#include "common/cache/AuthCache.hpp"
+#include "common/cache/DeviceCache.hpp"
+#include "common/cache/ResourceVersion.hpp"
+#include "common/filters/PermissionFilter.hpp"
 
 using namespace drogon;
 
@@ -14,18 +18,25 @@ using namespace drogon;
 class HomeController : public HttpController<HomeController> {
 private:
     DatabaseService db_;
+    AuthCache authCache_;
     std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
 
 public:
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(HomeController::stats, "/api/home/stats", Get, "AuthFilter");
     ADD_METHOD_TO(HomeController::systemInfo, "/api/home/system", Get, "AuthFilter");
+    ADD_METHOD_TO(HomeController::clearCache, "/api/home/cache/clear", Post, "AuthFilter");
     METHOD_LIST_END
 
     /**
      * @brief 获取统计数据
      */
-    Task<HttpResponsePtr> stats(HttpRequestPtr /*req*/) {
+    Task<HttpResponsePtr> stats(HttpRequestPtr req) {
+        co_await PermissionChecker::checkPermission(
+            req->attributes()->get<int>("userId"),
+            {"home:dashboard:query"}
+        );
+
         // 查询各表的记录数（排除软删除的记录）
         auto userResult = co_await db_.execSqlCoro("SELECT COUNT(*) as count FROM sys_user WHERE deleted_at IS NULL");
         auto roleResult = co_await db_.execSqlCoro("SELECT COUNT(*) as count FROM sys_role WHERE deleted_at IS NULL");
@@ -44,7 +55,12 @@ public:
     /**
      * @brief 获取系统信息
      */
-    Task<HttpResponsePtr> systemInfo(HttpRequestPtr /*req*/) {
+    Task<HttpResponsePtr> systemInfo(HttpRequestPtr req) {
+        co_await PermissionChecker::checkPermission(
+            req->attributes()->get<int>("userId"),
+            {"home:dashboard:query"}
+        );
+
         auto now = std::chrono::steady_clock::now();
         auto uptime = std::chrono::duration_cast<std::chrono::seconds>(now - startTime_).count();
 
@@ -73,5 +89,30 @@ public:
 #endif
 
         co_return Response::ok(data);
+    }
+
+    /**
+     * @brief 清理所有缓存
+     */
+    Task<HttpResponsePtr> clearCache(HttpRequestPtr req) {
+        co_await PermissionChecker::checkPermission(
+            req->attributes()->get<int>("userId"),
+            {"system:cache:clear"}
+        );
+
+        // 清理认证相关缓存
+        co_await authCache_.clearAllUserSessionsCache();
+        co_await authCache_.clearAllUserRolesCache();
+        co_await authCache_.clearAllUserMenusCache();
+
+        // 清理设备缓存
+        DeviceCache::instance().markStale();
+
+        // 重置所有资源版本
+        ResourceVersion::instance().resetAll();
+
+        LOG_INFO << "All caches cleared by userId: " << req->attributes()->get<int>("userId");
+
+        co_return Response::ok("缓存清理成功");
     }
 };

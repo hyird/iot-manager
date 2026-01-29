@@ -125,11 +125,12 @@ private:
 
         // ========== Menu 事件 ==========
         else if (aggType == "Menu") {
-            // 菜单变更影响所有用户菜单
+            // 菜单变更影响所有用户菜单和会话缓存
             co_await authCache_.clearAllUserMenusCache();
+            co_await authCache_.clearAllUserSessionsCache();
             ResourceVersion::instance().incrementVersion("menu");
 
-            LOG_DEBUG << "EventBus: Invalidated menu caches for Menu#" << aggId;
+            LOG_DEBUG << "EventBus: Invalidated menu and session caches for Menu#" << aggId;
         }
 
         // ========== Department 事件 ==========

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Card, Col, Row, Statistic, Skeleton, Typography, Space, Divider } from "antd";
+import { Card, Col, Row, Statistic, Skeleton, Typography, Space, Divider, Button, message } from "antd";
 import {
   UserOutlined,
   TeamOutlined,
@@ -9,10 +9,11 @@ import {
   ClockCircleOutlined,
   CloudServerOutlined,
   DesktopOutlined,
+  ClearOutlined,
 } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
-import { useAuthStore } from "@/store/hooks";
-import { useHomeStats, useSystemInfo } from "@/services";
+import { useAuthStore, usePermission } from "@/store/hooks";
+import { useHomeStats, useSystemInfo, useClearCache } from "@/services";
 import DynamicIcon from "@/components/DynamicIcon";
 import { PageContainer } from "@/components/PageContainer";
 
@@ -42,6 +43,19 @@ export default function HomePage() {
   // ========== 使用 Service Hooks ==========
   const { data: stats, isLoading: statsLoading } = useHomeStats();
   const { data: systemInfo, isLoading: systemLoading } = useSystemInfo();
+  const clearCacheMutation = useClearCache();
+  const canClearCache = usePermission("system:cache:clear");
+
+  const handleClearCache = () => {
+    clearCacheMutation.mutate(undefined, {
+      onSuccess: () => {
+        message.success("缓存清理成功");
+      },
+      onError: () => {
+        message.error("缓存清理失败");
+      },
+    });
+  };
 
   // 从用户菜单动态生成快捷入口（只显示 page 类型的菜单）
   const menus = user?.menus;
@@ -197,6 +211,26 @@ export default function HomePage() {
                   </Space>
                   <Text strong>{systemInfo?.platform || "-"}</Text>
                 </div>
+                {canClearCache && (
+                  <>
+                    <Divider className="!my-2" />
+                    <div className="flex items-center justify-between py-2">
+                      <Space>
+                        <ClearOutlined className="text-red-500" />
+                        <Text type="secondary">缓存管理</Text>
+                      </Space>
+                      <Button
+                        danger
+                        size="small"
+                        icon={<ClearOutlined />}
+                        loading={clearCacheMutation.isPending}
+                        onClick={handleClearCache}
+                      >
+                        清理缓存
+                      </Button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </Card>

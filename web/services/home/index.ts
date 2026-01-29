@@ -13,3 +13,6 @@ export { homeKeys } from "./keys";
 
 // Queries
 export { useHomeStats, useSystemInfo } from "./queries";
+
+// Mutations
+export { useClearCache } from "./mutations";
