@@ -75,6 +75,8 @@ public:
                 if (!connected) {
                     DeviceConnectionCache::instance().removeByClient(linkId, clientAddr);
                 }
+                // 连接状态变化（连接或断开）都会影响链路运行时信息，需要更新版本号
+                ResourceVersion::instance().incrementVersion("link");
             }
         );
 

@@ -236,18 +236,27 @@ public:
                 auto rt = runtimeWeak.lock();
                 if (!rt) return;
 
-                std::lock_guard<std::mutex> lock(rt->connMutex);
-                if (conn->connected()) {
-                    LOG_INFO << "[Link " << linkId << "] Connected to server: " << conn->peerAddr().toIpPort();
-                    rt->clientConn = conn;
-                    rt->info.connStatus = "connected";
-                    rt->info.errorMsg = "";
-                } else {
-                    LOG_INFO << "[Link " << linkId << "] Disconnected from server";
-                    rt->clientConn.reset();
-                    rt->info.connStatus = "connecting";  // 等待重连
+                std::string serverAddr = conn->peerAddr().toIpPort();
+                bool isConnected = conn->connected();
+                {
+                    std::lock_guard<std::mutex> lock(rt->connMutex);
+                    if (isConnected) {
+                        LOG_INFO << "[Link " << linkId << "] Connected to server: " << serverAddr;
+                        rt->clientConn = conn;
+                        rt->info.connStatus = "connected";
+                        rt->info.errorMsg = "";
+                    } else {
+                        LOG_INFO << "[Link " << linkId << "] Disconnected from server";
+                        rt->clientConn.reset();
+                        rt->info.connStatus = "connecting";  // 等待重连
+                    }
+                    rt->info.lastActivity = getCurrentTime();
                 }
-                rt->info.lastActivity = getCurrentTime();
+
+                // 通知连接状态变化（在锁外调用，避免死锁）
+                if (connectionCallback_) {
+                    connectionCallback_(linkId, serverAddr, isConnected);
+                }
             });
 
             // 设置消息回调
