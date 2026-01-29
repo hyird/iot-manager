@@ -773,6 +773,7 @@ public:
                 Json::Value config;
                 std::istringstream configStream(configStr);
                 std::string errs;
+                Json::CharReaderBuilder readerBuilder;
                 if (Json::parseFromStream(readerBuilder, configStream, &config, &errs)) {
                     // 解析功能码列表，找到当前功能码的要素定义
                     if (config.isMember("funcs") && config["funcs"].isArray()) {
