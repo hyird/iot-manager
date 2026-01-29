@@ -322,8 +322,8 @@ private:
     }
 
     /**
-     * @brief 批量获取设备实时数据（使用 Lua 脚本优化）
-     * 一次网络往返获取所有设备的 Hash 数据
+     * @brief 批量获取设备实时数据
+     * 逐个获取每个设备的 Hash 数据
      */
     Task<std::map<int, DeviceRealtimeData>> getBatchFromRedis(const std::vector<int>& deviceIds) {
         std::map<int, DeviceRealtimeData> result;
@@ -332,72 +332,11 @@ private:
             co_return result;
         }
 
-        RedisService redis;
-        auto client = redis.getClient();
-        if (!client) {
-            throw std::runtime_error("Redis client not available");
-        }
-
-        // 使用 Lua 脚本批量获取多个 Hash
-        // 脚本返回格式：[deviceId1, {field1, value1, ...}, deviceId2, {field1, value1, ...}, ...]
-        std::string luaScript = R"(
-            local results = {}
-            for i, key in ipairs(KEYS) do
-                local data = redis.call('HGETALL', key)
-                table.insert(results, ARGV[i])
-                table.insert(results, data)
-            end
-            return results
-        )";
-
-        // 构建 KEYS 和 ARGV
-        std::ostringstream cmd;
-        cmd << "EVAL " << luaScript << " " << deviceIds.size();
-
-        // 添加 KEYS (键名)
+        // 逐个获取每个设备的数据
         for (int deviceId : deviceIds) {
-            cmd << " " << REDIS_KEY_PREFIX << deviceId;
-        }
-
-        // 添加 ARGV (设备ID)
-        for (int deviceId : deviceIds) {
-            cmd << " " << deviceId;
-        }
-
-        auto evalResult = co_await client->execCommandCoro(cmd.str().c_str());
-
-        if (evalResult.isNil()) {
-            co_return result;
-        }
-
-        auto arr = evalResult.asArray();
-        Json::CharReaderBuilder readerBuilder;
-
-        // 解析结果：[deviceId1, [f1, v1, ...], deviceId2, [f2, v2, ...], ...]
-        for (size_t i = 0; i + 1 < arr.size(); i += 2) {
-            int deviceId = std::stoi(arr[i].asString());
-            auto hashData = arr[i + 1].asArray();
-
-            if (hashData.empty()) continue;
-
-            DeviceRealtimeData deviceData;
-            for (size_t j = 0; j + 1 < hashData.size(); j += 2) {
-                std::string funcCode = hashData[j].asString();
-                std::string jsonStr = hashData[j + 1].asString();
-
-                Json::Value cacheData;
-                std::string errs;
-                std::istringstream iss(jsonStr);
-                if (Json::parseFromStream(readerBuilder, iss, &cacheData, &errs)) {
-                    FuncData fd;
-                    fd.data = cacheData["data"];
-                    fd.reportTime = cacheData["reportTime"].asString();
-                    deviceData[funcCode] = std::move(fd);
-                }
-            }
-
-            if (!deviceData.empty()) {
-                result[deviceId] = std::move(deviceData);
+            auto deviceData = co_await getFromRedis(deviceId);
+            if (deviceData) {
+                result[deviceId] = std::move(*deviceData);
             }
         }
 
@@ -405,8 +344,8 @@ private:
     }
 
     /**
-     * @brief 批量获取设备最新上报时间（使用 MGET 优化）
-     * 一次网络往返获取所有时间戳
+     * @brief 批量获取设备最新上报时间
+     * 逐个获取每个设备的上报时间
      */
     Task<std::map<int, std::string>> getLatestReportTimesFromRedis(const std::vector<int>& deviceIds) {
         std::map<int, std::string> result;
@@ -415,32 +354,11 @@ private:
             co_return result;
         }
 
-        RedisService redis;
-        auto client = redis.getClient();
-        if (!client) {
-            throw std::runtime_error("Redis client not available");
-        }
-
-        // 构建 MGET 命令
-        std::ostringstream cmd;
-        cmd << "MGET";
+        // 逐个获取每个设备的最新上报时间
         for (int deviceId : deviceIds) {
-            cmd << " " << REDIS_LATEST_PREFIX << deviceId;
-        }
-
-        auto mgetResult = co_await client->execCommandCoro(cmd.str().c_str());
-
-        if (mgetResult.isNil()) {
-            co_return result;
-        }
-
-        auto arr = mgetResult.asArray();
-        for (size_t i = 0; i < arr.size() && i < deviceIds.size(); ++i) {
-            if (!arr[i].isNil()) {
-                std::string time = arr[i].asString();
-                if (!time.empty()) {
-                    result[deviceIds[i]] = time;
-                }
+            std::string time = co_await getLatestReportTimeFromRedis(deviceId);
+            if (!time.empty()) {
+                result[deviceId] = time;
             }
         }
 
