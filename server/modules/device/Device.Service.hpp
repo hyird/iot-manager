@@ -870,11 +870,11 @@ public:
                             item["direction"] = parsedData["direction"].asString();
                         }
                         int64_t responseIdValue = 0;
-                        if (parsedData.isMember("responseId")) {
+                        if (parsedData.isMember("responseId") && parsedData["responseId"].isInt64()) {
                             responseIdValue = parsedData["responseId"].asInt64();
                             item["responseId"] = responseIdValue;
                         }
-                        if (parsedData.isMember("userId")) {
+                        if (parsedData.isMember("userId") && parsedData["userId"].isInt()) {
                             int userId = parsedData["userId"].asInt();
                             item["userId"] = userId;
                             // 获取用户名（使用缓存避免重复查询）
