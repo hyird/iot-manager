@@ -214,6 +214,9 @@ public:
             linkId, deviceCode, funcCode, elements, userId
         );
 
+        // 无论成功或失败，都已保存记录到数据库，需要更新版本号以刷新 ETag 缓存
+        ResourceVersion::instance().incrementVersion("device");
+
         if (success) {
             co_return Response::ok(Json::nullValue, "指令下发成功，设备已应答");
         } else {
