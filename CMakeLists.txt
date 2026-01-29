@@ -79,6 +79,12 @@ if(BUILD_FRONTEND)
     if(BUN_EXECUTABLE)
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E env LANG=en_US.UTF-8
+                ${BUN_EXECUTABLE} install
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/web
+            COMMENT "Installing frontend dependencies with bun..."
+        )
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E env LANG=en_US.UTF-8
                 ${BUN_EXECUTABLE} run build
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
             COMMENT "Building frontend with bun..."
