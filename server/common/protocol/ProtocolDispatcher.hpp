@@ -544,10 +544,6 @@ public:
             co_return success;
         } catch (const std::exception& e) {
             LOG_ERROR << "[ProtocolDispatcher] 下发指令异常: " << e.what();
-            // 如果已创建记录，更新为异常状态
-            if (downCommandId > 0) {
-                co_await updateDownCommandStatus(downCommandId, "SEND_FAILED", std::string("异常: ") + e.what());
-            }
             co_return false;
         }
     }
@@ -647,60 +643,42 @@ private:
 
             // 下发的要素数据（从配置中获取要素的完整信息）
             Json::Value dataObj(Json::objectValue);
-            if (elements.isArray() && !config.configJson.empty()) {
-                // 解析配置 JSON
-                Json::Value configJson;
-                Json::CharReaderBuilder readerBuilder;
-                std::istringstream configStream(config.configJson);
-                std::string parseErrs;
-                if (Json::parseFromStream(readerBuilder, configStream, &configJson, &parseErrs)) {
-                    // 查找当前功能码的配置
-                    if (configJson.isMember("funcs") && configJson["funcs"].isArray()) {
-                        for (const auto& func : configJson["funcs"]) {
-                            if (func.get("funcCode", "").asString() == funcCode) {
-                                // 找到功能码，创建 elementId -> 配置 的映射
-                                std::map<std::string, Json::Value> elementConfigMap;
-                                if (func.isMember("elements") && func["elements"].isArray()) {
-                                    for (const auto& elemConfig : func["elements"]) {
-                                        std::string id = elemConfig.get("id", "").asString();
-                                        if (!id.empty()) {
-                                            elementConfigMap[id] = elemConfig;
-                                        }
-                                    }
-                                }
+            if (elements.isArray()) {
+                // 从 DeviceConfig 的 elementsByFunc 获取当前功能码的要素定义
+                auto funcElemIt = config.elementsByFunc.find(funcCode);
+                if (funcElemIt != config.elementsByFunc.end()) {
+                    // 创建 elementId -> ElementDef 的映射
+                    std::map<std::string, const sl651::ElementDef*> elementDefMap;
+                    for (const auto& elemDef : funcElemIt->second) {
+                        elementDefMap[elemDef.id] = &elemDef;
+                    }
 
-                                // 遍历要下发的要素，从配置中获取详细信息
-                                for (const auto& elem : elements) {
-                                    std::string elementId = elem.get("elementId", "").asString();
-                                    std::string value = elem.get("value", "").asString();
+                    // 遍历要下发的要素，从配置中获取详细信息
+                    for (const auto& elem : elements) {
+                        std::string elementId = elem.get("elementId", "").asString();
+                        std::string value = elem.get("value", "").asString();
 
-                                    auto configIt = elementConfigMap.find(elementId);
-                                    if (configIt != elementConfigMap.end()) {
-                                        const auto& elemConfig = configIt->second;
-                                        std::string guideHex = elemConfig.get("guideHex", "").asString();
+                        auto defIt = elementDefMap.find(elementId);
+                        if (defIt != elementDefMap.end()) {
+                            const auto* elemDef = defIt->second;
+                            // 使用 funcCode_guideHex 作为 key（与上行数据格式一致）
+                            std::string key = funcCode + "_" + elemDef->guideHex;
 
-                                        // 使用 funcCode_guideHex 作为 key（与上行数据格式一致）
-                                        std::string key = funcCode + "_" + guideHex;
-
-                                        Json::Value e;
-                                        e["name"] = elemConfig.get("name", "").asString();
-                                        e["value"] = value;
-                                        e["elementId"] = elementId;
-                                        if (elemConfig.isMember("unit")) {
-                                            e["unit"] = elemConfig["unit"];
-                                        }
-                                        dataObj[key] = e;
-                                    } else {
-                                        // 配置中未找到，使用 elementId 作为 key
-                                        Json::Value e;
-                                        e["name"] = "";
-                                        e["value"] = value;
-                                        e["elementId"] = elementId;
-                                        dataObj[elementId] = e;
-                                    }
-                                }
-                                break;
+                            Json::Value e;
+                            e["name"] = elemDef->name;
+                            e["value"] = value;
+                            e["elementId"] = elementId;
+                            if (!elemDef->unit.empty()) {
+                                e["unit"] = elemDef->unit;
                             }
+                            dataObj[key] = e;
+                        } else {
+                            // 配置中未找到，使用 elementId 作为 key
+                            Json::Value e;
+                            e["name"] = "";
+                            e["value"] = value;
+                            e["elementId"] = elementId;
+                            dataObj[elementId] = e;
                         }
                     }
                 }
