@@ -258,6 +258,16 @@ export interface HistoryFuncItem {
 export interface ElementRecord {
   reportTime: string | Date;
   elements: DeviceElement[];
+  /** 数据方向：UP=上行（设备上报），DOWN=下行（指令下发） */
+  direction?: "UP" | "DOWN";
+  /** 应答报文 ID（仅下行指令有，关联的应答记录） */
+  responseId?: number;
+  /** 应答报文解析的要素（仅下行指令有） */
+  responseElements?: DeviceElement[];
+  /** 发送用户 ID（仅下行指令有） */
+  userId?: number;
+  /** 发送用户名（仅下行指令有） */
+  userName?: string;
 }
 
 /** 图片历史记录 */

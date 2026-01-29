@@ -10,6 +10,7 @@
 #include "common/database/DatabaseService.hpp"
 #include "common/cache/RealtimeDataCache.hpp"
 #include "common/cache/DeviceConnectionCache.hpp"
+#include "common/cache/ResourceVersion.hpp"
 #include "common/utils/Constants.hpp"
 
 using namespace drogon;
@@ -24,8 +25,8 @@ public:
     // 使用协程版本的回调，避免同步数据库调用导致死锁
     using DeviceConfigGetter = std::function<Task<std::optional<DeviceConfig>>(int linkId, const std::string& remoteCode)>;
     using ElementsGetter = std::function<std::vector<ElementDef>(const DeviceConfig& config, const std::string& funcCode)>;
-    // 指令应答回调：设备编码, 功能码, 是否成功
-    using CommandResponseCallback = std::function<void(const std::string& deviceCode, const std::string& funcCode, bool success)>;
+    // 指令应答回调：设备编码, 功能码, 是否成功, 应答报文记录 ID
+    using CommandResponseCallback = std::function<void(const std::string& deviceCode, const std::string& funcCode, bool success, int64_t responseId)>;
 
 private:
     // 链路缓冲区
@@ -328,22 +329,24 @@ private:
      * @brief 处理单包帧
      */
     Task<void> onSingleFrameParsed(int linkId, const Sl651Frame& frame) {
-        // 检查是否为指令应答（上行帧）
+        // 解析正文
+        auto parsedBody = co_await parseBody(linkId, frame);
+
+        // 保存帧数据并获取记录 ID
+        int64_t recordId = 0;
+        if (parsedBody) {
+            printParsedBody(*parsedBody);
+            recordId = co_await saveFrameData(linkId, frame, parsedBody->data);
+        } else {
+            recordId = co_await saveFrameData(linkId, frame, {});
+        }
+
+        // 检查是否为指令应答（上行帧），在保存后通知以便关联应答 ID
         if (frame.direction == Direction::UP && onCommandResponse_) {
             // 上行帧视为对下行指令的应答
             // E1 = 确认成功, E2 = 否认失败, 其他功能码的上行 = 对应指令的应答
             bool success = (frame.funcCode != FuncCodes::ACK_ERR);
-            onCommandResponse_(frame.remoteCode, frame.funcCode, success);
-        }
-
-        // 解析正文
-        auto parsedBody = co_await parseBody(linkId, frame);
-
-        if (parsedBody) {
-            printParsedBody(*parsedBody);
-            co_await saveFrameData(linkId, frame, parsedBody->data);
-        } else {
-            co_await saveFrameData(linkId, frame, {});
+            onCommandResponse_(frame.remoteCode, frame.funcCode, success, recordId);
         }
     }
 
@@ -397,6 +400,20 @@ private:
         }
 
         auto elements = getElements_(*configOpt, frame.funcCode);
+
+        // 如果是下行功能码收到上行帧（应答帧），优先使用 responseElements
+        if (frame.direction == Direction::UP && isDownFunc(*configOpt, frame.funcCode)) {
+            auto responseElements = getResponseElements(*configOpt, frame.funcCode);
+            if (!responseElements.empty()) {
+                LOG_DEBUG << "[SL651] 下行功能码 " << frame.funcCode << " 的上行应答，使用 responseElements 解析";
+                elements = responseElements;
+            } else if (elements.empty()) {
+                // 没有配置 responseElements 且没有 elements，不解析要素
+                LOG_DEBUG << "[SL651] 下行功能码 " << frame.funcCode << " 的上行应答，无应答要素配置，不解析";
+                co_return ParsedBody{};
+            }
+        }
+
         if (elements.empty()) {
             LOG_WARN << "[SL651] 未找到功能码要素定义: funcCode=" << frame.funcCode;
             co_return ParsedBody{};
@@ -516,8 +533,9 @@ private:
 
     /**
      * @brief 保存帧数据到数据库（统一表结构）
+     * @return 返回插入记录的 ID
      */
-    Task<void> saveFrameData(int linkId, const Sl651Frame& frame, const std::vector<ParsedElement>& elements) {
+    Task<int64_t> saveFrameData(int linkId, const Sl651Frame& frame, const std::vector<ParsedElement>& elements) {
         try {
             std::string reportTime = extractReportTime(frame.body);
 
@@ -525,7 +543,7 @@ private:
             auto configOpt = co_await getDeviceConfig_(linkId, frame.remoteCode);
             if (!configOpt) {
                 LOG_WARN << "[SL651] 未找到设备: " << frame.remoteCode;
-                co_return;
+                co_return 0;
             }
 
             int deviceId = configOpt->deviceId;
@@ -582,18 +600,30 @@ private:
             writer["emitUTF8"] = true;
             std::string jsonStr = Json::writeString(writer, data);
 
-            co_await dbService_.execSqlCoro(R"(
+            // 插入并返回 ID
+            auto result = co_await dbService_.execSqlCoro(R"(
                 INSERT INTO device_data (device_id, link_id, protocol, data, report_time)
                 VALUES (?, ?, 'SL651', ?::jsonb, ?::timestamp)
+                RETURNING id
             )", {std::to_string(deviceId), std::to_string(linkId), jsonStr, reportTime});
+
+            int64_t id = 0;
+            if (!result.empty()) {
+                id = result[0]["id"].as<int64_t>();
+            }
 
             // 更新实时数据缓存
             RealtimeDataCache::instance().update(deviceId, frame.funcCode, data, reportTime);
 
-            LOG_DEBUG << "[SL651] 已保存: device=" << deviceId << ", 要素=" << elements.size();
+            // 更新资源版本号，让前端知道有新数据（历史数据、设备列表等都会刷新）
+            ResourceVersion::instance().incrementVersion("device");
+
+            LOG_DEBUG << "[SL651] 已保存: id=" << id << ", device=" << deviceId << ", 要素=" << elements.size();
+            co_return id;
 
         } catch (const std::exception& e) {
             LOG_ERROR << "[SL651] 保存数据失败: " << e.what();
+            co_return 0;
         }
     }
 
@@ -697,6 +727,9 @@ private:
             // 更新实时数据缓存
             RealtimeDataCache::instance().update(deviceId, session.funcCode, data, reportTime);
 
+            // 更新资源版本号，让前端知道有新数据
+            ResourceVersion::instance().incrementVersion("device");
+
             LOG_DEBUG << "[SL651] 多包数据已保存: device=" << deviceId << ", 总包数=" << session.totalPk;
 
         } catch (const std::exception& e) {
@@ -763,6 +796,28 @@ private:
         std::ostringstream oss;
         oss << std::uppercase << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(byte);
         return oss.str();
+    }
+
+    /**
+     * @brief 判断功能码是否为下行定义
+     */
+    static bool isDownFunc(const DeviceConfig& config, const std::string& funcCode) {
+        auto it = config.funcDirections.find(funcCode);
+        if (it != config.funcDirections.end()) {
+            return it->second == Direction::DOWN;
+        }
+        return false;
+    }
+
+    /**
+     * @brief 获取下行功能码的应答要素定义
+     */
+    static std::vector<ElementDef> getResponseElements(const DeviceConfig& config, const std::string& funcCode) {
+        auto it = config.responseElementsByFunc.find(funcCode);
+        if (it != config.responseElementsByFunc.end()) {
+            return it->second;
+        }
+        return {};
     }
 };
 

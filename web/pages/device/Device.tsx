@@ -113,9 +113,11 @@ const isOnline = (lastHeartbeatTime?: string, reportTime?: string, onlineTimeout
 
 const formatReportTime = (reportTime?: string) => {
   if (!reportTime) return "--";
-  const t = new Date(reportTime);
-  if (Number.isNaN(t.getTime())) return "--";
-  return t.toLocaleString();
+  // 后端返回的时间是设备本地时间（UTC+8），格式可能是 "2025-01-29 10:22:15" 或 ISO 格式
+  // 使用 dayjs 解析，如果是 ISO 格式带 Z 后缀，需要转换为本地时间显示
+  const t = dayjs(reportTime);
+  if (!t.isValid()) return "--";
+  return t.format("YYYY-MM-DD HH:mm:ss");
 };
 
 const makeRecordKey = (code: string, funcCode: string, dataType: HistoryDataType) =>
@@ -457,7 +459,8 @@ const DevicePage = () => {
     setExpandedFuncKeys([]);
     historyForm.setFieldsValue({ timeRange: getDefaultTimeRange() });
     setHistoryModalVisible(true);
-    fetchFuncList(device.code);
+    // 自动展开第一个功能码并加载数据
+    fetchFuncList(device.code, undefined, undefined, true);
   };
 
   const getTimeRangeParams = () => {
@@ -471,7 +474,7 @@ const DevicePage = () => {
     return { startTime, endTime };
   };
 
-  const fetchFuncList = async (code: string, pageArg?: number, pageSizeArg?: number) => {
+  const fetchFuncList = async (code: string, pageArg?: number, pageSizeArg?: number, autoExpand = false) => {
     const prev = funcMap[code];
     const current = pageArg ?? prev?.page ?? 1;
     const size = pageSizeArg ?? prev?.pageSize ?? 10;
@@ -493,16 +496,29 @@ const DevicePage = () => {
         startTime,
         endTime,
       });
+      const list = (res.list as Device.HistoryFunc[]) || [];
       setFuncMap((prevState) => ({
         ...prevState,
         [code]: {
           loading: false,
-          list: (res.list as Device.HistoryFunc[]) || [],
+          list,
           page: current,
           pageSize: size,
-          total: res.total || res.list?.length || 0,
+          total: res.total || list.length || 0,
         },
       }));
+
+      // 自动展开并加载第一个功能码的数据
+      if (autoExpand && list.length > 0) {
+        const firstFunc = list[0];
+        const key = `${firstFunc.funcCode}-${firstFunc.dataType}`;
+        setExpandedFuncKeys([key]);
+        fetchFuncRecords({
+          code,
+          funcCode: firstFunc.funcCode,
+          dataType: firstFunc.dataType,
+        });
+      }
     } catch {
       setFuncMap((prevState) => ({
         ...prevState,
@@ -792,6 +808,46 @@ const DevicePage = () => {
     ));
   };
 
+  // 渲染单个要素值（支持字典映射）
+  const renderElementValue = (el: Device.Element | undefined) => {
+    if (!el) return "---";
+
+    // 如果有字典配置，应用映射
+    if (el.dictConfig && el.value !== null && el.value !== undefined && el.value !== "") {
+      if (el.dictConfig.mapType === "VALUE") {
+        // 值映射
+        const rawValue = String(el.value);
+        const matchedItem = el.dictConfig.items.find(
+          (item) => item && typeof item === "object" && item.key === rawValue
+        );
+        if (matchedItem) {
+          return matchedItem.label;
+        }
+        // 没有匹配到，显示原始值
+        return el.unit ? `${el.value} ${el.unit}` : String(el.value);
+      } else if (el.dictConfig.mapType === "BIT") {
+        // 位映射
+        const matchedLabels = parseBitMapping(el.value, el.dictConfig);
+        if (matchedLabels.length > 0) {
+          return (
+            <Space size={4} wrap>
+              {matchedLabels.map((label, i) => (
+                <Tag key={i} color="blue">
+                  {label}
+                </Tag>
+              ))}
+            </Space>
+          );
+        }
+        // 没有匹配的位，显示原始值
+        return el.unit ? `${el.value} ${el.unit}` : String(el.value);
+      }
+    }
+
+    // 没有字典配置，显示原始值
+    return el.unit ? `${el.value} ${el.unit}` : (el.value ?? "---");
+  };
+
   // 历史数据表格渲染
   const renderElementTable = (func: HistoryFuncRow) => {
     const key = makeRecordKey(func.deviceCode, func.funcCode, func.dataType);
@@ -801,15 +857,65 @@ const DevicePage = () => {
     records.forEach((r) => r.elements.forEach((e) => elementNameSet.add(e.name)));
     const elementNames = Array.from(elementNameSet);
 
-    type RowType = { key: string; reportTime: string; elements: Device.Element[] };
+    // 检查是否有下行数据（用于决定是否显示发送人和应答列）
+    const hasDownData = records.some((r) => r.direction === "DOWN");
+
+    // 收集应答要素名称（用于显示应答列）
+    const responseElementNames = new Set<string>();
+    records.forEach((r) => {
+      if (r.responseElements) {
+        r.responseElements.forEach((e) => responseElementNames.add(e.name));
+      }
+    });
+
+    type RowType = {
+      key: string;
+      reportTime: string;
+      elements: Device.Element[];
+      direction?: "UP" | "DOWN";
+      responseId?: number;
+      responseElements?: Device.Element[];
+      userId?: number;
+      userName?: string;
+    };
     const dataSource: RowType[] = records.map((r, idx) => ({
       key: `${idx}_${new Date(r.reportTime).getTime()}`,
       reportTime: new Date(r.reportTime).toLocaleString(),
       elements: r.elements,
+      direction: r.direction,
+      responseId: r.responseId,
+      responseElements: r.responseElements,
+      userId: r.userId,
+      userName: r.userName,
     }));
 
     const cols: ColumnsType<RowType> = [
       { title: "时间", dataIndex: "reportTime", key: "reportTime", fixed: "left", width: 180 },
+      {
+        title: "方向",
+        dataIndex: "direction",
+        key: "direction",
+        width: 80,
+        render: (dir?: "UP" | "DOWN") =>
+          dir === "DOWN" ? (
+            <Tag color="orange">下行</Tag>
+          ) : (
+            <Tag color="green">上行</Tag>
+          ),
+      },
+      // 只有存在下行数据时才显示发送人列
+      ...(hasDownData
+        ? [
+            {
+              title: "发送人",
+              dataIndex: "userName",
+              key: "userName",
+              width: 100,
+              render: (_: unknown, record: RowType) =>
+                record.direction === "DOWN" ? record.userName || "-" : "-",
+            },
+          ]
+        : []),
       ...elementNames.map((name) => ({
         title: name,
         dataIndex: "elements",
@@ -818,45 +924,46 @@ const DevicePage = () => {
         ellipsis: true,
         render: (els: RowType["elements"]) => {
           const el = els.find((e) => e.name === name);
-          if (!el) return "---";
-
-          // 如果有字典配置，应用映射
-          if (el.dictConfig && el.value !== null && el.value !== undefined && el.value !== "") {
-            if (el.dictConfig.mapType === "VALUE") {
-              // 值映射
-              const rawValue = String(el.value);
-              const matchedItem = el.dictConfig.items.find(
-                (item) => item && typeof item === "object" && item.key === rawValue
-              );
-              if (matchedItem) {
-                return matchedItem.label;
-              }
-              // 没有匹配到，显示原始值
-              return el.unit ? `${el.value} ${el.unit}` : String(el.value);
-            } else if (el.dictConfig.mapType === "BIT") {
-              // 位映射
-              const matchedLabels = parseBitMapping(el.value, el.dictConfig);
-              if (matchedLabels.length > 0) {
-                return (
-                  <Space size={4} wrap>
-                    {matchedLabels.map((label, i) => (
-                      <Tag key={i} color="blue">
-                        {label}
-                      </Tag>
-                    ))}
-                  </Space>
-                );
-              }
-              // 没有匹配的位，显示原始值
-              return el.unit ? `${el.value} ${el.unit}` : String(el.value);
-            }
-          }
-
-          // 没有字典配置，显示原始值
-          return el.unit ? `${el.value} ${el.unit}` : (el.value ?? "---");
+          return renderElementValue(el);
         },
       })),
+      // 显示应答列（仅下行数据有应答）
+      ...(hasDownData
+        ? [
+            {
+              title: "应答状态",
+              key: "responseStatus",
+              width: 100,
+              render: (_: unknown, record: RowType) => {
+                if (record.direction !== "DOWN") return "-";
+                return record.responseId ? (
+                  <Tag color="success">已应答</Tag>
+                ) : (
+                  <Tag color="warning">待应答</Tag>
+                );
+              },
+            },
+            // 应答要素列（动态生成）
+            ...Array.from(responseElementNames).map((name) => ({
+              title: `应答-${name}`,
+              key: `response_${name}`,
+              width: 150,
+              ellipsis: true,
+              render: (_: unknown, record: RowType) => {
+                if (record.direction !== "DOWN" || !record.responseElements) return "-";
+                const el = record.responseElements.find((e) => e.name === name);
+                return renderElementValue(el);
+              },
+            })),
+          ]
+        : []),
     ];
+
+    // 计算表格宽度
+    const baseWidth = 180 + 80; // 时间 + 方向
+    const elementsWidth = elementNames.length * 150;
+    const downWidth = hasDownData ? 100 + 100 + Array.from(responseElementNames).length * 150 : 0; // 发送人 + 应答状态 + 应答要素
+    const tableWidth = Math.max(baseWidth + elementsWidth + downWidth, 800);
 
     return (
       <Table<RowType>
@@ -865,7 +972,7 @@ const DevicePage = () => {
         loading={rs?.loading}
         columns={cols}
         dataSource={dataSource}
-        scroll={{ x: Math.max(200 + elementNames.length * 120, 800) }}
+        scroll={{ x: tableWidth }}
         pagination={{
           current: rs?.page ?? 1,
           pageSize: rs?.pageSize ?? 10,

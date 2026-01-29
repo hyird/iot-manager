@@ -194,7 +194,8 @@ public:
      * @brief 下发设备指令
      */
     Task<HttpResponsePtr> command(HttpRequestPtr req, int linkId) {
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:command"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:command"});
 
         auto json = req->getJsonObject();
         if (!json) co_return Response::badRequest("请求体格式错误");
@@ -208,9 +209,9 @@ public:
         // 获取 elements 数组
         Json::Value elements = (*json).get("elements", Json::arrayValue);
 
-        // 调用协议分发器下发指令
+        // 调用协议分发器下发指令（传递用户 ID）
         bool success = co_await ProtocolDispatcher::instance().sendCommand(
-            linkId, deviceCode, funcCode, elements
+            linkId, deviceCode, funcCode, elements, userId
         );
 
         if (success) {

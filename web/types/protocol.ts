@@ -82,6 +82,8 @@ export interface SL651Func {
   name: string;
   remark?: string;
   elements: SL651Element[];
+  /** 应答要素（仅下行功能码使用，用于解析设备对下行指令的应答报文） */
+  responseElements?: SL651Element[];
 }
 
 /** SL651 配置结构 */

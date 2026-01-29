@@ -68,6 +68,12 @@ interface DictConfigModalRef {
 /** 带要素的功能码 */
 interface FuncWithElements extends SL651.Func {
   elements: SL651.Element[];
+  responseElements?: SL651.Element[];
+}
+
+/** 应答要素 Modal Ref */
+interface ResponseElementsModalRef {
+  open: (typeId: number, func: SL651.Func) => void;
 }
 
 /** 表单中的条件数据（可能不完整） */
@@ -114,6 +120,7 @@ const SL651ConfigPage = () => {
   const elementModalRef = useRef<ElementModalRef>(null);
   const presetValueModalRef = useRef<PresetValueModalRef>(null);
   const dictConfigModalRef = useRef<DictConfigModalRef>(null);
+  const responseElementsModalRef = useRef<ResponseElementsModalRef>(null);
 
   // 设备类型列表（使用 useMemo 保持引用稳定）
   const types = useMemo(() => configPage?.list || [], [configPage?.list]);
@@ -204,12 +211,24 @@ const SL651ConfigPage = () => {
       render: (_, r) => r.elements?.length ?? 0,
     },
     {
+      title: "应答要素",
+      width: 100,
+      render: (_, r) =>
+        r.dir === "DOWN" ? (
+          <Tooltip title="下行指令应答报文的解析要素">
+            <Tag color="cyan">{r.responseElements?.length ?? 0}个</Tag>
+          </Tooltip>
+        ) : (
+          "-"
+        ),
+    },
+    {
       title: "备注",
       dataIndex: "remark",
     },
     {
       title: "操作",
-      width: 260,
+      width: 320,
       render: (_, r) => (
         <Space>
           {canEdit && (
@@ -235,6 +254,15 @@ const SL651ConfigPage = () => {
               onClick={() => elementModalRef.current?.open("create", activeTypeId!, r.id)}
             >
               新增要素
+            </Button>
+          )}
+          {r.dir === "DOWN" && canEdit && (
+            <Button
+              size="small"
+              type="link"
+              onClick={() => responseElementsModalRef.current?.open(activeTypeId!, r)}
+            >
+              应答要素
             </Button>
           )}
         </Space>
@@ -489,6 +517,14 @@ const SL651ConfigPage = () => {
       {/* 字典配置 Modal */}
       <DictConfigModal
         ref={dictConfigModalRef}
+        types={types}
+        onSuccess={refetchTypes}
+        saveMutation={saveMutation}
+      />
+
+      {/* 应答要素 Modal */}
+      <ResponseElementsModal
+        ref={responseElementsModalRef}
         types={types}
         onSuccess={refetchTypes}
         saveMutation={saveMutation}
@@ -1396,6 +1432,223 @@ const DictConfigModal = forwardRef<DictConfigModalRef, DictConfigModalProps>(
               )}
             </Form.List>
           </Form.Item>
+        </Form>
+      </Modal>
+    );
+  }
+);
+
+// ========== 应答要素 Modal ==========
+
+interface ResponseElementsModalProps {
+  types: Protocol.Item[];
+  onSuccess?: () => void;
+  saveMutation: ReturnType<typeof useProtocolConfigSave>;
+}
+
+const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseElementsModalProps>(
+  ({ types, onSuccess, saveMutation }, ref) => {
+    const [open, setOpen] = useState(false);
+    const [typeId, setTypeId] = useState<number>();
+    const [func, setFunc] = useState<SL651.Func>();
+    const [form] = Form.useForm();
+
+    useImperativeHandle(ref, () => ({
+      open(t, f) {
+        setTypeId(t);
+        setFunc(f);
+        form.resetFields();
+        form.setFieldsValue({
+          responseElements: f.responseElements || [],
+        });
+        setOpen(true);
+      },
+    }));
+
+    const handleOk = async () => {
+      if (!typeId || !func) return;
+      const values = await form.validateFields();
+
+      const type = types.find((t) => t.id === typeId);
+      if (!type) return;
+
+      // 过滤掉不完整的要素
+      const cleanedElements = (values.responseElements || [])
+        .filter(
+          (ele: Partial<SL651.Element>) =>
+            ele.name?.trim() && ele.guideHex?.trim() && ele.encode && ele.length !== undefined
+        )
+        .map((ele: Partial<SL651.Element>) => ({
+          id: ele.id || generateId(),
+          name: ele.name?.trim(),
+          guideHex: ele.guideHex?.trim(),
+          encode: ele.encode,
+          length: ele.length,
+          digits: ele.digits ?? 0,
+          unit: ele.unit?.trim() || undefined,
+          remark: ele.remark?.trim() || undefined,
+        }));
+
+      const config = type.config as SL651.Config;
+      const newFuncs = config.funcs.map((f) => {
+        if (f.id !== func.id) return f;
+        return {
+          ...f,
+          responseElements: cleanedElements.length > 0 ? cleanedElements : undefined,
+        };
+      });
+
+      await saveMutation.mutateAsync({
+        id: typeId,
+        protocol: "SL651",
+        config: { funcs: newFuncs },
+      });
+
+      onSuccess?.();
+      setOpen(false);
+    };
+
+    return (
+      <Modal
+        open={open}
+        title={`应答要素配置 - ${func?.name} (${func?.funcCode})`}
+        onCancel={() => setOpen(false)}
+        onOk={handleOk}
+        confirmLoading={saveMutation.isPending}
+        forceRender
+        width={900}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <Tag color="blue">下行功能码</Tag>
+          <span style={{ color: "#666", marginLeft: 8 }}>
+            配置设备应答报文的解析要素。设备收到下行指令后会返回应答报文，这里定义如何解析应答报文中的数据。
+          </span>
+        </div>
+
+        <Form form={form} layout="vertical">
+          <Form.List name="responseElements">
+            {(fields, { add, remove }) => (
+              <>
+                <Table
+                  dataSource={fields}
+                  rowKey="key"
+                  pagination={false}
+                  size="small"
+                  columns={[
+                    {
+                      title: "要素名称",
+                      width: 150,
+                      render: (_, field) => (
+                        <Form.Item
+                          name={[field.name, "name"]}
+                          rules={[{ required: true, message: "必填" }]}
+                          style={{ marginBottom: 0 }}
+                        >
+                          <Input placeholder="要素名称" />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      title: "引导符(HEX)",
+                      width: 120,
+                      render: (_, field) => (
+                        <Form.Item
+                          name={[field.name, "guideHex"]}
+                          rules={[{ required: true, message: "必填" }]}
+                          style={{ marginBottom: 0 }}
+                        >
+                          <Input placeholder="如: 01" />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      title: "编码",
+                      width: 140,
+                      render: (_, field) => (
+                        <Form.Item
+                          name={[field.name, "encode"]}
+                          rules={[{ required: true, message: "必填" }]}
+                          style={{ marginBottom: 0 }}
+                        >
+                          <Select
+                            placeholder="选择"
+                            options={EncodeList.map((e) => ({ value: e, label: e }))}
+                          />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      title: "长度",
+                      width: 80,
+                      render: (_, field) => (
+                        <Form.Item
+                          name={[field.name, "length"]}
+                          rules={[{ required: true, message: "必填" }]}
+                          style={{ marginBottom: 0 }}
+                        >
+                          <InputNumber min={0} style={{ width: "100%" }} />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      title: "小数位",
+                      width: 80,
+                      render: (_, field) => (
+                        <Form.Item name={[field.name, "digits"]} style={{ marginBottom: 0 }}>
+                          <InputNumber min={0} max={8} style={{ width: "100%" }} />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      title: "单位",
+                      width: 80,
+                      render: (_, field) => (
+                        <Form.Item name={[field.name, "unit"]} style={{ marginBottom: 0 }}>
+                          <Input placeholder="单位" />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      title: "备注",
+                      width: 120,
+                      render: (_, field) => (
+                        <Form.Item name={[field.name, "remark"]} style={{ marginBottom: 0 }}>
+                          <Input placeholder="备注" />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      title: "操作",
+                      width: 60,
+                      render: (_, field) => (
+                        <Button type="text" danger onClick={() => remove(field.name)}>
+                          删除
+                        </Button>
+                      ),
+                    },
+                  ]}
+                  locale={{ emptyText: "暂无应答要素，点击下方按钮添加" }}
+                />
+                <Button
+                  type="dashed"
+                  onClick={() =>
+                    add({
+                      id: generateId(),
+                      name: "",
+                      guideHex: "",
+                      encode: "BCD",
+                      length: 0,
+                      digits: 0,
+                    })
+                  }
+                  block
+                  style={{ marginTop: 12 }}
+                >
+                  + 添加应答要素
+                </Button>
+              </>
+            )}
+          </Form.List>
         </Form>
       </Modal>
     );

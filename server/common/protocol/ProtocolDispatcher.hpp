@@ -21,6 +21,8 @@ struct PendingCommand {
     std::string funcCode;
     std::promise<bool> promise;
     std::chrono::steady_clock::time_point expireTime;
+    int64_t downCommandId;  // 下行指令的数据库记录 ID
+    int userId;             // 下发用户 ID
 };
 
 /**
@@ -55,8 +57,8 @@ public:
 
         // 设置指令应答回调
         sl651Parser_->setCommandResponseCallback(
-            [this](const std::string& deviceCode, const std::string& funcCode, bool success) {
-                notifyCommandResponse(deviceCode, funcCode, success);
+            [this](const std::string& deviceCode, const std::string& funcCode, bool success, int64_t responseId) {
+                notifyCommandResponse(deviceCode, funcCode, success, responseId);
             }
         );
 
@@ -249,6 +251,10 @@ private:
                     config.funcNames[funcCode] = funcName;
                 }
 
+                // 保存功能码方向映射
+                std::string dir = func.get("dir", "UP").asString();
+                config.funcDirections[funcCode] = sl651::parseDirection(dir);
+
                 std::vector<sl651::ElementDef> elements;
 
                 // 解析 elements 数组
@@ -313,6 +319,59 @@ private:
                 }
 
                 config.elementsByFunc[funcCode] = elements;
+
+                // 解析 responseElements 数组（下行功能码的应答要素）
+                if (func.isMember("responseElements") && func["responseElements"].isArray()) {
+                    std::vector<sl651::ElementDef> responseElements;
+                    for (const auto& elem : func["responseElements"]) {
+                        sl651::ElementDef def;
+                        def.id = elem.get("id", "").asString();
+                        def.name = elem.get("name", "").asString();
+                        def.funcCode = funcCode;
+                        def.guideHex = elem.get("guideHex", "").asString();
+                        def.encode = sl651::parseEncode(elem.get("encode", "BCD").asString());
+                        def.length = elem.get("length", 0).asInt();
+                        def.digits = elem.get("digits", 0).asInt();
+                        def.unit = elem.get("unit", "").asString();
+                        def.remark = elem.get("remark", "").asString();
+
+                        // 解析字典配置
+                        if (elem.isMember("dictConfig") && elem["dictConfig"].isObject()) {
+                            const auto& dictConfigJson = elem["dictConfig"];
+                            sl651::DictConfig dictConfig;
+                            dictConfig.mapType = sl651::parseDictMapType(dictConfigJson.get("mapType", "VALUE").asString());
+
+                            if (dictConfigJson.isMember("items") && dictConfigJson["items"].isArray()) {
+                                for (const auto& item : dictConfigJson["items"]) {
+                                    sl651::DictMapItem mapItem;
+                                    mapItem.key = item.get("key", "").asString();
+                                    mapItem.label = item.get("label", "").asString();
+                                    mapItem.value = item.get("value", "1").asString();
+
+                                    if (item.isMember("dependsOn") && item["dependsOn"].isObject()) {
+                                        const auto& dependsOnJson = item["dependsOn"];
+                                        sl651::DictDependsOn dependsOn;
+                                        dependsOn.op = sl651::parseDictDependencyOperator(dependsOnJson.get("operator", "AND").asString());
+
+                                        if (dependsOnJson.isMember("conditions") && dependsOnJson["conditions"].isArray()) {
+                                            for (const auto& cond : dependsOnJson["conditions"]) {
+                                                sl651::DictDependency dependency;
+                                                dependency.bitIndex = cond.get("bitIndex", "").asString();
+                                                dependency.bitValue = cond.get("bitValue", "1").asString();
+                                                dependsOn.conditions.push_back(dependency);
+                                            }
+                                        }
+                                        mapItem.dependsOn = dependsOn;
+                                    }
+                                    dictConfig.items.push_back(mapItem);
+                                }
+                            }
+                            def.dictConfig = dictConfig;
+                        }
+                        responseElements.push_back(def);
+                    }
+                    config.responseElementsByFunc[funcCode] = responseElements;
+                }
             }
 
         } catch (const std::exception& e) {
@@ -354,11 +413,12 @@ public:
      * @param deviceCode 设备编码
      * @param funcCode 功能码
      * @param elements 要素数据
+     * @param userId 下发用户 ID
      * @param timeoutMs 超时时间（毫秒），默认 10 秒
      * @return 设备应答成功返回 true，超时或应答失败返回 false
      */
     Task<bool> sendCommand(int linkId, const std::string& deviceCode, const std::string& funcCode,
-                           const Json::Value& elements, int timeoutMs = 10000) {
+                           const Json::Value& elements, int userId, int timeoutMs = 10000) {
         try {
             // 获取设备配置
             auto configOpt = co_await getDeviceConfigAsync(linkId, deviceCode);
@@ -388,6 +448,25 @@ public:
                 co_return false;
             }
 
+            // 获取设备连接映射，定向发送
+            auto connOpt = DeviceConnectionCache::instance().getConnection(deviceCode);
+            if (!connOpt) {
+                LOG_ERROR << "[ProtocolDispatcher] 未找到设备连接映射，无法下发指令: device=" << deviceCode;
+                co_return false;
+            }
+
+            // 定向发送到设备对应的客户端连接
+            bool sent = TcpLinkManager::instance().sendToClient(connOpt->linkId, connOpt->clientAddr, data);
+            if (!sent) {
+                LOG_ERROR << "[ProtocolDispatcher] 定向发送失败: linkId=" << linkId << ", client=" << connOpt->clientAddr;
+                co_return false;
+            }
+
+            LOG_DEBUG << "[ProtocolDispatcher] 定向发送到 " << connOpt->clientAddr;
+
+            // 保存下行指令到数据库，获取记录 ID
+            int64_t downCommandId = co_await saveDownCommand(linkId, *configOpt, deviceCode, funcCode, elements, data, userId);
+
             // 创建待应答记录（以 deviceCode 为 key，每个设备同时只能有一个待应答指令）
             std::promise<bool> responsePromise;
             std::future<bool> responseFuture = responsePromise.get_future();
@@ -402,36 +481,9 @@ public:
                 cmd.funcCode = funcCode;
                 cmd.promise = std::move(responsePromise);
                 cmd.expireTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+                cmd.downCommandId = downCommandId;
+                cmd.userId = userId;
                 pendingCommands_.emplace(deviceCode, std::move(cmd));
-            }
-
-            // 获取设备连接映射，尝试定向发送
-            bool sent = false;
-            auto connOpt = DeviceConnectionCache::instance().getConnection(deviceCode);
-            if (connOpt) {
-                // 定向发送到设备对应的客户端连接
-                sent = TcpLinkManager::instance().sendToClient(connOpt->linkId, connOpt->clientAddr, data);
-                if (sent) {
-                    LOG_DEBUG << "[ProtocolDispatcher] 定向发送到 " << connOpt->clientAddr;
-                }
-            }
-
-            // 如果定向发送失败或无映射，回退到广播模式
-            if (!sent) {
-                if (connOpt) {
-                    LOG_WARN << "[ProtocolDispatcher] 定向发送失败，回退到广播模式: linkId=" << linkId;
-                } else {
-                    LOG_WARN << "[ProtocolDispatcher] 未找到设备连接映射，使用广播模式: device=" << deviceCode;
-                }
-                sent = TcpLinkManager::instance().sendData(linkId, data);
-            }
-
-            if (!sent) {
-                LOG_ERROR << "[ProtocolDispatcher] 发送失败: linkId=" << linkId;
-                // 移除待应答记录
-                std::lock_guard<std::mutex> lock(pendingMutex_);
-                pendingCommands_.erase(deviceCode);
-                co_return false;
             }
 
             LOG_INFO << "[ProtocolDispatcher] 指令已发送，等待应答: linkId=" << linkId
@@ -482,24 +534,42 @@ public:
      * @param deviceCode 设备编码
      * @param funcCode 应答帧功能码
      * @param success 应答是否成功
+     * @param responseId 应答报文记录 ID
      */
-    void notifyCommandResponse(const std::string& deviceCode, const std::string& funcCode, bool success) {
-        std::lock_guard<std::mutex> lock(pendingMutex_);
-        auto it = pendingCommands_.find(deviceCode);
-        if (it != pendingCommands_.end()) {
-            // 检查功能码是否匹配（应答功能码应与发送的相同，或者是 E1/E2）
-            if (it->second.funcCode == funcCode ||
-                funcCode == sl651::FuncCodes::ACK_OK ||
-                funcCode == sl651::FuncCodes::ACK_ERR) {
-                try {
-                    it->second.promise.set_value(success);
-                    LOG_DEBUG << "[ProtocolDispatcher] 指令应答已处理: device=" << deviceCode
-                              << ", sentFunc=" << it->second.funcCode
-                              << ", respFunc=" << funcCode << ", success=" << success;
-                } catch (const std::future_error&) {
-                    // promise 已被设置，忽略
+    void notifyCommandResponse(const std::string& deviceCode, const std::string& funcCode, bool success, int64_t responseId) {
+        int64_t downCommandId = 0;
+
+        {
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            auto it = pendingCommands_.find(deviceCode);
+            if (it != pendingCommands_.end()) {
+                // 检查功能码是否匹配（应答功能码应与发送的相同，或者是 E1/E2）
+                if (it->second.funcCode == funcCode ||
+                    funcCode == sl651::FuncCodes::ACK_OK ||
+                    funcCode == sl651::FuncCodes::ACK_ERR) {
+                    try {
+                        downCommandId = it->second.downCommandId;
+                        it->second.promise.set_value(success);
+                        LOG_DEBUG << "[ProtocolDispatcher] 指令应答已处理: device=" << deviceCode
+                                  << ", sentFunc=" << it->second.funcCode
+                                  << ", respFunc=" << funcCode << ", success=" << success;
+                    } catch (const std::future_error&) {
+                        // promise 已被设置，忽略
+                    }
+                    pendingCommands_.erase(it);
                 }
-                pendingCommands_.erase(it);
+            }
+        }
+
+        // 异步更新下行指令记录，关联应答报文 ID
+        if (downCommandId > 0 && responseId > 0) {
+            auto* loop = trantor::EventLoop::getEventLoopOfCurrentThread();
+            if (loop) {
+                loop->queueInLoop([this, downCommandId, responseId]() {
+                    async_run([this, downCommandId, responseId]() -> Task<> {
+                        co_await updateDownCommandResponse(downCommandId, responseId);
+                    });
+                });
             }
         }
     }
@@ -513,4 +583,110 @@ private:
     // 待应答指令
     std::map<std::string, PendingCommand> pendingCommands_;
     std::mutex pendingMutex_;
+
+    /**
+     * @brief 保存下行指令到数据库
+     * @return 返回插入记录的 ID
+     */
+    Task<int64_t> saveDownCommand(int linkId, const sl651::DeviceConfig& config,
+                                   const std::string& deviceCode, const std::string& funcCode,
+                                   const Json::Value& elements, const std::string& rawData, int userId) {
+        try {
+            DatabaseService dbService;
+
+            // 构建 JSONB 数据
+            Json::Value data;
+            data["funcCode"] = funcCode;
+
+            // 从配置中获取功能码名称
+            auto funcNameIt = config.funcNames.find(funcCode);
+            if (funcNameIt != config.funcNames.end()) {
+                data["funcName"] = funcNameIt->second;
+            }
+            data["direction"] = "DOWN";
+            data["userId"] = userId;  // 下发用户 ID
+
+            // 原始报文（HEX 格式）
+            Json::Value rawArr(Json::arrayValue);
+            std::ostringstream hexOss;
+            for (unsigned char c : rawData) {
+                hexOss << std::uppercase << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(c);
+            }
+            rawArr.append(hexOss.str());
+            data["raw"] = rawArr;
+
+            // 下发的要素数据
+            Json::Value dataObj(Json::objectValue);
+            if (elements.isArray()) {
+                for (const auto& elem : elements) {
+                    std::string elementId = elem.get("elementId", "").asString();
+                    std::string value = elem.get("value", "").asString();
+                    Json::Value e;
+                    e["value"] = value;
+                    e["elementId"] = elementId;
+                    dataObj[elementId] = e;
+                }
+            }
+            data["data"] = dataObj;
+
+            // 获取当前时间作为发送时间
+            auto now = std::chrono::system_clock::now();
+            auto timeT = std::chrono::system_clock::to_time_t(now);
+            std::tm tmBuf{};
+#ifdef _WIN32
+            localtime_s(&tmBuf, &timeT);
+#else
+            localtime_r(&timeT, &tmBuf);
+#endif
+            std::ostringstream timeOss;
+            timeOss << std::put_time(&tmBuf, "%Y-%m-%d %H:%M:%S");
+            std::string reportTime = timeOss.str();
+
+            // 序列化 JSON
+            Json::StreamWriterBuilder writer;
+            writer["indentation"] = "";
+            writer["emitUTF8"] = true;
+            std::string jsonStr = Json::writeString(writer, data);
+
+            // 插入并返回 ID
+            auto result = co_await dbService.execSqlCoro(R"(
+                INSERT INTO device_data (device_id, link_id, protocol, data, report_time)
+                VALUES (?, ?, 'SL651', ?::jsonb, ?::timestamp)
+                RETURNING id
+            )", {std::to_string(config.deviceId), std::to_string(linkId), jsonStr, reportTime});
+
+            int64_t id = 0;
+            if (!result.empty()) {
+                id = result[0]["id"].as<int64_t>();
+            }
+
+            LOG_DEBUG << "[ProtocolDispatcher] 下行指令已保存: id=" << id << ", device=" << deviceCode << ", func=" << funcCode;
+            co_return id;
+
+        } catch (const std::exception& e) {
+            LOG_ERROR << "[ProtocolDispatcher] 保存下行指令失败: " << e.what();
+            co_return 0;
+        }
+    }
+
+    /**
+     * @brief 更新下行指令记录，关联应答报文 ID
+     */
+    Task<void> updateDownCommandResponse(int64_t downCommandId, int64_t responseId) {
+        if (downCommandId <= 0) co_return;
+
+        try {
+            DatabaseService dbService;
+            // 使用 jsonb_set 更新 data 字段中的 responseId
+            co_await dbService.execSqlCoro(R"(
+                UPDATE device_data
+                SET data = data || jsonb_build_object('responseId', ?)
+                WHERE id = ?
+            )", {std::to_string(responseId), std::to_string(downCommandId)});
+
+            LOG_DEBUG << "[ProtocolDispatcher] 下行指令已关联应答: downId=" << downCommandId << ", respId=" << responseId;
+        } catch (const std::exception& e) {
+            LOG_ERROR << "[ProtocolDispatcher] 更新下行指令应答失败: " << e.what();
+        }
+    }
 };

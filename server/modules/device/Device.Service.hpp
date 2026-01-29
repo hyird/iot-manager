@@ -693,6 +693,9 @@ public:
             return condition;
         };
 
+        // 过滤空 data 的条件
+        std::string filterEmptyData = " AND (data->'data' IS NOT NULL AND data->'data' <> '{}'::jsonb)";
+
         // 第一层：查询功能码列表
         if (funcCode.empty()) {
             std::vector<std::string> countParams = {deviceIdStr};
@@ -704,7 +707,7 @@ public:
                     SELECT DISTINCT data->>'funcCode' as fc
                     FROM )" + tableName + R"(
                     WHERE device_id = ?
-            )" + timeCondition + R"(
+            )" + timeCondition + filterEmptyData + R"(
                 ) sub
             )";
 
@@ -725,7 +728,7 @@ public:
                         COUNT(*) as cnt
                     FROM )" + tableName + R"(
                     WHERE device_id = ?
-            )" + timeCondition + R"(
+            )" + timeCondition + filterEmptyData + R"(
                     GROUP BY data->>'funcCode'
                 ) sub
                 ORDER BY fc
@@ -753,6 +756,54 @@ public:
         // 第二层：查询具体数据（直接使用 device_id，利用复合索引）
         bool isImage = (dataType == "IMAGE");
 
+        // 获取协议配置以获取字典配置（dictConfig）
+        std::map<std::string, Json::Value> elementDictConfigs;  // guideHex -> dictConfig
+        std::map<std::string, std::string> userNameCache;  // userId -> userName
+
+        if (!isImage) {
+            // 查询设备的协议配置
+            auto configResult = co_await dbService_.execSqlCoro(R"(
+                SELECT pc.config FROM device d
+                JOIN protocol_config pc ON d.protocol_config_id = pc.id
+                WHERE d.id = ? AND d.deleted_at IS NULL
+            )", {deviceIdStr});
+
+            if (!configResult.empty() && !configResult[0]["config"].isNull()) {
+                std::string configStr = configResult[0]["config"].as<std::string>();
+                Json::Value config;
+                std::istringstream configStream(configStr);
+                std::string errs;
+                if (Json::parseFromStream(readerBuilder, configStream, &config, &errs)) {
+                    // 解析功能码列表，找到当前功能码的要素定义
+                    if (config.isMember("funcs") && config["funcs"].isArray()) {
+                        for (const auto& func : config["funcs"]) {
+                            if (func.get("funcCode", "").asString() == funcCode) {
+                                // 找到对应的功能码，提取要素的 dictConfig
+                                if (func.isMember("elements") && func["elements"].isArray()) {
+                                    for (const auto& elem : func["elements"]) {
+                                        std::string guideHex = elem.get("guideHex", "").asString();
+                                        if (!guideHex.empty() && elem.isMember("dictConfig")) {
+                                            elementDictConfigs[guideHex] = elem["dictConfig"];
+                                        }
+                                    }
+                                }
+                                // 也检查 responseElements（下行功能码的应答要素）
+                                if (func.isMember("responseElements") && func["responseElements"].isArray()) {
+                                    for (const auto& elem : func["responseElements"]) {
+                                        std::string guideHex = elem.get("guideHex", "").asString();
+                                        if (!guideHex.empty() && elem.isMember("dictConfig")) {
+                                            elementDictConfigs[guideHex] = elem["dictConfig"];
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         std::vector<std::string> countParams = {deviceIdStr, funcCode};
         std::string timeCondition = buildTimeCondition(countParams);
 
@@ -762,7 +813,7 @@ public:
             FROM )" + tableName + R"(
             WHERE device_id = ?
               AND data->>'funcCode' = ?
-        )" + timeCondition;
+        )" + timeCondition + filterEmptyData;
 
         std::vector<std::string> queryParams = {deviceIdStr, funcCode};
         buildTimeCondition(queryParams);
@@ -773,7 +824,7 @@ public:
             FROM )" + tableName + R"(
             WHERE device_id = ?
               AND data->>'funcCode' = ?
-        )" + timeCondition + R"(
+        )" + timeCondition + filterEmptyData + R"(
             ORDER BY report_time DESC
             LIMIT )" + std::to_string(pageSize) + " OFFSET " + std::to_string((page - 1) * pageSize);
 
@@ -813,6 +864,75 @@ public:
                     std::istringstream stream(dataStr);
                     std::string errs;
                     if (Json::parseFromStream(readerBuilder, stream, &parsedData, &errs)) {
+                        // 提取方向、应答ID、用户ID
+                        if (parsedData.isMember("direction")) {
+                            item["direction"] = parsedData["direction"].asString();
+                        }
+                        int64_t responseIdValue = 0;
+                        if (parsedData.isMember("responseId")) {
+                            responseIdValue = parsedData["responseId"].asInt64();
+                            item["responseId"] = responseIdValue;
+                        }
+                        if (parsedData.isMember("userId")) {
+                            int userId = parsedData["userId"].asInt();
+                            item["userId"] = userId;
+                            // 获取用户名（使用缓存避免重复查询）
+                            std::string userIdStr = std::to_string(userId);
+                            if (userNameCache.find(userIdStr) == userNameCache.end()) {
+                                auto userResult = co_await dbService_.execSqlCoro(
+                                    "SELECT username FROM sys_user WHERE id = ?", {userIdStr}
+                                );
+                                if (!userResult.empty()) {
+                                    userNameCache[userIdStr] = FieldHelper::getString(userResult[0]["username"], "");
+                                } else {
+                                    userNameCache[userIdStr] = "";
+                                }
+                            }
+                            if (!userNameCache[userIdStr].empty()) {
+                                item["userName"] = userNameCache[userIdStr];
+                            }
+                        }
+
+                        // 如果有应答报文，查询应答报文的解析结果
+                        if (responseIdValue > 0) {
+                            auto responseResult = co_await dbService_.execSqlCoro(
+                                "SELECT data FROM device_data WHERE id = ?",
+                                {std::to_string(responseIdValue)}
+                            );
+                            if (!responseResult.empty() && !responseResult[0]["data"].isNull()) {
+                                std::string respDataStr = responseResult[0]["data"].as<std::string>();
+                                Json::Value respParsedData;
+                                std::istringstream respStream(respDataStr);
+                                std::string respErrs;
+                                if (Json::parseFromStream(readerBuilder, respStream, &respParsedData, &respErrs)) {
+                                    if (respParsedData.isMember("data") && respParsedData["data"].isObject()) {
+                                        Json::Value responseElements(Json::arrayValue);
+                                        const auto& respDataObj = respParsedData["data"];
+                                        for (const auto& respKey : respDataObj.getMemberNames()) {
+                                            Json::Value respEl;
+                                            const auto& respElemData = respDataObj[respKey];
+                                            respEl["name"] = respElemData.get("name", "").asString();
+                                            respEl["value"] = respElemData.get("value", Json::nullValue);
+                                            if (respElemData.isMember("unit")) {
+                                                respEl["unit"] = respElemData["unit"];
+                                            }
+                                            // 附加 dictConfig
+                                            size_t respUnderscorePos = respKey.find('_');
+                                            if (respUnderscorePos != std::string::npos) {
+                                                std::string respGuideHex = respKey.substr(respUnderscorePos + 1);
+                                                auto dictIt = elementDictConfigs.find(respGuideHex);
+                                                if (dictIt != elementDictConfigs.end()) {
+                                                    respEl["dictConfig"] = dictIt->second;
+                                                }
+                                            }
+                                            responseElements.append(respEl);
+                                        }
+                                        item["responseElements"] = responseElements;
+                                    }
+                                }
+                            }
+                        }
+
                         if (parsedData.isMember("data") && parsedData["data"].isObject()) {
                             const auto& dataObj = parsedData["data"];
                             // data 格式为 { "funcCode_guideHex": { "name": ..., "value": ..., "unit": ... }, ... }
@@ -824,6 +944,17 @@ public:
                                 if (elemData.isMember("unit")) {
                                     el["unit"] = elemData["unit"];
                                 }
+
+                                // 从 key（funcCode_guideHex）中提取 guideHex，附加 dictConfig
+                                size_t underscorePos = key.find('_');
+                                if (underscorePos != std::string::npos) {
+                                    std::string guideHex = key.substr(underscorePos + 1);
+                                    auto dictIt = elementDictConfigs.find(guideHex);
+                                    if (dictIt != elementDictConfigs.end()) {
+                                        el["dictConfig"] = dictIt->second;
+                                    }
+                                }
+
                                 elements.append(el);
                             }
                         }

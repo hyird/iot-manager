@@ -7,6 +7,7 @@
 #include "common/utils/AppException.hpp"
 #include "common/cache/AuthCache.hpp"
 #include "common/cache/DeviceCache.hpp"
+#include "common/cache/RealtimeDataCache.hpp"
 #include "common/cache/ResourceVersion.hpp"
 #include "common/filters/PermissionFilter.hpp"
 
@@ -107,6 +108,9 @@ public:
 
         // 清理设备缓存
         DeviceCache::instance().markStale();
+
+        // 清理设备实时数据缓存
+        RealtimeDataCache::instance().invalidateAll();
 
         // 重置所有资源版本
         ResourceVersion::instance().resetAll();

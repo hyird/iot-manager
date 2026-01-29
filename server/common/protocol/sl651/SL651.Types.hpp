@@ -48,6 +48,7 @@ struct FuncCodes {
     static constexpr const char* TEST = "30";           // 测试
     static constexpr const char* EVEN_TIME = "31";      // 均匀时段水文信息
     static constexpr const char* HOUR = "32";           // 遥测站定时报
+    static constexpr const char* TIMED_REPORT = "32";   // 定时报（HOUR 的别名）
     static constexpr const char* ADD_REPORT = "33";     // 遥测站加报报
     static constexpr const char* HOUR_RAIN = "34";      // 小时雨量
     static constexpr const char* DAY_DATA = "35";       // 日报
@@ -199,7 +200,9 @@ struct DeviceConfig {
     int protocolConfigId;       // 协议配置 ID
     int linkId;                 // 链路 ID
     std::map<std::string, std::vector<ElementDef>> elementsByFunc;  // 按功能码分组的要素
+    std::map<std::string, std::vector<ElementDef>> responseElementsByFunc;  // 下行功能码的应答要素
     std::map<std::string, std::string> funcNames;  // 功能码名称映射 (funcCode -> name)
+    std::map<std::string, Direction> funcDirections;  // 功能码方向映射 (funcCode -> direction)
 };
 
 /**
