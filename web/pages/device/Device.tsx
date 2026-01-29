@@ -465,11 +465,16 @@ const DevicePage = () => {
 
   const getTimeRangeParams = () => {
     const values = historyForm.getFieldsValue();
-    let startTime: Date | undefined;
-    let endTime: Date | undefined;
+    let startTime: Date;
+    let endTime: Date;
     if (values.timeRange?.length === 2) {
       startTime = new Date(values.timeRange[0].toISOString());
       endTime = new Date(values.timeRange[1].toISOString());
+    } else {
+      // 如果没有时间范围，使用默认值（最近一周）
+      const defaultRange = getDefaultTimeRange();
+      startTime = new Date(defaultRange[0].toISOString());
+      endTime = new Date(defaultRange[1].toISOString());
     }
     return { startTime, endTime };
   };
