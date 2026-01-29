@@ -254,6 +254,9 @@ export interface HistoryFuncItem {
   totalRecords?: number;
 }
 
+/** 指令状态 */
+export type CommandStatus = "PENDING" | "SUCCESS" | "TIMEOUT" | "SEND_FAILED";
+
 /** 要素历史记录 */
 export interface ElementRecord {
   reportTime: string | Date;
@@ -268,6 +271,10 @@ export interface ElementRecord {
   userId?: number;
   /** 发送用户名（仅下行指令有） */
   userName?: string;
+  /** 指令状态（仅下行指令有） */
+  status?: CommandStatus;
+  /** 失败原因（仅下行指令失败时有） */
+  failReason?: string;
 }
 
 /** 图片历史记录 */
@@ -318,4 +325,5 @@ export namespace Device {
   export type HistoryElement = ElementRecord;
   export type HistoryImage = ImageRecord;
   export type HistoryQuery = HistoryDataQuery;
+  export type CommandStatus = import("./device").CommandStatus;
 }

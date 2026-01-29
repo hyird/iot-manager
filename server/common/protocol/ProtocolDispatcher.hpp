@@ -419,6 +419,7 @@ public:
      */
     Task<bool> sendCommand(int linkId, const std::string& deviceCode, const std::string& funcCode,
                            const Json::Value& elements, int userId, int timeoutMs = 10000) {
+        int64_t downCommandId = 0;
         try {
             // 获取设备配置
             auto configOpt = co_await getDeviceConfigAsync(linkId, deviceCode);
@@ -431,6 +432,9 @@ public:
             std::string protocol = co_await getLinkProtocolAsync(linkId);
             if (protocol.empty()) {
                 LOG_ERROR << "[ProtocolDispatcher] 链路未关联协议: linkId=" << linkId;
+                // 保存失败记录（无报文数据）
+                downCommandId = co_await saveDownCommand(linkId, *configOpt, deviceCode, funcCode,
+                    elements, "", userId, "SEND_FAILED", "链路未关联协议");
                 co_return false;
             }
 
@@ -441,10 +445,15 @@ public:
                 data = sl651Parser_->buildCommand(deviceCode, funcCode, elements, *configOpt);
                 if (data.empty()) {
                     LOG_ERROR << "[ProtocolDispatcher] 构建 SL651 报文失败";
+                    // 保存失败记录（无报文数据）
+                    downCommandId = co_await saveDownCommand(linkId, *configOpt, deviceCode, funcCode,
+                        elements, "", userId, "SEND_FAILED", "构建报文失败");
                     co_return false;
                 }
             } else {
                 LOG_ERROR << "[ProtocolDispatcher] 协议不支持下发指令: " << protocol;
+                downCommandId = co_await saveDownCommand(linkId, *configOpt, deviceCode, funcCode,
+                    elements, "", userId, "SEND_FAILED", "协议不支持下发指令");
                 co_return false;
             }
 
@@ -452,6 +461,9 @@ public:
             auto connOpt = DeviceConnectionCache::instance().getConnection(deviceCode);
             if (!connOpt) {
                 LOG_ERROR << "[ProtocolDispatcher] 未找到设备连接映射，无法下发指令: device=" << deviceCode;
+                // 保存失败记录（已有报文数据）
+                downCommandId = co_await saveDownCommand(linkId, *configOpt, deviceCode, funcCode,
+                    elements, data, userId, "SEND_FAILED", "未找到设备连接映射");
                 co_return false;
             }
 
@@ -459,13 +471,16 @@ public:
             bool sent = TcpLinkManager::instance().sendToClient(connOpt->linkId, connOpt->clientAddr, data);
             if (!sent) {
                 LOG_ERROR << "[ProtocolDispatcher] 定向发送失败: linkId=" << linkId << ", client=" << connOpt->clientAddr;
+                // 保存失败记录（已有报文数据）
+                downCommandId = co_await saveDownCommand(linkId, *configOpt, deviceCode, funcCode,
+                    elements, data, userId, "SEND_FAILED", "TCP发送失败");
                 co_return false;
             }
 
             LOG_DEBUG << "[ProtocolDispatcher] 定向发送到 " << connOpt->clientAddr;
 
-            // 保存下行指令到数据库，获取记录 ID
-            int64_t downCommandId = co_await saveDownCommand(linkId, *configOpt, deviceCode, funcCode, elements, data, userId);
+            // 保存下行指令到数据库，获取记录 ID（状态为 PENDING）
+            downCommandId = co_await saveDownCommand(linkId, *configOpt, deviceCode, funcCode, elements, data, userId, "PENDING");
 
             // 创建待应答记录（以 deviceCode 为 key，每个设备同时只能有一个待应答指令）
             std::promise<bool> responsePromise;
@@ -518,13 +533,21 @@ public:
 
             if (success) {
                 LOG_INFO << "[ProtocolDispatcher] 设备应答成功: device=" << deviceCode << ", func=" << funcCode;
+                // 更新状态为成功
+                co_await updateDownCommandStatus(downCommandId, "SUCCESS");
             } else {
                 LOG_WARN << "[ProtocolDispatcher] 设备应答超时或失败: device=" << deviceCode << ", func=" << funcCode;
+                // 更新状态为超时
+                co_await updateDownCommandStatus(downCommandId, "TIMEOUT", "设备应答超时");
             }
 
             co_return success;
         } catch (const std::exception& e) {
             LOG_ERROR << "[ProtocolDispatcher] 下发指令异常: " << e.what();
+            // 如果已创建记录，更新为异常状态
+            if (downCommandId > 0) {
+                co_await updateDownCommandStatus(downCommandId, "SEND_FAILED", std::string("异常: ") + e.what());
+            }
             co_return false;
         }
     }
@@ -586,11 +609,14 @@ private:
 
     /**
      * @brief 保存下行指令到数据库
+     * @param status 指令状态: PENDING/SUCCESS/TIMEOUT/SEND_FAILED
+     * @param failReason 失败原因（可选）
      * @return 返回插入记录的 ID
      */
     Task<int64_t> saveDownCommand(int linkId, const sl651::DeviceConfig& config,
                                    const std::string& deviceCode, const std::string& funcCode,
-                                   const Json::Value& elements, const std::string& rawData, int userId) {
+                                   const Json::Value& elements, const std::string& rawData, int userId,
+                                   const std::string& status = "PENDING", const std::string& failReason = "") {
         try {
             DatabaseService dbService;
 
@@ -605,6 +631,10 @@ private:
             }
             data["direction"] = "DOWN";
             data["userId"] = userId;  // 下发用户 ID
+            data["status"] = status;  // 指令状态
+            if (!failReason.empty()) {
+                data["failReason"] = failReason;  // 失败原因
+            }
 
             // 原始报文（HEX 格式）
             Json::Value rawArr(Json::arrayValue);
@@ -615,16 +645,64 @@ private:
             rawArr.append(hexOss.str());
             data["raw"] = rawArr;
 
-            // 下发的要素数据
+            // 下发的要素数据（从配置中获取要素的完整信息）
             Json::Value dataObj(Json::objectValue);
-            if (elements.isArray()) {
-                for (const auto& elem : elements) {
-                    std::string elementId = elem.get("elementId", "").asString();
-                    std::string value = elem.get("value", "").asString();
-                    Json::Value e;
-                    e["value"] = value;
-                    e["elementId"] = elementId;
-                    dataObj[elementId] = e;
+            if (elements.isArray() && !config.configJson.empty()) {
+                // 解析配置 JSON
+                Json::Value configJson;
+                Json::CharReaderBuilder readerBuilder;
+                std::istringstream configStream(config.configJson);
+                std::string parseErrs;
+                if (Json::parseFromStream(readerBuilder, configStream, &configJson, &parseErrs)) {
+                    // 查找当前功能码的配置
+                    if (configJson.isMember("funcs") && configJson["funcs"].isArray()) {
+                        for (const auto& func : configJson["funcs"]) {
+                            if (func.get("funcCode", "").asString() == funcCode) {
+                                // 找到功能码，创建 elementId -> 配置 的映射
+                                std::map<std::string, Json::Value> elementConfigMap;
+                                if (func.isMember("elements") && func["elements"].isArray()) {
+                                    for (const auto& elemConfig : func["elements"]) {
+                                        std::string id = elemConfig.get("id", "").asString();
+                                        if (!id.empty()) {
+                                            elementConfigMap[id] = elemConfig;
+                                        }
+                                    }
+                                }
+
+                                // 遍历要下发的要素，从配置中获取详细信息
+                                for (const auto& elem : elements) {
+                                    std::string elementId = elem.get("elementId", "").asString();
+                                    std::string value = elem.get("value", "").asString();
+
+                                    auto configIt = elementConfigMap.find(elementId);
+                                    if (configIt != elementConfigMap.end()) {
+                                        const auto& elemConfig = configIt->second;
+                                        std::string guideHex = elemConfig.get("guideHex", "").asString();
+
+                                        // 使用 funcCode_guideHex 作为 key（与上行数据格式一致）
+                                        std::string key = funcCode + "_" + guideHex;
+
+                                        Json::Value e;
+                                        e["name"] = elemConfig.get("name", "").asString();
+                                        e["value"] = value;
+                                        e["elementId"] = elementId;
+                                        if (elemConfig.isMember("unit")) {
+                                            e["unit"] = elemConfig["unit"];
+                                        }
+                                        dataObj[key] = e;
+                                    } else {
+                                        // 配置中未找到，使用 elementId 作为 key
+                                        Json::Value e;
+                                        e["name"] = "";
+                                        e["value"] = value;
+                                        e["elementId"] = elementId;
+                                        dataObj[elementId] = e;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             data["data"] = dataObj;
@@ -677,16 +755,52 @@ private:
 
         try {
             DatabaseService dbService;
-            // 使用 jsonb_set 更新 data 字段中的 responseId
+            // 使用 jsonb_set 更新 data 字段中的 responseId（保存为整数）
             co_await dbService.execSqlCoro(R"(
                 UPDATE device_data
-                SET data = data || jsonb_build_object('responseId', ?)
+                SET data = data || jsonb_build_object('responseId', ?::bigint)
                 WHERE id = ?
             )", {std::to_string(responseId), std::to_string(downCommandId)});
 
             LOG_DEBUG << "[ProtocolDispatcher] 下行指令已关联应答: downId=" << downCommandId << ", respId=" << responseId;
         } catch (const std::exception& e) {
             LOG_ERROR << "[ProtocolDispatcher] 更新下行指令应答失败: " << e.what();
+        }
+    }
+
+    /**
+     * @brief 更新下行指令状态
+     * @param downCommandId 下行指令 ID
+     * @param status 状态: PENDING/SUCCESS/TIMEOUT/SEND_FAILED
+     * @param failReason 失败原因（可选）
+     */
+    Task<void> updateDownCommandStatus(int64_t downCommandId, const std::string& status,
+                                        const std::string& failReason = "") {
+        if (downCommandId <= 0) co_return;
+
+        try {
+            DatabaseService dbService;
+            Json::Value updateFields;
+            updateFields["status"] = status;
+            if (!failReason.empty()) {
+                updateFields["failReason"] = failReason;
+            }
+
+            // 序列化更新字段
+            Json::StreamWriterBuilder writer;
+            writer["indentation"] = "";
+            writer["emitUTF8"] = true;
+            std::string updateJson = Json::writeString(writer, updateFields);
+
+            co_await dbService.execSqlCoro(R"(
+                UPDATE device_data
+                SET data = data || ?::jsonb
+                WHERE id = ?
+            )", {updateJson, std::to_string(downCommandId)});
+
+            LOG_DEBUG << "[ProtocolDispatcher] 下行指令状态已更新: id=" << downCommandId << ", status=" << status;
+        } catch (const std::exception& e) {
+            LOG_ERROR << "[ProtocolDispatcher] 更新下行指令状态失败: " << e.what();
         }
     }
 };

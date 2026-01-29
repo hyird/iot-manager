@@ -865,14 +865,31 @@ public:
                     std::istringstream stream(dataStr);
                     std::string errs;
                     if (Json::parseFromStream(readerBuilder, stream, &parsedData, &errs)) {
-                        // 提取方向、应答ID、用户ID
+                        // 提取方向、应答ID、用户ID、状态、失败原因
                         if (parsedData.isMember("direction")) {
                             item["direction"] = parsedData["direction"].asString();
                         }
                         int64_t responseIdValue = 0;
-                        if (parsedData.isMember("responseId") && parsedData["responseId"].isInt64()) {
-                            responseIdValue = parsedData["responseId"].asInt64();
-                            item["responseId"] = responseIdValue;
+                        if (parsedData.isMember("responseId")) {
+                            // 兼容字符串和整数类型
+                            if (parsedData["responseId"].isInt64()) {
+                                responseIdValue = parsedData["responseId"].asInt64();
+                                item["responseId"] = responseIdValue;
+                            } else if (parsedData["responseId"].isString()) {
+                                std::string responseIdStr = parsedData["responseId"].asString();
+                                try {
+                                    responseIdValue = std::stoll(responseIdStr);
+                                    item["responseId"] = responseIdValue;
+                                } catch (...) {
+                                    // 解析失败，忽略
+                                }
+                            }
+                        }
+                        if (parsedData.isMember("status")) {
+                            item["status"] = parsedData["status"].asString();
+                        }
+                        if (parsedData.isMember("failReason")) {
+                            item["failReason"] = parsedData["failReason"].asString();
                         }
                         if (parsedData.isMember("userId") && parsedData["userId"].isInt()) {
                             int userId = parsedData["userId"].asInt();
