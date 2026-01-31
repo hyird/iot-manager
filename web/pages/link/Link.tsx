@@ -20,7 +20,7 @@ import { usePermission } from "@/hooks";
 import { StatusTag } from "@/components/StatusTag";
 import { PageContainer } from "@/components/PageContainer";
 
-import { useLinkList, useLinkSave, useLinkDelete } from "@/services";
+import { useLinkList, useLinkSave, useLinkDelete, useLinkEnums } from "@/services";
 
 /** 连接状态配置 */
 const connStatusConfig: Record<string, { label: string; color: string }> = {
@@ -37,6 +37,7 @@ interface LinkFormValues {
   id?: number;
   name: string;
   mode: Link.Mode;
+  protocol: Link.Protocol;
   ip: string;
   port: number;
   status: Link.Status;
@@ -67,6 +68,9 @@ const LinkPage = () => {
 
   // ========== 使用 Service Hooks ==========
 
+  // 链路枚举值（模式和协议列表）
+  const { data: linkEnums } = useLinkEnums({ enabled: canQuery });
+
   // 链路列表（每 5 秒刷新一次，实时更新连接状态）
   const { data: linkPage, isLoading: loadingLinks } = useLinkList(
     { page: pagination.page, pageSize: pagination.pageSize, keyword: keyword || undefined },
@@ -84,11 +88,20 @@ const LinkPage = () => {
   const openCreateModal = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ status: "enabled", mode: "TCP Client", ip: "" });
+    form.setFieldsValue({ status: "enabled", mode: "TCP Client", protocol: "SL651", ip: "" });
     setModalVisible(true);
   };
 
-  /** mode 变化时处理 IP 字段 */
+  /** 根据模式获取可用的协议列表 */
+  const getProtocolsByMode = (mode: Link.Mode): Link.Protocol[] => {
+    if (mode === "TCP Server") {
+      return ["SL651", "Modbus"];
+    } else {
+      return ["SL651", "Modbus TCP", "Modbus RTU"];
+    }
+  };
+
+  /** mode 变化时处理 IP 字段和协议选择 */
   const handleModeChange = (mode: Link.Mode) => {
     if (mode === "TCP Server") {
       form.setFieldValue("ip", "0.0.0.0");
@@ -99,6 +112,20 @@ const LinkPage = () => {
         form.setFieldValue("ip", "");
       }
     }
+
+    // 检查当前协议是否在新模式的可用列表中
+    const currentProtocol = form.getFieldValue("protocol") as Link.Protocol;
+    const availableProtocols = getProtocolsByMode(mode);
+    if (currentProtocol && !availableProtocols.includes(currentProtocol)) {
+      // 如果当前协议是 Modbus，切换到 Client 模式时改为 Modbus TCP
+      if (currentProtocol === "Modbus") {
+        form.setFieldValue("protocol", "Modbus TCP");
+      }
+      // 如果当前协议是 Modbus TCP 或 Modbus RTU，切换到 Server 模式时改为 Modbus
+      else if (currentProtocol === "Modbus TCP" || currentProtocol === "Modbus RTU") {
+        form.setFieldValue("protocol", "Modbus");
+      }
+    }
   };
 
   const openEditModal = (record: Link.Item) => {
@@ -107,6 +134,7 @@ const LinkPage = () => {
       id: record.id,
       name: record.name,
       mode: record.mode,
+      protocol: record.protocol,
       ip: record.mode === "TCP Server" ? "0.0.0.0" : record.ip,
       port: record.port,
       status: record.status,
@@ -152,6 +180,7 @@ const LinkPage = () => {
   const columns: ColumnsType<Link.Item> = [
     { title: "链路名称", dataIndex: "name", width: 150 },
     { title: "模式", dataIndex: "mode", width: 120 },
+    { title: "协议", dataIndex: "protocol", width: 120 },
     { title: "IP地址", dataIndex: "ip", width: 150 },
     { title: "端口", dataIndex: "port", width: 100 },
     {
@@ -263,7 +292,7 @@ const LinkPage = () => {
         }}
         onChange={handleTableChange}
         size="middle"
-        scroll={{ x: 1080 }}
+        scroll={{ x: 1200 }}
         sticky
       />
 
@@ -295,9 +324,39 @@ const LinkPage = () => {
 
           <Form.Item label="模式" name="mode" rules={[{ required: true, message: "请选择模式" }]}>
             <Select onChange={handleModeChange}>
-              <Select.Option value="TCP Server">TCP Server</Select.Option>
-              <Select.Option value="TCP Client">TCP Client</Select.Option>
+              {linkEnums?.modes.map((mode) => (
+                <Select.Option key={mode} value={mode}>
+                  {mode}
+                </Select.Option>
+              ))}
             </Select>
+          </Form.Item>
+
+          <Form.Item noStyle dependencies={["mode"]}>
+            {({ getFieldValue }) => {
+              const mode = getFieldValue("mode") as Link.Mode;
+              const protocols = getProtocolsByMode(mode || "TCP Client");
+              return (
+                <Form.Item
+                  label="协议"
+                  name="protocol"
+                  rules={[{ required: true, message: "请选择协议" }]}
+                  extra={
+                    mode === "TCP Server"
+                      ? "Server 模式下 Modbus 协议的 TCP/RTU 模式在设备中配置"
+                      : undefined
+                  }
+                >
+                  <Select>
+                    {protocols.map((protocol) => (
+                      <Select.Option key={protocol} value={protocol}>
+                        {protocol}
+                      </Select.Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+              );
+            }}
           </Form.Item>
 
           <Form.Item noStyle dependencies={["mode"]}>

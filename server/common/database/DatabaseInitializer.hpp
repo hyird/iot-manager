@@ -195,6 +195,9 @@ private:
         co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_link_deleted ON link (deleted_at))");
         co_await db->execSqlCoro(R"(CREATE UNIQUE INDEX IF NOT EXISTS idx_link_name ON link (name) WHERE deleted_at IS NULL)");
         co_await db->execSqlCoro(R"(CREATE UNIQUE INDEX IF NOT EXISTS idx_link_endpoint ON link (mode, ip, port) WHERE deleted_at IS NULL)");
+        // 迁移：添加协议类型字段
+        co_await db->execSqlCoro(R"(ALTER TABLE link ADD COLUMN IF NOT EXISTS protocol VARCHAR(20) NOT NULL DEFAULT 'SL651')");
+        co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_link_protocol ON link (protocol))");
 
         // 创建协议配置表（统一存储所有协议的设备类型配置）
         co_await db->execSqlCoro(R"(
@@ -235,6 +238,7 @@ private:
         // 兼容旧表结构，添加缺失字段
         co_await db->execSqlCoro(R"(ALTER TABLE device ADD COLUMN IF NOT EXISTS online_timeout INT DEFAULT 300)");
         co_await db->execSqlCoro(R"(ALTER TABLE device ADD COLUMN IF NOT EXISTS remote_control BOOLEAN DEFAULT TRUE)");
+        co_await db->execSqlCoro(R"(ALTER TABLE device ADD COLUMN IF NOT EXISTS modbus_mode VARCHAR(10))");
         co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_device_link ON device (link_id))");
         co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_device_protocol ON device (protocol_config_id))");
         co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_device_deleted ON device (deleted_at))");

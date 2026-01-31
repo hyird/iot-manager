@@ -14,10 +14,12 @@
 using namespace drogon;
 
 namespace {
-    // 允许的协议类型列表
-    const std::vector<std::string> ALLOWED_PROTOCOLS = {
+    // 允许的协议配置类型列表
+    const std::vector<std::string> ALLOWED_CONFIG_PROTOCOLS = {
         Constants::PROTOCOL_SL651,
-        Constants::PROTOCOL_MODBUS
+        Constants::PROTOCOL_MODBUS,
+        Constants::PROTOCOL_MODBUS_TCP,
+        Constants::PROTOCOL_MODBUS_RTU
     };
 }
 
@@ -88,8 +90,8 @@ public:
 
         ValidatorHelper::requireNonEmptyString(*json, "protocol", "协议类型").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "name", "配置名称").throwIfInvalid();
-        ValidatorHelper::requireInList(*json, "protocol", ALLOWED_PROTOCOLS,
-            "协议类型", "SL651 或 MODBUS").throwIfInvalid();
+        ValidatorHelper::requireInList(*json, "protocol", ALLOWED_CONFIG_PROTOCOLS,
+            "协议类型", "SL651、MODBUS、Modbus TCP 或 Modbus RTU").throwIfInvalid();
 
         auto result = co_await service_.create(*json);
         co_return Response::ok(result, "创建成功");
@@ -104,8 +106,8 @@ public:
         auto json = req->getJsonObject();
         if (!json) co_return Response::badRequest("请求体格式错误");
 
-        ValidatorHelper::requireInListIfPresent(*json, "protocol", ALLOWED_PROTOCOLS,
-            "协议类型", "SL651 或 MODBUS").throwIfInvalid();
+        ValidatorHelper::requireInListIfPresent(*json, "protocol", ALLOWED_CONFIG_PROTOCOLS,
+            "协议类型", "SL651、MODBUS、Modbus TCP 或 Modbus RTU").throwIfInvalid();
 
         co_await service_.update(id, *json);
         co_return Response::updated("更新成功");

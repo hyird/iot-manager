@@ -52,3 +52,15 @@ export function useLinkOptions(
     ...options,
   });
 }
+
+/**
+ * 获取链路枚举值（模式和协议列表）
+ */
+export function useLinkEnums(options?: Omit<UseQueryOptions<Link.Enums>, "queryKey" | "queryFn">) {
+  return useQuery({
+    queryKey: linkQueryKeys.enums(),
+    queryFn: api.getEnums,
+    staleTime: 30 * 60 * 1000, // 30分钟缓存
+    ...options,
+  });
+}

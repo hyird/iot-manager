@@ -89,7 +89,7 @@ public:
         // 查询数据（包含关联信息）
         std::string sql = R"(
             SELECT d.*,
-                   l.name as link_name, l.mode as link_mode,
+                   l.name as link_name, l.mode as link_mode, l.protocol as link_protocol,
                    p.name as protocol_name, p.protocol as protocol_type
             FROM device d
             LEFT JOIN link l ON d.link_id = l.id AND l.deleted_at IS NULL
@@ -237,6 +237,10 @@ public:
             remoteControl_ = data["remote_control"].asBool();
             markDirty();
         }
+        if (data.isMember("modbus_mode")) {
+            modbusMode_ = data["modbus_mode"].asString();
+            markDirty();
+        }
         if (data.isMember("remark")) {
             remark_ = data["remark"].asString();
             markDirty();
@@ -261,11 +265,13 @@ public:
     const std::string& status() const { return status_; }
     int onlineTimeout() const { return onlineTimeout_; }
     bool remoteControl() const { return remoteControl_; }
+    const std::string& modbusMode() const { return modbusMode_; }
     const std::string& remark() const { return remark_; }
 
     // 关联数据
     const std::string& linkName() const { return linkName_; }
     const std::string& linkMode() const { return linkMode_; }
+    const std::string& linkProtocol() const { return linkProtocol_; }
     const std::string& protocolName() const { return protocolName_; }
     const std::string& protocolType() const { return protocolType_; }
 
@@ -282,6 +288,9 @@ public:
         json["status"] = status_;
         json["online_timeout"] = onlineTimeout_;
         json["remote_control"] = remoteControl_;
+        if (!modbusMode_.empty()) {
+            json["modbus_mode"] = modbusMode_;
+        }
         json["remark"] = remark_;
         json["created_at"] = createdAt_;
         json["updated_at"] = updatedAt_;
@@ -289,6 +298,7 @@ public:
         // 关联信息
         json["link_name"] = linkName_;
         json["link_mode"] = linkMode_;
+        json["link_protocol"] = linkProtocol_;
         json["protocol_name"] = protocolName_;
         json["protocol_type"] = protocolType_;
 
@@ -316,6 +326,7 @@ private:
     std::string status_ = "enabled";
     int onlineTimeout_ = 300;
     bool remoteControl_ = true;
+    std::string modbusMode_;  // Modbus 通信模式: TCP / RTU（仅当链路是 TCP Server 且协议是 Modbus 时使用）
     std::string remark_;
     std::string createdAt_;
     std::string updatedAt_;
@@ -323,6 +334,7 @@ private:
     // 关联数据（只读）
     std::string linkName_;
     std::string linkMode_;
+    std::string linkProtocol_;
     std::string protocolName_;
     std::string protocolType_;
 
@@ -334,6 +346,7 @@ private:
         status_ = data.get("status", "enabled").asString();
         onlineTimeout_ = data.get("online_timeout", 300).asInt();
         remoteControl_ = data.get("remote_control", true).asBool();
+        modbusMode_ = data.get("modbus_mode", "").asString();
         remark_ = data.get("remark", "").asString();
     }
 
@@ -365,6 +378,7 @@ private:
         status_ = FieldHelper::getString(row["status"], "enabled");
         onlineTimeout_ = row["online_timeout"].isNull() ? 300 : FieldHelper::getInt(row["online_timeout"]);
         remoteControl_ = row["remote_control"].isNull() ? true : row["remote_control"].as<bool>();
+        modbusMode_ = FieldHelper::getString(row["modbus_mode"], "");
         remark_ = FieldHelper::getString(row["remark"], "");
         createdAt_ = FieldHelper::getString(row["created_at"], "");
         updatedAt_ = FieldHelper::getString(row["updated_at"], "");
@@ -372,6 +386,7 @@ private:
         if (withRelations) {
             linkName_ = FieldHelper::getString(row["link_name"], "");
             linkMode_ = FieldHelper::getString(row["link_mode"], "");
+            linkProtocol_ = FieldHelper::getString(row["link_protocol"], "");
             protocolName_ = FieldHelper::getString(row["protocol_name"], "");
             protocolType_ = FieldHelper::getString(row["protocol_type"], "");
         }
@@ -380,12 +395,12 @@ private:
     Task<void> persistCreate(TransactionGuard& tx) {
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO device (name, device_code, link_id, protocol_config_id,
-                               status, online_timeout, remote_control, remark, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+                               status, online_timeout, remote_control, modbus_mode, remark, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
         )", {
             name_, deviceCode_, std::to_string(linkId_), std::to_string(protocolConfigId_),
             status_, std::to_string(onlineTimeout_), remoteControl_ ? "true" : "false",
-            remark_, TimestampHelper::now()
+            modbusMode_, remark_, TimestampHelper::now()
         });
 
         setId(FieldHelper::getInt(result[0]["id"]));
@@ -396,12 +411,12 @@ private:
         co_await tx.execSqlCoro(R"(
             UPDATE device
             SET name = ?, device_code = ?, link_id = ?, protocol_config_id = ?,
-                status = ?, online_timeout = ?, remote_control = ?, remark = ?, updated_at = ?
+                status = ?, online_timeout = ?, remote_control = ?, modbus_mode = ?, remark = ?, updated_at = ?
             WHERE id = ?
         )", {
             name_, deviceCode_, std::to_string(linkId_), std::to_string(protocolConfigId_),
             status_, std::to_string(onlineTimeout_), remoteControl_ ? "true" : "false",
-            remark_, TimestampHelper::now(), std::to_string(id())
+            modbusMode_, remark_, TimestampHelper::now(), std::to_string(id())
         });
 
         raiseEvent<DeviceUpdated>(id());

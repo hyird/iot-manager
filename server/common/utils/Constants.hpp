@@ -70,8 +70,14 @@ inline constexpr const char* LINK_MODE_TCP_CLIENT = "TCP Client";
 /** SL651 协议 */
 inline constexpr const char* PROTOCOL_SL651 = "SL651";
 
-/** MODBUS 协议 */
+/** Modbus 协议（通用寄存器配置） */
 inline constexpr const char* PROTOCOL_MODBUS = "MODBUS";
+
+/** Modbus TCP 协议 */
+inline constexpr const char* PROTOCOL_MODBUS_TCP = "Modbus TCP";
+
+/** Modbus RTU 协议（通过 TCP 转发）*/
+inline constexpr const char* PROTOCOL_MODBUS_RTU = "Modbus RTU";
 
 // ==================== 用户状态 ====================
 

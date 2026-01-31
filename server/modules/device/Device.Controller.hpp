@@ -157,21 +157,12 @@ public:
             co_return Response::badRequest("必须指定时间范围");
         }
 
-        // ETag = 参数哈希 + 设备数据版本号
-        // 相同参数 + 相同版本号 = 304，不同参数或版本变化 = 重新获取
-        std::string paramStr = code + ":" + funcCode + ":" + dataType + ":" +
-                               startTime + ":" + endTime + ":" +
-                               std::to_string(page) + ":" + std::to_string(pageSize);
-        size_t paramHash = std::hash<std::string>{}(paramStr);
-        std::string version = ResourceVersion::instance().getVersion("device");
-        std::string etag = "\"" + std::to_string(paramHash) + "-" + version + "\"";
-
-        // 检查 If-None-Match
-        std::string ifNoneMatch = req->getHeader("If-None-Match");
-        if (!ifNoneMatch.empty() && ifNoneMatch == etag) {
-            auto resp = HttpResponse::newHttpResponse();
-            resp->setStatusCode(k304NotModified);
-            co_return resp;
+        // 参数化 ETag 检查
+        std::string params = code + ":" + funcCode + ":" + dataType + ":" +
+                             startTime + ":" + endTime + ":" +
+                             std::to_string(page) + ":" + std::to_string(pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "device", params)) {
+            co_return notModified;
         }
 
         auto queryResult = co_await service_.queryHistory(
@@ -186,7 +177,7 @@ public:
         result["pageSize"] = pageSize;
 
         auto resp = Response::ok(result);
-        resp->addHeader("ETag", etag);
+        ETagUtils::addParamETag(resp, "device", params);
         co_return resp;
     }
 

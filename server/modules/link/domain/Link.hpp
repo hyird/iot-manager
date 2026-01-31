@@ -99,7 +99,7 @@ public:
     static Task<Json::Value> options() {
         DatabaseService db;
         auto result = co_await db.execSqlCoro(
-            "SELECT id, name, mode, ip, port FROM link WHERE deleted_at IS NULL ORDER BY name ASC"
+            "SELECT id, name, mode, protocol, ip, port FROM link WHERE deleted_at IS NULL ORDER BY name ASC"
         );
 
         Json::Value items(Json::arrayValue);
@@ -108,6 +108,7 @@ public:
             item["id"] = FieldHelper::getInt(row["id"]);
             item["name"] = FieldHelper::getString(row["name"]);
             item["mode"] = FieldHelper::getString(row["mode"]);
+            item["protocol"] = FieldHelper::getString(row["protocol"], "SL651");
             item["ip"] = FieldHelper::getString(row["ip"]);
             item["port"] = FieldHelper::getInt(row["port"]);
             items.append(item);
@@ -196,6 +197,10 @@ public:
             markDirty();
             needReload_ = true;
         }
+        if (data.isMember("protocol")) {
+            protocol_ = data["protocol"].asString();
+            markDirty();
+        }
         if (data.isMember("ip")) {
             ip_ = data["ip"].asString();
             markDirty();
@@ -226,6 +231,7 @@ public:
 
     const std::string& name() const { return name_; }
     const std::string& mode() const { return mode_; }
+    const std::string& protocol() const { return protocol_; }
     const std::string& ip() const { return ip_; }
     int port() const { return port_; }
     const std::string& status() const { return status_; }
@@ -244,6 +250,7 @@ public:
         json["id"] = id();
         json["name"] = name_;
         json["mode"] = mode_;
+        json["protocol"] = protocol_;
         json["ip"] = ip_;
         json["port"] = port_;
         json["status"] = status_;
@@ -274,6 +281,7 @@ private:
     // 链路基本字段
     std::string name_;
     std::string mode_;
+    std::string protocol_ = "SL651";
     std::string ip_;
     int port_ = 0;
     std::string status_ = "enabled";
@@ -291,6 +299,7 @@ private:
     void applyCreate(const Json::Value& data) {
         name_ = data.get("name", "").asString();
         mode_ = data.get("mode", "").asString();
+        protocol_ = data.get("protocol", "SL651").asString();
         ip_ = data.get("ip", "").asString();
         port_ = data.get("port", 0).asInt();
         status_ = data.get("status", "enabled").asString();
@@ -315,6 +324,7 @@ private:
         setId(FieldHelper::getInt(row["id"]));
         name_ = FieldHelper::getString(row["name"]);
         mode_ = FieldHelper::getString(row["mode"]);
+        protocol_ = FieldHelper::getString(row["protocol"], "SL651");
         ip_ = FieldHelper::getString(row["ip"]);
         port_ = FieldHelper::getInt(row["port"]);
         status_ = FieldHelper::getString(row["status"], "enabled");
@@ -346,10 +356,10 @@ private:
 
     Task<void> persistCreate(TransactionGuard& tx) {
         auto result = co_await tx.execSqlCoro(R"(
-            INSERT INTO link (name, mode, ip, port, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?) RETURNING id
+            INSERT INTO link (name, mode, protocol, ip, port, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id
         )", {
-            name_, mode_, ip_, std::to_string(port_), status_, TimestampHelper::now()
+            name_, mode_, protocol_, ip_, std::to_string(port_), status_, TimestampHelper::now()
         });
 
         setId(FieldHelper::getInt(result[0]["id"]));
@@ -365,10 +375,10 @@ private:
     Task<void> persistUpdate(TransactionGuard& tx) {
         co_await tx.execSqlCoro(R"(
             UPDATE link
-            SET name = ?, mode = ?, ip = ?, port = ?, status = ?, updated_at = ?
+            SET name = ?, mode = ?, protocol = ?, ip = ?, port = ?, status = ?, updated_at = ?
             WHERE id = ?
         )", {
-            name_, mode_, ip_, std::to_string(port_), status_,
+            name_, mode_, protocol_, ip_, std::to_string(port_), status_,
             TimestampHelper::now(), std::to_string(id())
         });
 

@@ -129,10 +129,26 @@ private:
 
 /**
  * @brief ETag 工具函数（供 Controller 使用）
+ *
+ * 支持两种模式：
+ * 1. 简单模式：只基于资源版本号（适用于无参数的列表接口）
+ * 2. 参数化模式：基于参数哈希 + 资源版本号（适用于带查询参数的接口）
  */
 namespace ETagUtils {
     /**
-     * @brief 检查并处理 ETag（在 Controller 方法开头调用）
+     * @brief 生成参数化 ETag
+     * @param resourceKey 资源 key
+     * @param params 查询参数（会被哈希）
+     * @return ETag 字符串（带引号）
+     */
+    inline std::string makeParamETag(const std::string& resourceKey, const std::string& params) {
+        size_t paramHash = std::hash<std::string>{}(params);
+        std::string version = ResourceVersion::instance().getVersion(resourceKey);
+        return "\"" + std::to_string(paramHash) + "-" + version + "\"";
+    }
+
+    /**
+     * @brief 检查并处理 ETag（简单模式，在 Controller 方法开头调用）
      * @return 如果返回非空响应，直接返回该响应（304）；否则继续执行业务逻辑
      */
     inline HttpResponsePtr checkETag(const HttpRequestPtr& req, const std::string& resourceKey) {
@@ -149,9 +165,43 @@ namespace ETagUtils {
     }
 
     /**
-     * @brief 为响应添加 ETag header
+     * @brief 检查并处理参数化 ETag（在 Controller 方法开头调用）
+     * @param req HTTP 请求
+     * @param resourceKey 资源 key
+     * @param params 查询参数字符串
+     * @return 如果返回非空响应，直接返回该响应（304）；否则继续执行业务逻辑
+     */
+    inline HttpResponsePtr checkParamETag(const HttpRequestPtr& req,
+                                          const std::string& resourceKey,
+                                          const std::string& params) {
+        if (req->method() != Get) return nullptr;
+
+        std::string ifNoneMatch = req->getHeader("If-None-Match");
+        if (ifNoneMatch.empty()) return nullptr;
+
+        std::string etag = makeParamETag(resourceKey, params);
+        if (ifNoneMatch == etag) {
+            LOG_DEBUG << "[ETag] 304 for " << req->path() << " (parameterized)";
+            auto resp = HttpResponse::newHttpResponse();
+            resp->setStatusCode(k304NotModified);
+            return resp;
+        }
+        return nullptr;
+    }
+
+    /**
+     * @brief 为响应添加 ETag header（简单模式）
      */
     inline void addETag(const HttpResponsePtr& resp, const std::string& resourceKey) {
         resp->addHeader("ETag", ResourceVersion::instance().makeETag(resourceKey));
+    }
+
+    /**
+     * @brief 为响应添加参数化 ETag header
+     */
+    inline void addParamETag(const HttpResponsePtr& resp,
+                             const std::string& resourceKey,
+                             const std::string& params) {
+        resp->addHeader("ETag", makeParamETag(resourceKey, params));
     }
 }

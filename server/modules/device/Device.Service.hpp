@@ -5,6 +5,7 @@
 #include <chrono>
 #include <ctime>
 #include "domain/Device.hpp"
+#include "DeviceDataTransformer.hpp"
 #include "common/database/DatabaseService.hpp"
 #include "common/database/IotDataService.hpp"
 #include "common/cache/DeviceCache.hpp"
@@ -15,225 +16,22 @@
 
 using namespace drogon;
 
+// 类型别名，简化代码
+using ElementData = DeviceDataTransformer::ElementData;
+
 /**
  * @brief 设备服务（领域驱动重构版）
  *
- * CRUD 操作使用领域模型，复杂查询保留原有实现。
+ * CRUD 操作使用领域模型，复杂查询使用 DeviceDataTransformer 进行数据转换。
  *
- * 对比改进前（CRUD 部分）：
- * - 改进前：~200 行
- * - 改进后：~70 行
+ * 职责划分：
+ * - DeviceService: 业务逻辑协调、数据库查询
+ * - DeviceDataTransformer: 数据格式转换（单一职责）
+ * - Device（领域模型）: CRUD 业务规则
  */
 class DeviceService {
 private:
     DatabaseService dbService_;
-
-    // ==================== 公共数据结构 ====================
-
-    /**
-     * @brief 实时要素数据（用于解析和合并多功能码数据）
-     */
-    struct ElementData {
-        std::string name;
-        Json::Value value;
-        std::string unit;
-        std::string reportTime;
-    };
-
-    // ==================== 私有辅助方法 ====================
-
-    /**
-     * @brief 从完整键名提取 guideHex
-     * 例如："34_F1F1" -> "F1F1"
-     */
-    static std::string extractGuideHex(const std::string& fullKey) {
-        size_t pos = fullKey.find('_');
-        return (pos != std::string::npos) ? fullKey.substr(pos + 1) : fullKey;
-    }
-
-    /**
-     * @brief 解析实时数据值（从多个功能码数据中提取最新值）
-     * @param funcDataMap 功能码 -> {数据对象, 上报时间}
-     * @return guideHex -> ElementData
-     */
-    static std::map<std::string, ElementData> parseRealtimeValues(
-        const std::map<std::string, std::pair<Json::Value, std::string>>& funcDataMap
-    ) {
-        std::map<std::string, ElementData> realtimeValues;
-
-        for (const auto& [funcCode, dataPair] : funcDataMap) {
-            const auto& dataObj = dataPair.first;
-            const auto& reportTime = dataPair.second;
-
-            if (!dataObj.isMember("data") || !dataObj["data"].isObject()) continue;
-
-            const auto& elementsObj = dataObj["data"];
-            for (const auto& fullKey : elementsObj.getMemberNames()) {
-                const auto& elemData = elementsObj[fullKey];
-                std::string guideHex = extractGuideHex(fullKey);
-
-                auto it = realtimeValues.find(guideHex);
-                if (it == realtimeValues.end() || reportTime > it->second.reportTime) {
-                    realtimeValues[guideHex] = {
-                        elemData.get("name", "").asString(),
-                        elemData.get("value", Json::nullValue),
-                        elemData.get("unit", "").asString(),
-                        reportTime
-                    };
-                }
-            }
-        }
-
-        return realtimeValues;
-    }
-
-    /**
-     * @brief 检查功能是否包含 JPEG 编码的要素
-     */
-    static bool hasJpegElement(const Json::Value& func) {
-        if (!func.isMember("elements") || !func["elements"].isArray()) return false;
-        for (const auto& el : func["elements"]) {
-            if (el.get("encode", "").asString() == "JPEG") return true;
-        }
-        return false;
-    }
-
-    /**
-     * @brief 解析下行功能
-     */
-    static Json::Value parseDownFunc(const Json::Value& func) {
-        Json::Value downFunc;
-        downFunc["funcCode"] = func.get("funcCode", "").asString();
-        downFunc["name"] = func.get("name", "").asString();
-
-        Json::Value funcElements(Json::arrayValue);
-        for (const auto& el : func["elements"]) {
-            Json::Value funcEl;
-            funcEl["elementId"] = el.get("id", "").asString();
-            funcEl["name"] = el.get("name", "").asString();
-            funcEl["value"] = "";
-            std::string unit = el.get("unit", "").asString();
-            if (!unit.empty()) {
-                funcEl["unit"] = unit;
-            }
-            if (el.isMember("options") && el["options"].isArray() && !el["options"].empty()) {
-                funcEl["options"] = el["options"];
-            }
-            funcElements.append(funcEl);
-        }
-        downFunc["elements"] = funcElements;
-        return downFunc;
-    }
-
-    /**
-     * @brief 解析图片功能（不含图片数据）
-     */
-    static Json::Value parseImageFuncBase(const Json::Value& func) {
-        Json::Value imageFunc;
-        imageFunc["funcCode"] = func.get("funcCode", "").asString();
-        imageFunc["name"] = func.get("name", "").asString();
-
-        Json::Value funcElements(Json::arrayValue);
-        for (const auto& el : func["elements"]) {
-            Json::Value funcEl;
-            funcEl["elementId"] = el.get("id", "").asString();
-            funcEl["name"] = el.get("name", "").asString();
-            funcEl["encode"] = el.get("encode", "").asString();
-            std::string unit = el.get("unit", "").asString();
-            if (!unit.empty()) {
-                funcEl["unit"] = unit;
-            }
-            funcElements.append(funcEl);
-        }
-        imageFunc["elements"] = funcElements;
-        return imageFunc;
-    }
-
-    /**
-     * @brief 从功能数据中查找图片
-     */
-    static std::optional<std::string> findImageData(
-        const std::string& funcCode,
-        const std::map<std::string, Json::Value>& funcDataMap
-    ) {
-        auto it = funcDataMap.find(funcCode);
-        if (it == funcDataMap.end() || !it->second.isMember("data")) return std::nullopt;
-
-        const auto& dataObj = it->second["data"];
-        for (const auto& key : dataObj.getMemberNames()) {
-            if (dataObj[key].get("type", "").asString() == "JPEG") {
-                std::string imageData = dataObj[key].get("value", "").asString();
-                if (!imageData.empty()) return imageData;
-            }
-        }
-        return std::nullopt;
-    }
-
-    /**
-     * @brief 解析上行要素（普通数据）
-     */
-    static void parseUpElements(
-        const Json::Value& func,
-        const std::map<std::string, ElementData>& realtimeValues,
-        std::set<std::string>& addedGuideHex,
-        Json::Value& elements
-    ) {
-        for (const auto& el : func["elements"]) {
-            std::string guideHex = el.get("guideHex", "").asString();
-
-            if (addedGuideHex.count(guideHex) > 0) continue;
-            addedGuideHex.insert(guideHex);
-
-            Json::Value element;
-            element["name"] = el.get("name", "").asString();
-
-            std::string unit = el.get("unit", "").asString();
-            if (!unit.empty()) element["unit"] = unit;
-
-            std::string encode = el.get("encode", "").asString();
-            if (!encode.empty()) element["encode"] = encode;
-
-            if (encode == "DICT" && el.isMember("dictConfig")) {
-                element["dictConfig"] = el["dictConfig"];
-            }
-
-            auto it = realtimeValues.find(guideHex);
-            element["value"] = (it != realtimeValues.end()) ? it->second.value : Json::nullValue;
-
-            elements.append(element);
-        }
-    }
-
-    /**
-     * @brief 构建设备基本信息 JSON
-     */
-    static Json::Value buildDeviceBaseInfo(const DeviceCache::CachedDevice& device) {
-        Json::Value item;
-
-        // 兼容旧字段
-        item["code"] = device.deviceCode;
-        item["deviceName"] = device.name;
-        item["typeName"] = device.protocolName.empty() ? "未知协议" : device.protocolName;
-        item["linkId"] = device.linkId;
-
-        // 管理字段
-        item["id"] = device.id;
-        item["name"] = device.name;
-        item["device_code"] = device.deviceCode;
-        item["link_id"] = device.linkId;
-        item["protocol_config_id"] = device.protocolConfigId;
-        item["status"] = device.status;
-        item["online_timeout"] = device.onlineTimeout;
-        item["remote_control"] = device.remoteControl;
-        item["remark"] = device.remark;
-        item["created_at"] = device.createdAt;
-        item["link_name"] = device.linkName;
-        item["link_mode"] = device.linkMode;
-        item["protocol_name"] = device.protocolName;
-        item["protocol_type"] = device.protocolType;
-
-        return item;
-    }
 
 public:
     // ==================== CRUD 操作（领域驱动）====================
@@ -389,7 +187,7 @@ public:
         Json::Value items(Json::arrayValue);
 
         for (const auto& device : cachedDevices) {
-            Json::Value item = buildDeviceBaseInfo(device);
+            Json::Value item = DeviceDataTransformer::buildDeviceBaseInfo(device);
 
             // 实时数据时间
             item["lastHeartbeatTime"] = Json::nullValue;
@@ -403,48 +201,18 @@ public:
 
             auto deviceDataIt = deviceDataMap.find(device.id);
             if (deviceDataIt != deviceDataMap.end()) {
-                realtimeValues = parseRealtimeValues(deviceDataIt->second);
+                realtimeValues = DeviceDataTransformer::parseRealtimeValues(deviceDataIt->second);
                 for (const auto& [funcCode, dataPair] : deviceDataIt->second) {
                     funcDataMap[funcCode] = dataPair.first;
                 }
             }
 
-            // 从协议配置解析要素定义
-            Json::Value elements(Json::arrayValue);
-            Json::Value downFuncs(Json::arrayValue);
-            Json::Value imageFuncs(Json::arrayValue);
-
-            if (!device.protocolConfig.isNull() && device.protocolType == "SL651") {
-                const auto& config = device.protocolConfig;
-                if (config.isMember("funcs") && config["funcs"].isArray()) {
-                    std::set<std::string> addedGuideHex;
-
-                    for (const auto& func : config["funcs"]) {
-                        std::string dir = func.get("dir", "").asString();
-                        std::string funcCode = func.get("funcCode", "").asString();
-
-                        if (!func.isMember("elements") || !func["elements"].isArray()) continue;
-
-                        if (dir == "UP") {
-                            if (hasJpegElement(func)) {
-                                Json::Value imageFunc = parseImageFuncBase(func);
-                                // 查找图片数据
-                                auto imageData = findImageData(funcCode, funcDataMap);
-                                if (imageData) {
-                                    Json::Value latestImage;
-                                    latestImage["data"] = *imageData;
-                                    imageFunc["latestImage"] = latestImage;
-                                }
-                                imageFuncs.append(imageFunc);
-                            } else {
-                                parseUpElements(func, realtimeValues, addedGuideHex, elements);
-                            }
-                        } else if (dir == "DOWN") {
-                            downFuncs.append(parseDownFunc(func));
-                        }
-                    }
-                }
-            }
+            // 使用 Transformer 解析协议配置
+            Json::Value elements, downFuncs, imageFuncs;
+            DeviceDataTransformer::parseProtocolFuncs(
+                device, realtimeValues, funcDataMap,
+                elements, downFuncs, imageFuncs
+            );
 
             item["elements"] = elements;
             item["downFuncs"] = downFuncs;
@@ -470,28 +238,11 @@ public:
         Json::Value items(Json::arrayValue);
 
         for (const auto& device : cachedDevices) {
-            Json::Value item = buildDeviceBaseInfo(device);
+            Json::Value item = DeviceDataTransformer::buildDeviceBaseInfo(device);
 
-            // 解析协议配置生成 downFuncs 和 imageFuncs
-            Json::Value downFuncs(Json::arrayValue);
-            Json::Value imageFuncs(Json::arrayValue);
-
-            if (!device.protocolConfig.isNull() && device.protocolType == "SL651") {
-                const auto& config = device.protocolConfig;
-                if (config.isMember("funcs") && config["funcs"].isArray()) {
-                    for (const auto& func : config["funcs"]) {
-                        std::string dir = func.get("dir", "").asString();
-
-                        if (!func.isMember("elements") || !func["elements"].isArray()) continue;
-
-                        if (dir == "UP" && hasJpegElement(func)) {
-                            imageFuncs.append(parseImageFuncBase(func));
-                        } else if (dir == "DOWN") {
-                            downFuncs.append(parseDownFunc(func));
-                        }
-                    }
-                }
-            }
+            // 使用 Transformer 解析静态协议配置
+            Json::Value downFuncs, imageFuncs;
+            DeviceDataTransformer::parseProtocolFuncsStatic(device, downFuncs, imageFuncs);
 
             item["downFuncs"] = downFuncs;
             item["imageFuncs"] = imageFuncs;
@@ -560,10 +311,10 @@ public:
                     funcDataPairs[funcCode] = {funcData.data, funcData.reportTime};
                     funcDataMap[funcCode] = funcData.data;
                 }
-                realtimeValues = parseRealtimeValues(funcDataPairs);
+                realtimeValues = DeviceDataTransformer::parseRealtimeValues(funcDataPairs);
             }
 
-            // 根据协议配置构建 elements
+            // 根据协议配置构建 elements 和 image
             Json::Value elements(Json::arrayValue);
             Json::Value image = Json::nullValue;
 
@@ -580,9 +331,9 @@ public:
                             continue;
                         }
 
-                        if (hasJpegElement(func)) {
+                        if (DeviceDataTransformer::hasJpegElement(func)) {
                             // 查找图片数据
-                            auto imageData = findImageData(funcCode, funcDataMap);
+                            auto imageData = DeviceDataTransformer::findImageData(funcCode, funcDataMap);
                             if (imageData) {
                                 Json::Value latestImage;
                                 latestImage["funcCode"] = funcCode;
@@ -590,7 +341,7 @@ public:
                                 image = latestImage;
                             }
                         } else {
-                            parseUpElements(func, realtimeValues, addedGuideHex, elements);
+                            DeviceDataTransformer::parseUpElements(func, realtimeValues, addedGuideHex, elements);
                         }
                     }
                 }

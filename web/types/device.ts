@@ -8,6 +8,9 @@ import type { Link, Protocol } from "@/types";
 /** 设备状态 */
 export type DeviceStatus = "enabled" | "disabled";
 
+/** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
+export type ModbusMode = "TCP" | "RTU";
+
 /** 设备列表项 */
 export interface DeviceItem {
   id: number;
@@ -24,6 +27,8 @@ export interface DeviceItem {
   online_timeout?: number;
   /** 是否允许远控（下发指令），默认 true */
   remote_control?: boolean;
+  /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
+  modbus_mode?: ModbusMode;
   /** 备注 */
   remark?: string;
   created_at?: string;
@@ -32,6 +37,7 @@ export interface DeviceItem {
   // 关联数据（列表查询时返回）
   link_name?: string;
   link_mode?: Link.Mode;
+  link_protocol?: Link.Protocol;
   protocol_name?: string;
   protocol_type?: Protocol.Type;
 }
@@ -61,6 +67,8 @@ export interface CreateDeviceDto {
   online_timeout?: number;
   /** 是否允许远控（下发指令），默认 true */
   remote_control?: boolean;
+  /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
+  modbus_mode?: ModbusMode;
   remark?: string;
 }
 
@@ -75,6 +83,8 @@ export interface UpdateDeviceDto {
   online_timeout?: number;
   /** 是否允许远控（下发指令） */
   remote_control?: boolean;
+  /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
+  modbus_mode?: ModbusMode;
   remark?: string;
 }
 
@@ -91,12 +101,14 @@ export interface DeviceStaticData {
   status: DeviceStatus;
   online_timeout?: number;
   remote_control?: boolean;
+  modbus_mode?: ModbusMode;
   remark?: string;
   created_at?: string;
 
   // 关联信息
   link_name?: string;
   link_mode?: string;
+  link_protocol?: string;
   protocol_name?: string;
   protocol_type?: string;
 
@@ -206,10 +218,13 @@ export interface DeviceRealTimeData {
   online_timeout?: number;
   /** 是否允许远控（下发指令），默认 true */
   remote_control?: boolean;
+  /** Modbus 通信模式 */
+  modbus_mode?: ModbusMode;
   remark?: string;
   created_at?: string;
   link_name?: string;
   link_mode?: string;
+  link_protocol?: string;
   protocol_name?: string;
   protocol_type?: string;
 
@@ -299,6 +314,7 @@ export interface HistoryDataQuery {
 /** 设备模块命名空间 */
 export namespace Device {
   export type Status = DeviceStatus;
+  export type ModbusMode = import("./device").ModbusMode;
   export type Item = DeviceItem;
   export type Option = DeviceOption;
   export type Query = DeviceQuery;

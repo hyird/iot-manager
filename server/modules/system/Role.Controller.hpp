@@ -55,23 +55,16 @@ public:
         auto page = Pagination::fromRequest(req);
         std::string status = req->getParameter("status");
 
-        // 参数化 ETag：参数哈希 + 资源版本号
-        std::string paramStr = status + ":" + std::to_string(page.page) + ":" + std::to_string(page.pageSize);
-        size_t paramHash = std::hash<std::string>{}(paramStr);
-        std::string version = ResourceVersion::instance().getVersion("role");
-        std::string etag = "\"" + std::to_string(paramHash) + "-" + version + "\"";
-
-        std::string ifNoneMatch = req->getHeader("If-None-Match");
-        if (!ifNoneMatch.empty() && ifNoneMatch == etag) {
-            auto resp = HttpResponse::newHttpResponse();
-            resp->setStatusCode(k304NotModified);
-            co_return resp;
+        // 参数化 ETag 检查
+        std::string params = status + ":" + std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "role", params)) {
+            co_return notModified;
         }
 
         auto result = co_await service_.list(page, status);
         auto [items, total] = result;
         auto resp = Pagination::buildResponse(items, total, page.page, page.pageSize);
-        resp->addHeader("ETag", etag);
+        ETagUtils::addParamETag(resp, "role", params);
         co_return resp;
     }
 

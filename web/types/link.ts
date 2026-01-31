@@ -10,6 +10,9 @@ export type LinkStatus = "enabled" | "disabled";
 /** 链路模式 */
 export type LinkMode = "TCP Server" | "TCP Client";
 
+/** 链路协议类型 */
+export type LinkProtocol = "SL651" | "Modbus" | "Modbus TCP" | "Modbus RTU";
+
 /** 连接状态 */
 export type ConnStatus = "stopped" | "listening" | "connected" | "connecting" | "error";
 
@@ -18,6 +21,7 @@ export interface LinkItem {
   id: number;
   name: string;
   mode: LinkMode;
+  protocol: LinkProtocol;
   ip: string;
   port: number;
   status: LinkStatus;
@@ -36,6 +40,7 @@ export interface LinkOption {
   id: number;
   name: string;
   mode: LinkMode;
+  protocol: LinkProtocol;
   ip: string;
   port: number;
 }
@@ -49,6 +54,7 @@ export interface LinkQuery extends PageParams {
 export interface CreateLinkDto {
   name: string;
   mode: LinkMode;
+  protocol: LinkProtocol;
   ip: string;
   port: number;
   status?: LinkStatus;
@@ -58,18 +64,27 @@ export interface CreateLinkDto {
 export interface UpdateLinkDto {
   name?: string;
   mode?: LinkMode;
+  protocol?: LinkProtocol;
   ip?: string;
   port?: number;
   status?: LinkStatus;
+}
+
+/** 链路枚举值 */
+export interface LinkEnums {
+  modes: LinkMode[];
+  protocols: LinkProtocol[];
 }
 
 /** 链路模块命名空间 */
 export namespace Link {
   export type Status = LinkStatus;
   export type Mode = LinkMode;
+  export type Protocol = LinkProtocol;
   export type Item = LinkItem;
   export type Option = LinkOption;
   export type Query = LinkQuery;
   export type CreateDto = CreateLinkDto;
   export type UpdateDto = UpdateLinkDto;
+  export type Enums = LinkEnums;
 }

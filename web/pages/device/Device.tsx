@@ -63,6 +63,8 @@ interface DeviceFormValues {
   online_timeout?: number;
   /** 是否允许远控 */
   remote_control?: boolean;
+  /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
+  modbus_mode?: Device.ModbusMode;
   remark?: string;
 }
 
@@ -351,6 +353,7 @@ const DevicePage = () => {
       status: device.status,
       online_timeout: device.online_timeout,
       remote_control: device.remote_control,
+      modbus_mode: device.modbus_mode,
       remark: device.remark,
     });
     form.setFieldsValue({
@@ -362,6 +365,7 @@ const DevicePage = () => {
       status: device.status,
       online_timeout: device.online_timeout,
       remote_control: device.remote_control ?? true,
+      modbus_mode: device.modbus_mode,
       remark: device.remark,
     });
     setFormModalVisible(true);
@@ -479,7 +483,12 @@ const DevicePage = () => {
     return { startTime, endTime };
   };
 
-  const fetchFuncList = async (code: string, pageArg?: number, pageSizeArg?: number, autoExpand = false) => {
+  const fetchFuncList = async (
+    code: string,
+    pageArg?: number,
+    pageSizeArg?: number,
+    autoExpand = false
+  ) => {
     const prev = funcMap[code];
     const current = pageArg ?? prev?.page ?? 1;
     const size = pageSizeArg ?? prev?.pageSize ?? 10;
@@ -902,11 +911,7 @@ const DevicePage = () => {
         key: "direction",
         width: 80,
         render: (dir?: "UP" | "DOWN") =>
-          dir === "DOWN" ? (
-            <Tag color="orange">下行</Tag>
-          ) : (
-            <Tag color="green">上行</Tag>
-          ),
+          dir === "DOWN" ? <Tag color="orange">下行</Tag> : <Tag color="green">上行</Tag>,
       },
       // 只有存在下行数据时才显示发送人列
       ...(hasDownData
@@ -1469,6 +1474,29 @@ const DevicePage = () => {
                 </Select.Option>
               ))}
             </Select>
+          </Form.Item>
+          {/* Modbus 模式选择：仅当链路是 TCP Server 且协议是 Modbus 时显示 */}
+          <Form.Item noStyle dependencies={["link_id"]}>
+            {({ getFieldValue }) => {
+              const linkId = getFieldValue("link_id");
+              const selectedLink = linkOptions.find((opt) => opt.id === linkId);
+              const showModbusMode =
+                selectedLink?.mode === "TCP Server" && selectedLink?.protocol === "Modbus";
+              if (!showModbusMode) return null;
+              return (
+                <Form.Item
+                  label="Modbus 模式"
+                  name="modbus_mode"
+                  rules={[{ required: true, message: "请选择 Modbus 模式" }]}
+                  extra="TCP Server 模式下需要指定设备的 Modbus 通信模式"
+                >
+                  <Select placeholder="选择 Modbus 模式">
+                    <Select.Option value="TCP">Modbus TCP</Select.Option>
+                    <Select.Option value="RTU">Modbus RTU</Select.Option>
+                  </Select>
+                </Form.Item>
+              );
+            }}
           </Form.Item>
           <Form.Item
             label="设备编码"

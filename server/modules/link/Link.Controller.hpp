@@ -19,6 +19,14 @@ namespace {
         Constants::LINK_MODE_TCP_SERVER,
         Constants::LINK_MODE_TCP_CLIENT
     };
+
+    // 允许的链路协议类型列表
+    const std::vector<std::string> ALLOWED_LINK_PROTOCOLS = {
+        Constants::PROTOCOL_SL651,
+        Constants::PROTOCOL_MODBUS,
+        Constants::PROTOCOL_MODBUS_TCP,
+        Constants::PROTOCOL_MODBUS_RTU
+    };
 }
 
 /**
@@ -36,6 +44,7 @@ public:
     ADD_METHOD_TO(LinkController::update, "/api/link/{id}", Put, "AuthFilter");
     ADD_METHOD_TO(LinkController::remove, "/api/link/{id}", Delete, "AuthFilter");
     ADD_METHOD_TO(LinkController::options, "/api/link/options", Get, "AuthFilter");
+    ADD_METHOD_TO(LinkController::enums, "/api/link/enums", Get, "AuthFilter");
     METHOD_LIST_END
 
     /**
@@ -47,23 +56,16 @@ public:
         auto page = Pagination::fromRequest(req);
         std::string mode = req->getParameter("mode");
 
-        // 参数化 ETag：参数哈希 + 资源版本号
-        std::string paramStr = mode + ":" + std::to_string(page.page) + ":" + std::to_string(page.pageSize);
-        size_t paramHash = std::hash<std::string>{}(paramStr);
-        std::string version = ResourceVersion::instance().getVersion("link");
-        std::string etag = "\"" + std::to_string(paramHash) + "-" + version + "\"";
-
-        std::string ifNoneMatch = req->getHeader("If-None-Match");
-        if (!ifNoneMatch.empty() && ifNoneMatch == etag) {
-            auto resp = HttpResponse::newHttpResponse();
-            resp->setStatusCode(k304NotModified);
-            co_return resp;
+        // 参数化 ETag 检查
+        std::string params = mode + ":" + std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "link", params)) {
+            co_return notModified;
         }
 
         auto result = co_await service_.list(page, mode);
         auto [items, total] = result;
         auto resp = Pagination::buildResponse(items, total, page.page, page.pageSize);
-        resp->addHeader("ETag", etag);
+        ETagUtils::addParamETag(resp, "link", params);
         co_return resp;
     }
 
@@ -86,10 +88,13 @@ public:
 
         ValidatorHelper::requireNonEmptyString(*json, "name", "链路名称").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "mode", "模式").throwIfInvalid();
+        ValidatorHelper::requireNonEmptyString(*json, "protocol", "协议").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "ip", "IP地址").throwIfInvalid();
         ValidatorHelper::requirePositiveInt(*json, "port", "端口").throwIfInvalid();
         ValidatorHelper::requireInList(*json, "mode", ALLOWED_LINK_MODES,
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
+        ValidatorHelper::requireInList(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
+            "协议", "SL651、Modbus、Modbus TCP 或 Modbus RTU").throwIfInvalid();
 
         auto result = co_await service_.create(*json);
         co_return Response::ok(result, "创建成功");
@@ -106,6 +111,8 @@ public:
 
         ValidatorHelper::requireInListIfPresent(*json, "mode", ALLOWED_LINK_MODES,
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
+        ValidatorHelper::requireInListIfPresent(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
+            "协议", "SL651、Modbus、Modbus TCP 或 Modbus RTU").throwIfInvalid();
 
         co_await service_.update(id, *json);
         co_return Response::updated("更新成功");
@@ -132,6 +139,38 @@ public:
 
         auto resp = Response::ok(co_await service_.options());
         ETagUtils::addETag(resp, "link");
+        co_return resp;
+    }
+
+    /**
+     * @brief 获取链路枚举值（模式和协议列表，支持 ETag 缓存）
+     */
+    Task<HttpResponsePtr> enums(HttpRequestPtr req) {
+        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:query"});
+
+        // 静态数据，使用固定版本号的 ETag
+        if (auto notModified = ETagUtils::checkETag(req, "link_enums")) {
+            co_return notModified;
+        }
+
+        Json::Value result;
+
+        // 模式列表
+        Json::Value modes(Json::arrayValue);
+        for (const auto& mode : ALLOWED_LINK_MODES) {
+            modes.append(mode);
+        }
+        result["modes"] = modes;
+
+        // 协议列表
+        Json::Value protocols(Json::arrayValue);
+        for (const auto& protocol : ALLOWED_LINK_PROTOCOLS) {
+            protocols.append(protocol);
+        }
+        result["protocols"] = protocols;
+
+        auto resp = Response::ok(result);
+        ETagUtils::addETag(resp, "link_enums");
         co_return resp;
     }
 };

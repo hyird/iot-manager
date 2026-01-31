@@ -2,60 +2,63 @@
  * 图片预览弹窗组件
  */
 
-import React, { useImperativeHandle, useState, forwardRef } from "react";
+import { forwardRef, useImperativeHandle, useState } from "react";
 import { Modal } from "antd";
 
+type ImageMimeType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
 export interface ImagePreviewModalRef {
-  open: (base64: string, title?: string) => void;
+  open: (base64: string, title?: string, mimeType?: ImageMimeType) => void;
 }
 
 interface ImagePreviewModalProps {
   onClose?: () => void;
 }
 
-const ImagePreviewModal = forwardRef<ImagePreviewModalRef, ImagePreviewModalProps>((props, ref) => {
-  const { onClose } = props;
-  const [open, setOpen] = useState(false);
-  const [imgSrc, setImgSrc] = useState<string>("");
-  const [title, setTitle] = useState<string>("图片预览");
+const contentStyle: React.CSSProperties = {
+  textAlign: "center",
+  maxHeight: "70vh",
+  overflow: "auto",
+};
 
-  useImperativeHandle(ref, () => ({
-    open: (base64: string, t?: string) => {
-      const hasPrefix = base64.startsWith("data:image");
-      const src = hasPrefix ? base64 : `data:image/png;base64,${base64}`;
-      setImgSrc(src);
-      setTitle(t || "图片预览");
-      setOpen(true);
-    },
-  }));
+const imgStyle: React.CSSProperties = {
+  maxWidth: "100%",
+  maxHeight: "100%",
+  display: "inline-block",
+};
 
-  const handleCancel = () => {
-    setOpen(false);
-    onClose?.();
-  };
+const DEFAULT_TITLE = "图片预览";
 
-  const contentStyle: React.CSSProperties = {
-    textAlign: "center",
-    maxHeight: "70vh",
-    overflow: "auto",
-  };
+const ImagePreviewModal = forwardRef<ImagePreviewModalRef, ImagePreviewModalProps>(
+  ({ onClose }, ref) => {
+    const [open, setOpen] = useState(false);
+    const [imgSrc, setImgSrc] = useState("");
+    const [title, setTitle] = useState(DEFAULT_TITLE);
 
-  const imgStyle: React.CSSProperties = {
-    maxWidth: "100%",
-    maxHeight: "100%",
-    display: "inline-block",
-  };
+    useImperativeHandle(ref, () => ({
+      open: (base64: string, t?: string, mimeType: ImageMimeType = "image/png") => {
+        const src = base64.startsWith("data:image") ? base64 : `data:${mimeType};base64,${base64}`;
+        setImgSrc(src);
+        setTitle(t || DEFAULT_TITLE);
+        setOpen(true);
+      },
+    }));
 
-  return (
-    <Modal open={open} title={title} onCancel={handleCancel} footer={null} width={800}>
-      {imgSrc ? (
+    const handleClose = () => {
+      setOpen(false);
+      setImgSrc("");
+      onClose?.();
+    };
+
+    return (
+      <Modal open={open} title={title} onCancel={handleClose} footer={null} width={800}>
         <div style={contentStyle}>
           <img src={imgSrc} alt="preview" style={imgStyle} />
         </div>
-      ) : null}
-    </Modal>
-  );
-});
+      </Modal>
+    );
+  }
+);
 
 ImagePreviewModal.displayName = "ImagePreviewModal";
 

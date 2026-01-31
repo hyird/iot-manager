@@ -14,4 +14,6 @@ export const linkQueryKeys = {
   list: (params?: Link.Query) => [...linkKeys.lists(), params] as const,
   /** 链路选项 */
   options: () => [...linkKeys.all, "options"] as const,
+  /** 链路枚举值 */
+  enums: () => [...linkKeys.all, "enums"] as const,
 };
