@@ -113,6 +113,21 @@ registerPage({
   ],
 });
 
+// Modbus 协议配置
+registerPage({
+  component: "ModbusConfig",
+  name: "Modbus配置",
+  module: "IOT管理",
+  description: "Modbus协议设备类型、寄存器配置",
+  loader: () => import("./protocol/ModbusConfig"),
+  permissions: [
+    { code: "iot:protocol:query", name: "查询配置", action: "query" },
+    { code: "iot:protocol:add", name: "新增配置", action: "add" },
+    { code: "iot:protocol:edit", name: "编辑配置", action: "edit" },
+    { code: "iot:protocol:delete", name: "删除配置", action: "delete" },
+  ],
+});
+
 // 设备管理
 registerPage({
   component: "Device",

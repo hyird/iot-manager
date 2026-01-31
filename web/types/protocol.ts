@@ -92,20 +92,75 @@ export interface SL651Config {
   funcs: SL651Func[];
 }
 
+/** Modbus 寄存器类型 */
+export type ModbusRegisterType =
+  | "COIL" // 线圈（读01/写05/写多个15）
+  | "DISCRETE_INPUT" // 离散输入（只读02）
+  | "HOLDING_REGISTER" // 保持寄存器（读03/写06/写多个16）
+  | "INPUT_REGISTER"; // 输入寄存器（只读04）
+
+/** Modbus 数据类型 */
+export type ModbusDataType =
+  | "BOOL"
+  | "INT16"
+  | "UINT16"
+  | "INT32"
+  | "UINT32"
+  | "FLOAT32"
+  | "INT64"
+  | "UINT64"
+  | "DOUBLE"
+  | "STRING";
+
+/** Modbus 大小端 */
+export type ModbusEndian = "BIG" | "LITTLE";
+
+/** Modbus 字顺序（多寄存器时的排列顺序） */
+export type ModbusWordOrder = "HIGH_FIRST" | "LOW_FIRST";
+
+/** Modbus 字典映射项 */
+export interface ModbusDictMapItem {
+  /** 数值 */
+  key: string;
+  /** 映射文本 */
+  label: string;
+}
+
+/** Modbus 字典配置 */
+export interface ModbusDictConfig {
+  /** 映射项列表 */
+  items: ModbusDictMapItem[];
+}
+
 /** Modbus 寄存器定义 */
 export interface ModbusRegister {
-  id: number;
+  /** 唯一 ID */
+  id: string;
+  /** 寄存器名称 */
   name: string;
+  /** 寄存器类型 */
+  registerType: ModbusRegisterType;
+  /** 寄存器地址（十进制） */
   address: number;
-  funcCode: number;
-  dataType: string;
-  scale: number;
+  /** 数据类型 */
+  dataType: ModbusDataType;
+  /** 寄存器数量（根据数据类型自动计算） */
+  quantity: number;
+  /** 单位 */
   unit?: string;
+  /** 字典配置 */
+  dictConfig?: ModbusDictConfig;
+  /** 备注 */
   remark?: string;
 }
 
 /** Modbus 配置结构 */
 export interface ModbusConfig {
+  /** 大小端（设备类型级别配置） */
+  endian: ModbusEndian;
+  /** 字顺序（多寄存器时使用，设备类型级别配置） */
+  wordOrder: ModbusWordOrder;
+  /** 寄存器列表 */
   registers: ModbusRegister[];
 }
 
@@ -175,6 +230,12 @@ export namespace SL651 {
 
 /** Modbus 命名空间 */
 export namespace Modbus {
+  export type RegisterType = ModbusRegisterType;
+  export type DataType = ModbusDataType;
+  export type Endian = ModbusEndian;
+  export type WordOrder = ModbusWordOrder;
+  export type DictMapItem = ModbusDictMapItem;
+  export type DictConfig = ModbusDictConfig;
   export type Register = ModbusRegister;
   export type Config = ModbusConfig;
 }
