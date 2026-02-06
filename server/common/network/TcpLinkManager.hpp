@@ -1,9 +1,9 @@
 #pragma once
 
-#include "common/utils/Constants.hpp"
+#include "LinkState.hpp"
 
 /**
- * @brief 链路连接信息
+ * @brief 链路连接信息（JSON 序列化用）
  */
 struct LinkConnectionInfo {
     int linkId = 0;
@@ -11,21 +11,22 @@ struct LinkConnectionInfo {
     std::string mode;           // "TCP Server" / "TCP Client"
     std::string ip;
     uint16_t port = 0;
-    std::string connStatus;     // "stopped" / "listening" / "connected" / "connecting" / "error"
-    std::string errorMsg;
     int clientCount = 0;
     std::vector<std::string> clients;
     std::string lastActivity;
 
-    Json::Value toJson() const {
+    /**
+     * @brief 转换为 JSON（连接状态从状态机获取）
+     */
+    Json::Value toJson(const LinkStateMachine& fsm) const {
         Json::Value json;
         json["link_id"] = linkId;
         json["name"] = name;
         json["mode"] = mode;
         json["ip"] = ip;
         json["port"] = port;
-        json["conn_status"] = connStatus;
-        json["error_msg"] = errorMsg;
+        json["conn_status"] = fsm.stateString();
+        json["error_msg"] = fsm.errorMsg();
         json["client_count"] = clientCount;
         Json::Value clientsArr(Json::arrayValue);
         for (const auto& client : clients) {
@@ -51,13 +52,16 @@ struct LinkRuntime {
     TcpConnectionPtr clientConn;                    // Client 模式的连接
     std::set<TcpConnectionPtr> serverConns;         // Server 模式的所有客户端连接
     LinkConnectionInfo info;
+    LinkStateMachine fsm;                           // 状态机管理连接生命周期
     EventLoop* loop = nullptr;                      // 该链路使用的 EventLoop
     mutable std::mutex connMutex;                   // 保护 serverConns 和 info 的并发访问
 };
 
 /**
  * @brief TCP 链路管理器（单例）
- * 优化版：每个链路独立 EventLoop，支持 Server 广播
+ *
+ * 通过 LinkStateMachine 统一管理连接状态转换，
+ * 通过 ReconnectPolicy 实现指数退避重连。
  */
 class TcpLinkManager {
 public:
@@ -84,15 +88,13 @@ public:
             return;
         }
 
-        // 如果为 0，使用 CPU 核心数
         if (numThreads == 0) {
             numThreads = std::thread::hardware_concurrency();
             if (numThreads == 0) {
-                numThreads = 4;  // 默认 4 线程
+                numThreads = 4;
             }
         }
 
-        // 创建独立的 EventLoopThreadPool
         ioLoopPool_ = std::make_unique<EventLoopThreadPool>(numThreads, "TcpIoPool");
         ioLoopPool_->start();
 
@@ -100,9 +102,6 @@ public:
         LOG_INFO << "TcpLinkManager initialized with " << numThreads << " IO threads";
     }
 
-    /**
-     * @brief 检查是否已初始化
-     */
     bool isInitialized() const {
         return initialized_;
     }
@@ -111,19 +110,16 @@ public:
      * @brief 启动 TCP Server
      */
     void startServer(int linkId, const std::string& name, const std::string& ip, uint16_t port) {
-        // 先停止已存在的链路
         stop(linkId);
 
         auto loop = getNextLoop();
         auto addr = InetAddress(ip, port);
 #ifdef _WIN32
-        // Windows 不支持 SO_REUSEPORT，禁用以避免警告
         auto server = std::make_shared<TcpServer>(loop, addr, "LinkServer_" + std::to_string(linkId), true, false);
 #else
         auto server = std::make_shared<TcpServer>(loop, addr, "LinkServer_" + std::to_string(linkId));
 #endif
 
-        // 初始化运行时信息
         auto runtime = std::make_shared<LinkRuntime>();
         runtime->server = server;
         runtime->loop = loop;
@@ -132,10 +128,9 @@ public:
         runtime->info.mode = Constants::LINK_MODE_TCP_SERVER;
         runtime->info.ip = ip;
         runtime->info.port = port;
-        runtime->info.connStatus = "listening";
         runtime->info.lastActivity = getCurrentTime();
+        runtime->fsm.onStartServer();
 
-        // 保存运行时（需要在设置回调前，因为回调可能立即触发）
         {
             std::unique_lock lock(mutex_);
             runtimes_[linkId] = runtime;
@@ -153,16 +148,14 @@ public:
                 if (isConnected) {
                     LOG_INFO << "[Link " << linkId << "] Client connected: " << clientAddr;
                     rt->serverConns.insert(conn);
-                    updateRuntimeClientsLocked(rt);
                 } else {
                     LOG_INFO << "[Link " << linkId << "] Client disconnected: " << clientAddr;
                     rt->serverConns.erase(conn);
-                    updateRuntimeClientsLocked(rt);
                 }
+                updateRuntimeClientsLocked(rt);
                 rt->info.lastActivity = getCurrentTime();
             }
 
-            // 通知连接状态变化（在锁外调用，避免死锁）
             if (connectionCallback_) {
                 connectionCallback_(linkId, clientAddr, isConnected);
             }
@@ -184,7 +177,6 @@ public:
                 rt->info.lastActivity = getCurrentTime();
             }
 
-            // 优先使用带客户端地址的回调
             if (dataCallbackWithClient_) {
                 dataCallbackWithClient_(linkId, clientAddr, data);
             } else if (dataCallback_) {
@@ -201,12 +193,10 @@ public:
      * @brief 启动 TCP Client
      */
     void startClient(int linkId, const std::string& name, const std::string& ip, uint16_t port) {
-        // 先停止已存在的链路
         stop(linkId);
 
         auto loop = getNextLoop();
 
-        // 初始化运行时信息（在当前线程创建）
         auto runtime = std::make_shared<LinkRuntime>();
         runtime->loop = loop;
         runtime->info.linkId = linkId;
@@ -214,23 +204,21 @@ public:
         runtime->info.mode = Constants::LINK_MODE_TCP_CLIENT;
         runtime->info.ip = ip;
         runtime->info.port = port;
-        runtime->info.connStatus = "connecting";
         runtime->info.lastActivity = getCurrentTime();
+        runtime->fsm.onStartClient();
 
-        // 保存运行时
         {
             std::unique_lock lock(mutex_);
             runtimes_[linkId] = runtime;
         }
 
-        // 在 EventLoop 线程中创建 TcpClient 并设置回调
         loop->runInLoop([this, loop, linkId, name, ip, port, runtime]() {
             auto addr = InetAddress(ip, port);
             auto client = std::make_shared<TcpClient>(loop, addr, "LinkClient_" + std::to_string(linkId));
 
             runtime->client = client;
 
-            // 设置连接回调
+            // 连接回调
             client->setConnectionCallback([this, linkId, runtimeWeak = std::weak_ptr(runtime)](const TcpConnectionPtr& conn) {
                 auto rt = runtimeWeak.lock();
                 if (!rt) return;
@@ -242,28 +230,25 @@ public:
                     if (isConnected) {
                         LOG_INFO << "[Link " << linkId << "] Connected to server: " << serverAddr;
                         rt->clientConn = conn;
-                        rt->info.connStatus = "connected";
-                        rt->info.errorMsg = "";
+                        rt->fsm.onConnected();
                     } else {
                         LOG_INFO << "[Link " << linkId << "] Disconnected from server";
                         rt->clientConn.reset();
-                        rt->info.connStatus = "connecting";  // 等待重连
+                        rt->fsm.onDisconnected();
                     }
                     rt->info.lastActivity = getCurrentTime();
                 }
 
-                // 通知连接状态变化（在锁外调用，避免死锁）
                 if (connectionCallback_) {
                     connectionCallback_(linkId, serverAddr, isConnected);
                 }
 
-                // Trantor 的 Connector::restart()/retry() 在 Windows 上不可靠，需手动调度重连
                 if (!isConnected) {
                     scheduleReconnect(linkId, runtimeWeak);
                 }
             });
 
-            // 设置消息回调
+            // 消息回调
             client->setMessageCallback([this, linkId, runtimeWeak = std::weak_ptr(runtime)](const TcpConnectionPtr& conn, MsgBuffer* buf) {
                 auto rt = runtimeWeak.lock();
                 if (!rt) return;
@@ -279,7 +264,6 @@ public:
                     rt->info.lastActivity = getCurrentTime();
                 }
 
-                // 优先使用带客户端地址的回调（Client 模式传递服务器地址）
                 if (dataCallbackWithClient_) {
                     dataCallbackWithClient_(linkId, serverAddr, data);
                 } else if (dataCallback_) {
@@ -287,16 +271,16 @@ public:
                 }
             });
 
-            // 设置连接错误回调
+            // 连接错误回调
             client->setConnectionErrorCallback([this, linkId, runtimeWeak = std::weak_ptr(runtime)]() {
                 auto rt = runtimeWeak.lock();
                 if (!rt) return;
 
-                LOG_WARN << "[Link " << linkId << "] Connection failed, will retry...";
                 {
                     std::lock_guard<std::mutex> lock(rt->connMutex);
-                    rt->info.connStatus = "connecting";
-                    rt->info.errorMsg = "Connection failed, retrying...";
+                    rt->fsm.onConnectionError("Connection failed, retrying...");
+                    LOG_WARN << "[Link " << linkId << "] Connection failed (attempt "
+                             << rt->fsm.reconnectAttempts() << "), will retry...";
                 }
 
                 scheduleReconnect(linkId, runtimeWeak);
@@ -322,7 +306,11 @@ public:
             runtimes_.erase(it);
         }
 
-        // 在对应的 IO 线程中停止
+        {
+            std::lock_guard<std::mutex> lock(runtime->connMutex);
+            runtime->fsm.onStop();
+        }
+
         if (runtime->loop) {
             runtime->loop->runInLoop([runtime, linkId]() {
                 if (runtime->server) {
@@ -348,6 +336,11 @@ public:
         }
 
         for (auto& [id, runtime] : toStop) {
+            {
+                std::lock_guard<std::mutex> lock(runtime->connMutex);
+                runtime->fsm.onStop();
+            }
+
             if (runtime->loop) {
                 runtime->loop->runInLoop([runtime, id]() {
                     if (runtime->server) {
@@ -362,15 +355,11 @@ public:
             }
         }
 
-        // 等待所有停止命令执行完成
         if (ioLoopPool_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 
-    /**
-     * @brief 检查链路是否正在运行
-     */
     bool isRunning(int linkId) {
         std::shared_lock lock(mutex_);
         return runtimes_.count(linkId) > 0;
@@ -392,9 +381,8 @@ public:
             }
             runtime = it->second;
         }
-        // 加锁后安全地获取 info
         std::lock_guard<std::mutex> connLock(runtime->connMutex);
-        return runtime->info.toJson();
+        return runtime->info.toJson(runtime->fsm);
     }
 
     /**
@@ -411,7 +399,7 @@ public:
         Json::Value result(Json::arrayValue);
         for (const auto& runtime : runtimesCopy) {
             std::lock_guard<std::mutex> connLock(runtime->connMutex);
-            result.append(runtime->info.toJson());
+            result.append(runtime->info.toJson(runtime->fsm));
         }
         return result;
     }
@@ -433,33 +421,25 @@ public:
         }
     }
 
-    /**
-     * @brief 设置数据回调（不含客户端地址）
-     */
+    // ==================== 回调设置 ====================
+
     using DataCallback = std::function<void(int linkId, const std::string& data)>;
     void setDataCallback(DataCallback cb) {
         dataCallback_ = std::move(cb);
     }
 
-    /**
-     * @brief 设置数据回调（含客户端地址，用于多设备场景）
-     */
     using DataCallbackWithClient = std::function<void(int linkId, const std::string& clientAddr, const std::string& data)>;
     void setDataCallbackWithClient(DataCallbackWithClient cb) {
         dataCallbackWithClient_ = std::move(cb);
     }
 
-    /**
-     * @brief 设置连接状态回调（用于清理断开连接的设备映射）
-     */
     using ConnectionCallback = std::function<void(int linkId, const std::string& clientAddr, bool connected)>;
     void setConnectionCallback(ConnectionCallback cb) {
         connectionCallback_ = std::move(cb);
     }
 
-    /**
-     * @brief 发送数据到指定链路
-     */
+    // ==================== 数据发送 ====================
+
     bool sendData(int linkId, const std::string& data) {
         std::shared_ptr<LinkRuntime> runtime;
         {
@@ -471,14 +451,12 @@ public:
 
         std::lock_guard<std::mutex> connLock(runtime->connMutex);
 
-        // TCP Client 模式
         if (runtime->clientConn && runtime->clientConn->connected()) {
             runtime->clientConn->send(data);
             LOG_TRACE << "[Link " << linkId << "] Sent " << data.size() << "B";
             return true;
         }
 
-        // TCP Server 模式：广播给所有客户端
         if (runtime->server && !runtime->serverConns.empty()) {
             for (const auto& conn : runtime->serverConns) {
                 if (conn->connected()) {
@@ -493,9 +471,6 @@ public:
         return false;
     }
 
-    /**
-     * @brief 发送数据到指定链路的指定客户端（Server 模式）
-     */
     bool sendToClient(int linkId, const std::string& clientAddr, const std::string& data) {
         std::shared_ptr<LinkRuntime> runtime;
         {
@@ -516,10 +491,6 @@ public:
         return false;
     }
 
-    /**
-     * @brief 获取指定链路的 EventLoop（TcpIoPool 线程）
-     * 用于在链路对应的 TcpIoPool 线程上执行操作（如 Modbus 轮询定时器）
-     */
     EventLoop* getLinkLoop(int linkId) const {
         std::shared_lock lock(mutex_);
         auto it = runtimes_.find(linkId);
@@ -534,31 +505,34 @@ private:
 
     ~TcpLinkManager() {
         stopAll();
-        // 不等待线程池，让系统自然清理
-        // 避免在程序退出时阻塞
     }
 
     TcpLinkManager(const TcpLinkManager&) = delete;
     TcpLinkManager& operator=(const TcpLinkManager&) = delete;
 
     EventLoop* getNextLoop() {
-        // 如果已初始化，使用独立的 IO 线程池
         if (initialized_ && ioLoopPool_) {
             return ioLoopPool_->getNextLoop();
         }
-        // 回退到主事件循环（未初始化时）
         return drogon::app().getLoop();
     }
 
     /**
-     * @brief 调度 TCP Client 断线重连
+     * @brief 调度 TCP Client 断线重连（指数退避）
+     *
      * 安全检查：runtime 已销毁、链路已被替换、已重连成功 → 均放弃重连
      */
     void scheduleReconnect(int linkId, const std::weak_ptr<LinkRuntime>& runtimeWeak) {
         auto rt = runtimeWeak.lock();
         if (!rt || !rt->loop) return;
 
-        rt->loop->runAfter(RECONNECT_DELAY_SEC, [this, linkId, runtimeWeak]() {
+        double delay;
+        {
+            std::lock_guard<std::mutex> lock(rt->connMutex);
+            delay = rt->fsm.getReconnectDelay();
+        }
+
+        rt->loop->runAfter(delay, [this, linkId, runtimeWeak]() {
             auto rt2 = runtimeWeak.lock();
             if (!rt2) return;
 
@@ -573,14 +547,15 @@ private:
             uint16_t port;
             {
                 std::lock_guard<std::mutex> lock(rt2->connMutex);
-                if (rt2->info.connStatus == "connected") return;
+                if (rt2->fsm.state() == LinkState::Connected) return;
+                rt2->fsm.onReconnecting();
                 name = rt2->info.name;
                 ip = rt2->info.ip;
                 port = rt2->info.port;
             }
 
-            LOG_INFO << "[Link " << linkId << "] Attempting reconnection to "
-                     << ip << ":" << port;
+            LOG_INFO << "[Link " << linkId << "] Attempting reconnection (attempt "
+                     << rt2->fsm.reconnectAttempts() << ") to " << ip << ":" << port;
             startClient(linkId, name, ip, port);
         });
     }
@@ -598,17 +573,6 @@ private:
         return trantor::Date::now().toDbString();
     }
 
-    static std::string toHexString(const std::string& data) {
-        std::ostringstream oss;
-        for (unsigned char c : data) {
-            oss << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
-                << static_cast<int>(c) << " ";
-        }
-        return oss.str();
-    }
-
-    static constexpr double RECONNECT_DELAY_SEC = 2.0;  // 断线重连延迟（秒）
-
 private:
     mutable std::shared_mutex mutex_;
     std::map<int, std::shared_ptr<LinkRuntime>> runtimes_;
@@ -616,7 +580,6 @@ private:
     DataCallbackWithClient dataCallbackWithClient_;
     ConnectionCallback connectionCallback_;
 
-    // TCP 专用 IO 线程池
     std::unique_ptr<EventLoopThreadPool> ioLoopPool_;
     std::atomic<bool> initialized_{false};
 };

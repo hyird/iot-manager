@@ -101,6 +101,17 @@ inline constexpr const char* MENU_TYPE_BUTTON = "button";
 /** 超级管理员角色编码 */
 inline constexpr const char* ROLE_SUPERADMIN = "superadmin";
 
+// ==================== TCP 重连策略 ====================
+
+/** TCP Client 重连基础延迟（秒） */
+inline constexpr double RECONNECT_BASE_DELAY_SEC = 2.0;
+
+/** TCP Client 重连最大延迟（秒）- 5分钟 */
+inline constexpr double RECONNECT_MAX_DELAY_SEC = 300.0;
+
+/** 重连抖动比例（±20%） */
+inline constexpr double RECONNECT_JITTER_RATIO = 0.2;
+
 // ==================== 认证相关 ====================
 
 /** 登录失败最大次数 */
