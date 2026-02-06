@@ -4,6 +4,7 @@
 
 import type { Protocol } from "@/types";
 import { useMutationWithFeedback } from "../common";
+import { deviceKeys } from "../device/keys";
 import * as api from "./api";
 import { protocolQueryKeys } from "./keys";
 
@@ -24,7 +25,7 @@ export function useProtocolConfigSave() {
       await api.create(data as Protocol.CreateDto);
     },
     successMessage: (_, variables) => (variables.id ? "更新成功" : "创建成功"),
-    invalidateKeys: [protocolQueryKeys.all],
+    invalidateKeys: [protocolQueryKeys.all, deviceKeys.all],
   });
 }
 
@@ -34,6 +35,6 @@ export function useProtocolConfigDelete() {
     mutationFn: api.remove,
     successMessage: "删除成功",
     errorMessage: (e) => e.message || "删除失败",
-    invalidateKeys: [protocolQueryKeys.all],
+    invalidateKeys: [protocolQueryKeys.all, deviceKeys.all],
   });
 }

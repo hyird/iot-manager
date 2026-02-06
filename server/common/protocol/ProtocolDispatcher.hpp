@@ -562,7 +562,12 @@ public:
             auto* ioLoop = getNextDrogonLoop();
             ioLoop->queueInLoop([this]() {
                 drogon::async_run([this]() -> Task<> {
-                    co_await modbusHandler_->reloadDevices();
+                    try {
+                        co_await modbusHandler_->reloadDevices();
+                    } catch (const std::exception& e) {
+                        LOG_ERROR << "[ProtocolDispatcher] Failed to reload Modbus devices: "
+                                  << e.what();
+                    }
                 });
             });
         }

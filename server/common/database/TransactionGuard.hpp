@@ -127,6 +127,9 @@ public:
 
     /**
      * @brief 提交事务并执行回调
+     *
+     * 释放 Drogon Transaction 指针触发 SQL COMMIT，
+     * 确保数据库写入完成后再执行回调和后续的领域事件发布。
      */
     Task<void> commit() {
         if (committed_) {
@@ -136,28 +139,20 @@ public:
             throw std::runtime_error("Transaction already rolled back");
         }
 
-        try {
-            // 提交事务（Drogon 的事务在离开作用域时自动提交）
-            // 我们标记为已提交即可
-            committed_ = true;
+        // 释放事务指针 → Drogon Transaction 析构 → SQL COMMIT
+        transaction_.reset();
+        committed_ = true;
 
-            // 执行所有提交回调（通常是缓存清除）
-            for (const auto& callback : commitCallbacks_) {
-                try {
-                    co_await callback();
-                } catch (const std::exception& e) {
-                    LOG_ERROR << "Commit callback failed: " << e.what();
-                    // 继续执行其他回调，因为事务已提交
-                }
+        // 执行所有提交回调（通常是缓存清除）
+        for (const auto& callback : commitCallbacks_) {
+            try {
+                co_await callback();
+            } catch (const std::exception& e) {
+                LOG_ERROR << "Commit callback failed: " << e.what();
             }
-
-            LOG_DEBUG << "Transaction committed successfully";
-
-        } catch (const std::exception& e) {
-            LOG_ERROR << "Transaction commit failed: " << e.what();
-            committed_ = false;  // 恢复状态
-            throw;
         }
+
+        LOG_DEBUG << "Transaction committed successfully";
     }
 
     /**

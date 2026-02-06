@@ -75,6 +75,10 @@ public:
      */
     void shutdown() {
         stopAllPolling();
+        {
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            writeQueues_.clear();
+        }
         LOG_INFO << "[Modbus] Handler shutdown";
     }
 
@@ -84,6 +88,11 @@ public:
     Task<void> reloadDevices() {
         LOG_INFO << "[Modbus] Reloading devices...";
         stopAllPolling();
+        // 清理所有写入队列
+        {
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            writeQueues_.clear();
+        }
         // 强制刷新 DeviceCache，避免竞态返回旧数据
         co_await DeviceCache::instance().refreshCache();
         co_await loadDeviceContexts();
@@ -100,11 +109,12 @@ public:
      * @param connected 连接/断开
      */
     void onConnectionChanged(int linkId, const std::string& clientAddr, bool connected) {
-        // 连接变化时清理缓冲区：连接时清残留数据，断连时清不完整帧
+        // 连接变化时清理缓冲区和写入队列
         {
             std::lock_guard<std::mutex> lock(bufferMutex_);
             buffers_.erase(linkId);
         }
+        clearWriteQueuesForLink(linkId);
 
         if (connected) {
             LOG_INFO << "[Modbus] Link " << linkId << " connected, starting poll";
@@ -167,13 +177,23 @@ public:
             ctx = it->second;
         }
 
-        WriteResult result;
+        // ========== 第一步：解析所有要素，按寄存器类型分组 ==========
+
+        struct WriteEntry {
+            uint16_t address;
+            uint16_t quantity;
+            std::vector<uint8_t> data;
+            RegisterType registerType;
+            double value;
+        };
+
+        std::vector<WriteEntry> coilEntries;
+        std::vector<WriteEntry> holdingEntries;
 
         for (const auto& elem : elements) {
             std::string registerId = elem.get("elementId", "").asString();
             std::string valueStr = elem.get("value", "").asString();
 
-            // 按 id 查找寄存器定义
             const RegisterDef* regDef = nullptr;
             for (const auto& reg : ctx.registers) {
                 if (reg.id == registerId) {
@@ -196,74 +216,115 @@ public:
                 continue;
             }
 
-            // 构建写请求
-            ModbusWriteRequest writeReq;
-            writeReq.slaveId = ctx.slaveId;
-            writeReq.address = regDef->address;
-            writeReq.transactionId = transactionCounter_.fetch_add(1, std::memory_order_relaxed);
+            WriteEntry entry;
+            entry.address = regDef->address;
+            entry.registerType = regDef->registerType;
+            entry.value = value;
 
             if (regDef->registerType == RegisterType::COIL) {
-                writeReq.functionCode = FuncCodes::WRITE_SINGLE_COIL;
-                writeReq.data = {static_cast<uint8_t>(value != 0 ? 0xFF : 0x00), 0x00};
+                entry.quantity = 1;
+                entry.data = {static_cast<uint8_t>(value != 0 ? 0xFF : 0x00), 0x00};
+                coilEntries.push_back(std::move(entry));
             } else {
-                // HOLDING_REGISTER
-                writeReq.data = ModbusUtils::encodeValue(value, regDef->dataType, ctx.byteOrder);
-                writeReq.quantity = dataTypeToQuantity(regDef->dataType);
-                if (writeReq.quantity == 1) {
-                    writeReq.functionCode = FuncCodes::WRITE_SINGLE_REGISTER;
-                } else {
-                    writeReq.functionCode = FuncCodes::WRITE_MULTIPLE_REGISTERS;
-                }
-            }
-
-            auto frame = ModbusUtils::buildWriteRequest(ctx.frameMode, writeReq);
-
-            // 发送
-            bool sent = false;
-            if (ctx.linkMode == Constants::LINK_MODE_TCP_CLIENT) {
-                std::string data(frame.begin(), frame.end());
-                sent = TcpLinkManager::instance().sendData(ctx.linkId, data);
-            } else {
-                std::string connKey = "modbus_" + std::to_string(ctx.slaveId);
-                auto connOpt = DeviceConnectionCache::instance().getConnection(connKey);
-                if (connOpt) {
-                    std::string data(frame.begin(), frame.end());
-                    sent = TcpLinkManager::instance().sendToClient(connOpt->linkId, connOpt->clientAddr, data);
-                } else {
-                    LOG_WARN << "[Modbus] writeRegister: no connection for slave=" << static_cast<int>(ctx.slaveId);
-                }
-            }
-
-            if (sent) {
-                LOG_INFO << "[Modbus] Write TX: " << ctx.deviceName
-                         << " slave=" << static_cast<int>(ctx.slaveId)
-                         << " FC=" << static_cast<int>(writeReq.functionCode)
-                         << " addr=" << writeReq.address
-                         << " | " << ModbusUtils::toHexString(frame);
-
-                // 记录待应答写请求
-                std::string pendingKey = std::to_string(ctx.linkId) + ":"
-                    + std::to_string(ctx.slaveId) + ":"
-                    + std::to_string(writeReq.functionCode);
-
-                PendingWriteRequest pending;
-                pending.deviceId = ctx.deviceId;
-                pending.deviceCode = deviceCode;
-                pending.sentTime = std::chrono::steady_clock::now();
-                pending.transactionId = writeReq.transactionId;
-
-                {
-                    std::lock_guard<std::mutex> lock(pendingMutex_);
-                    pendingWriteRequests_[pendingKey].push_back(std::move(pending));
-                }
-
-                if (!result.frameHex.empty()) result.frameHex += " ";
-                result.frameHex += ModbusUtils::toHexString(frame);
-                result.sent = true;
-            } else {
-                LOG_ERROR << "[Modbus] writeRegister: send failed for " << ctx.deviceName;
+                entry.data = ModbusUtils::encodeValue(value, regDef->dataType, ctx.byteOrder);
+                entry.quantity = dataTypeToQuantity(regDef->dataType);
+                holdingEntries.push_back(std::move(entry));
             }
         }
+
+        // ========== 第二步：合并连续 HOLDING_REGISTER 写入 ==========
+
+        // 按地址排序
+        std::sort(holdingEntries.begin(), holdingEntries.end(),
+            [](const WriteEntry& a, const WriteEntry& b) { return a.address < b.address; });
+
+        // 合并连续地址段
+        struct MergedWrite {
+            uint16_t startAddress;
+            uint16_t totalQuantity;
+            std::vector<uint8_t> mergedData;
+        };
+        std::vector<MergedWrite> mergedWrites;
+
+        for (const auto& entry : holdingEntries) {
+            if (!mergedWrites.empty()) {
+                auto& last = mergedWrites.back();
+                if (entry.address == last.startAddress + last.totalQuantity) {
+                    // 地址连续，追加到当前组
+                    last.totalQuantity += entry.quantity;
+                    last.mergedData.insert(last.mergedData.end(), entry.data.begin(), entry.data.end());
+                    continue;
+                }
+            }
+            // 新的地址段
+            mergedWrites.push_back({entry.address, entry.quantity, entry.data});
+        }
+
+        // ========== 第三步：构建帧并入队（串行发送，等应答后再发下一帧） ==========
+
+        std::vector<QueuedWriteFrame> framesToQueue;
+
+        // 合并后的 HOLDING_REGISTER 写帧
+        for (const auto& mw : mergedWrites) {
+            ModbusWriteRequest writeReq;
+            writeReq.slaveId = ctx.slaveId;
+            writeReq.address = mw.startAddress;
+            writeReq.quantity = mw.totalQuantity;
+            writeReq.data = mw.mergedData;
+            writeReq.transactionId = transactionCounter_.fetch_add(1, std::memory_order_relaxed);
+            writeReq.functionCode = (mw.totalQuantity == 1)
+                ? FuncCodes::WRITE_SINGLE_REGISTER
+                : FuncCodes::WRITE_MULTIPLE_REGISTERS;
+
+            QueuedWriteFrame qf;
+            qf.frame = ModbusUtils::buildWriteRequest(ctx.frameMode, writeReq);
+            qf.functionCode = writeReq.functionCode;
+            qf.address = writeReq.address;
+            qf.transactionId = writeReq.transactionId;
+            qf.deviceCode = deviceCode;
+            qf.deviceId = ctx.deviceId;
+            qf.linkId = ctx.linkId;
+            qf.linkMode = ctx.linkMode;
+            qf.slaveId = ctx.slaveId;
+            qf.deviceName = ctx.deviceName;
+            framesToQueue.push_back(std::move(qf));
+        }
+
+        // COIL 写帧
+        for (const auto& entry : coilEntries) {
+            ModbusWriteRequest writeReq;
+            writeReq.slaveId = ctx.slaveId;
+            writeReq.address = entry.address;
+            writeReq.functionCode = FuncCodes::WRITE_SINGLE_COIL;
+            writeReq.data = entry.data;
+            writeReq.transactionId = transactionCounter_.fetch_add(1, std::memory_order_relaxed);
+
+            QueuedWriteFrame qf;
+            qf.frame = ModbusUtils::buildWriteRequest(ctx.frameMode, writeReq);
+            qf.functionCode = writeReq.functionCode;
+            qf.address = writeReq.address;
+            qf.transactionId = writeReq.transactionId;
+            qf.deviceCode = deviceCode;
+            qf.deviceId = ctx.deviceId;
+            qf.linkId = ctx.linkId;
+            qf.linkMode = ctx.linkMode;
+            qf.slaveId = ctx.slaveId;
+            qf.deviceName = ctx.deviceName;
+            framesToQueue.push_back(std::move(qf));
+        }
+
+        if (framesToQueue.empty()) return {};
+
+        // 构建返回结果（所有帧的 hex，含排队的）
+        WriteResult result;
+        result.sent = true;
+        for (const auto& qf : framesToQueue) {
+            if (!result.frameHex.empty()) result.frameHex += " ";
+            result.frameHex += ModbusUtils::toHexString(qf.frame);
+        }
+
+        // 入队并尝试发送第一帧
+        enqueueWrites(makeWriteQueueKey(ctx.linkId, ctx.slaveId), std::move(framesToQueue));
 
         return result;
     }
@@ -611,18 +672,31 @@ private:
      * @brief 为已运行的链路启动轮询（初始化/重载时调用）
      */
     void startPollingForRunningLinks() {
-        std::lock_guard<std::mutex> ctxLock(contextMutex_);
-        std::lock_guard<std::mutex> timerLock(timerMutex_);
+        std::vector<int> devicesToPoll;
+        {
+            std::lock_guard<std::mutex> ctxLock(contextMutex_);
+            std::lock_guard<std::mutex> timerLock(timerMutex_);
 
-        std::set<int> checkedLinks;
-        for (const auto& [deviceId, ctx] : deviceContexts_) {
-            if (checkedLinks.count(ctx.linkId)) continue;
-            checkedLinks.insert(ctx.linkId);
+            std::set<int> checkedLinks;
+            for (const auto& [deviceId, ctx] : deviceContexts_) {
+                if (checkedLinks.count(ctx.linkId)) continue;
+                checkedLinks.insert(ctx.linkId);
 
-            if (TcpLinkManager::instance().isRunning(ctx.linkId)) {
-                LOG_INFO << "[Modbus] Link " << ctx.linkId << " already running, starting polling";
-                startPollTimersForLink(ctx.linkId);
+                if (TcpLinkManager::instance().isRunning(ctx.linkId)) {
+                    LOG_INFO << "[Modbus] Link " << ctx.linkId << " already running, starting polling";
+                    startPollTimersForLink(ctx.linkId);
+                }
             }
+
+            // 收集已启动轮询的设备 ID
+            for (const auto& [deviceId, _] : pollTimers_) {
+                devicesToPoll.push_back(deviceId);
+            }
+        }
+
+        // 释放锁后立即轮询一次
+        for (int devId : devicesToPoll) {
+            pollDevice(devId);
         }
     }
 
@@ -630,9 +704,24 @@ private:
      * @brief 为指定链路启动轮询定时器（连接建立时调用）
      */
     void startPollingForLink(int linkId) {
-        std::lock_guard<std::mutex> ctxLock(contextMutex_);
-        std::lock_guard<std::mutex> timerLock(timerMutex_);
-        startPollTimersForLink(linkId);
+        std::vector<int> devicesToPoll;
+        {
+            std::lock_guard<std::mutex> ctxLock(contextMutex_);
+            std::lock_guard<std::mutex> timerLock(timerMutex_);
+            startPollTimersForLink(linkId);
+
+            // 收集该链路上启动轮询的设备 ID
+            for (const auto& [deviceId, ctx] : deviceContexts_) {
+                if (ctx.linkId == linkId && pollTimers_.count(deviceId)) {
+                    devicesToPoll.push_back(deviceId);
+                }
+            }
+        }
+
+        // 释放锁后立即轮询一次
+        for (int devId : devicesToPoll) {
+            pollDevice(devId);
+        }
     }
 
     /**
@@ -1129,6 +1218,164 @@ private:
         if (commandResponseCallback_) {
             commandResponseCallback_(pending.deviceCode, "MODBUS_WRITE", success, 0);
         }
+
+        // 发送队列中的下一帧
+        trySendNextWrite(linkId, response.slaveId);
+    }
+
+    // ==================== 写入队列管理 ====================
+
+    /** 队列中待发送的写帧 */
+    struct QueuedWriteFrame {
+        std::vector<uint8_t> frame;
+        uint8_t functionCode;
+        uint16_t address;
+        uint16_t transactionId;
+        std::string deviceCode;
+        int deviceId;
+        int linkId;
+        std::string linkMode;
+        uint8_t slaveId;
+        std::string deviceName;
+    };
+
+    /** 设备写入队列 */
+    struct DeviceWriteQueue {
+        std::deque<QueuedWriteFrame> frames;
+        bool sending = false;  // 是否有帧在等待应答
+    };
+
+    static std::string makeWriteQueueKey(int linkId, uint8_t slaveId) {
+        return std::to_string(linkId) + ":" + std::to_string(slaveId);
+    }
+
+    /**
+     * @brief 将帧加入写入队列，若当前无活跃写操作则立即发送第一帧
+     */
+    void enqueueWrites(const std::string& queueKey, std::vector<QueuedWriteFrame> frames) {
+        QueuedWriteFrame frameToSend;
+        bool shouldSend = false;
+
+        {
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            auto& queue = writeQueues_[queueKey];
+
+            for (auto& f : frames) {
+                queue.frames.push_back(std::move(f));
+            }
+
+            if (!queue.sending) {
+                queue.sending = true;
+                frameToSend = std::move(queue.frames.front());
+                queue.frames.pop_front();
+                shouldSend = true;
+            } else {
+                LOG_INFO << "[Modbus] Write queued: " << queue.frames.back().deviceName
+                         << " pending=" << queue.frames.size() << " frame(s)";
+            }
+        }
+
+        if (shouldSend) {
+            sendSingleWriteFrame(frameToSend);
+        }
+    }
+
+    /**
+     * @brief 发送单个写帧并注册待应答
+     */
+    void sendSingleWriteFrame(const QueuedWriteFrame& qf) {
+        bool sent = false;
+        if (qf.linkMode == Constants::LINK_MODE_TCP_CLIENT) {
+            std::string data(qf.frame.begin(), qf.frame.end());
+            sent = TcpLinkManager::instance().sendData(qf.linkId, data);
+        } else {
+            std::string connKey = "modbus_" + std::to_string(qf.slaveId);
+            auto connOpt = DeviceConnectionCache::instance().getConnection(connKey);
+            if (connOpt) {
+                std::string data(qf.frame.begin(), qf.frame.end());
+                sent = TcpLinkManager::instance().sendToClient(connOpt->linkId, connOpt->clientAddr, data);
+            } else {
+                LOG_WARN << "[Modbus] writeRegister: no connection for slave="
+                         << static_cast<int>(qf.slaveId);
+            }
+        }
+
+        if (sent) {
+            LOG_INFO << "[Modbus] Write TX: " << qf.deviceName
+                     << " slave=" << static_cast<int>(qf.slaveId)
+                     << " FC=" << static_cast<int>(qf.functionCode)
+                     << " addr=" << qf.address
+                     << " | " << ModbusUtils::toHexString(qf.frame);
+
+            std::string pendingKey = std::to_string(qf.linkId) + ":"
+                + std::to_string(qf.slaveId) + ":"
+                + std::to_string(qf.functionCode);
+
+            PendingWriteRequest pending;
+            pending.deviceId = qf.deviceId;
+            pending.deviceCode = qf.deviceCode;
+            pending.sentTime = std::chrono::steady_clock::now();
+            pending.transactionId = qf.transactionId;
+
+            {
+                std::lock_guard<std::mutex> lock(pendingMutex_);
+                pendingWriteRequests_[pendingKey].push_back(std::move(pending));
+            }
+        } else {
+            LOG_ERROR << "[Modbus] Write send failed: " << qf.deviceName
+                      << " FC=" << static_cast<int>(qf.functionCode)
+                      << " addr=" << qf.address;
+            // 发送失败，清空队列（连接可能已断开）
+            {
+                std::lock_guard<std::mutex> lock(pendingMutex_);
+                writeQueues_.erase(makeWriteQueueKey(qf.linkId, qf.slaveId));
+            }
+            if (commandResponseCallback_) {
+                commandResponseCallback_(qf.deviceCode, "MODBUS_WRITE", false, 0);
+            }
+        }
+    }
+
+    /**
+     * @brief 尝试从队列发送下一帧（写响应处理后调用）
+     */
+    void trySendNextWrite(int linkId, uint8_t slaveId) {
+        std::string queueKey = makeWriteQueueKey(linkId, slaveId);
+        QueuedWriteFrame nextFrame;
+        bool shouldSend = false;
+
+        {
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            auto it = writeQueues_.find(queueKey);
+            if (it == writeQueues_.end()) return;
+
+            if (!it->second.frames.empty()) {
+                nextFrame = std::move(it->second.frames.front());
+                it->second.frames.pop_front();
+                shouldSend = true;
+            } else {
+                writeQueues_.erase(it);
+            }
+        }
+
+        if (shouldSend) {
+            sendSingleWriteFrame(nextFrame);
+        }
+    }
+
+    /**
+     * @brief 清理指定链路的写入队列（连接断开时调用）
+     */
+    void clearWriteQueuesForLink(int linkId) {
+        std::string prefix = std::to_string(linkId) + ":";
+        std::lock_guard<std::mutex> lock(pendingMutex_);
+        for (auto it = writeQueues_.begin(); it != writeQueues_.end(); ) {
+            if (it->first.compare(0, prefix.size(), prefix) == 0) {
+                it = writeQueues_.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     // ==================== 成员变量 ====================
@@ -1172,6 +1419,9 @@ private:
 
     // 待应答写请求队列: "linkId:slaveId:fc" → FIFO queue（共用 pendingMutex_）
     std::map<std::string, std::deque<PendingWriteRequest>> pendingWriteRequests_;
+
+    // 写入队列: "linkId:slaveId" → DeviceWriteQueue（共用 pendingMutex_）
+    std::map<std::string, DeviceWriteQueue> writeQueues_;
 
     // 指令应答回调
     CommandResponseCallback commandResponseCallback_;

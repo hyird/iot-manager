@@ -117,8 +117,8 @@ public:
                    p.name as protocol_name, p.protocol as protocol_type, p.config as protocol_config,
                    l.name as link_name, l.mode as link_mode
             FROM device d
-            LEFT JOIN protocol_config p ON d.protocol_config_id = p.id
-            LEFT JOIN link l ON d.link_id = l.id
+            LEFT JOIN protocol_config p ON d.protocol_config_id = p.id AND p.deleted_at IS NULL
+            LEFT JOIN link l ON d.link_id = l.id AND l.deleted_at IS NULL
             WHERE d.deleted_at IS NULL
             ORDER BY d.id ASC
         )";
