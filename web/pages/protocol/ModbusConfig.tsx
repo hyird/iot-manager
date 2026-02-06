@@ -63,8 +63,11 @@ const ByteOrderOptions: { value: Modbus.ByteOrder; label: string }[] = [
   { value: "LITTLE_ENDIAN_BYTE_SWAP", label: "Little-endian byte swap" },
 ];
 
-/** 生成唯一 ID */
-const generateId = () => crypto.randomUUID();
+/** 生成唯一 ID（兼容非安全上下文） */
+const generateId = (): string =>
+  "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+    (+c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))).toString(16),
+  );
 
 /** 根据数据类型获取寄存器数量 */
 const getQuantityByDataType = (dataType: Modbus.DataType): number => {
@@ -282,14 +285,19 @@ const ModbusConfigPage = () => {
             className="h-full flex flex-col"
             styles={{ body: { flex: 1, overflow: "auto", padding: 16 } }}
             extra={
-              <Space>
+              <Space size={4}>
                 {canAdd && (
-                  <Button type="primary" onClick={() => deviceTypeModalRef.current?.open("create")}>
+                  <Button
+                    size="small"
+                    type="primary"
+                    onClick={() => deviceTypeModalRef.current?.open("create")}
+                  >
                     新增
                   </Button>
                 )}
                 {canEdit && (
                   <Button
+                    size="small"
                     disabled={!activeTypeId}
                     onClick={() => deviceTypeModalRef.current?.open("edit", activeType)}
                   >
@@ -302,24 +310,30 @@ const ModbusConfigPage = () => {
                     onConfirm={handleDeleteDeviceType}
                     disabled={!activeTypeId}
                   >
-                    <Button danger disabled={!activeTypeId}>
+                    <Button size="small" danger disabled={!activeTypeId}>
                       删除
                     </Button>
                   </Popconfirm>
                 )}
                 {canExport && (
-                  <Button
-                    icon={<DownloadOutlined />}
-                    disabled={!types.length}
-                    onClick={() => exportConfigs(types)}
-                  >
-                    导出
-                  </Button>
+                  <Tooltip title="导出">
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      disabled={!types.length}
+                      onClick={() => exportConfigs(types)}
+                    />
+                  </Tooltip>
                 )}
                 {canImport && (
-                  <Button icon={<UploadOutlined />} loading={importing} onClick={triggerImport}>
-                    导入
-                  </Button>
+                  <Tooltip title="导入">
+                    <Button
+                      size="small"
+                      icon={<UploadOutlined />}
+                      loading={importing}
+                      onClick={triggerImport}
+                    />
+                  </Tooltip>
                 )}
               </Space>
             }

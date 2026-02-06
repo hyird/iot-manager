@@ -325,14 +325,19 @@ const SL651ConfigPage = () => {
             className="h-full flex flex-col"
             styles={{ body: { flex: 1, overflow: "auto", padding: 16 } }}
             extra={
-              <Space>
+              <Space size={4}>
                 {canAdd && (
-                  <Button type="primary" onClick={() => deviceTypeModalRef.current?.open("create")}>
+                  <Button
+                    size="small"
+                    type="primary"
+                    onClick={() => deviceTypeModalRef.current?.open("create")}
+                  >
                     新增
                   </Button>
                 )}
                 {canEdit && (
                   <Button
+                    size="small"
                     disabled={!activeTypeId}
                     onClick={() =>
                       deviceTypeModalRef.current?.open(
@@ -350,24 +355,30 @@ const SL651ConfigPage = () => {
                     onConfirm={handleDeleteDeviceType}
                     disabled={!activeTypeId}
                   >
-                    <Button danger disabled={!activeTypeId}>
+                    <Button size="small" danger disabled={!activeTypeId}>
                       删除
                     </Button>
                   </Popconfirm>
                 )}
                 {canExport && (
-                  <Button
-                    icon={<DownloadOutlined />}
-                    disabled={!types.length}
-                    onClick={() => exportConfigs(types)}
-                  >
-                    导出
-                  </Button>
+                  <Tooltip title="导出">
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      disabled={!types.length}
+                      onClick={() => exportConfigs(types)}
+                    />
+                  </Tooltip>
                 )}
                 {canImport && (
-                  <Button icon={<UploadOutlined />} loading={importing} onClick={triggerImport}>
-                    导入
-                  </Button>
+                  <Tooltip title="导入">
+                    <Button
+                      size="small"
+                      icon={<UploadOutlined />}
+                      loading={importing}
+                      onClick={triggerImport}
+                    />
+                  </Tooltip>
                 )}
               </Space>
             }

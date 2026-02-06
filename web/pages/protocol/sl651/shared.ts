@@ -8,8 +8,11 @@ import type { SL651 } from "@/types";
 /** 编码类型列表 */
 export const EncodeList: SL651.EncodeType[] = ["BCD", "TIME_YYMMDDHHMMSS", "JPEG", "DICT", "HEX"];
 
-/** 生成唯一 ID */
-export const generateId = () => crypto.randomUUID();
+/** 生成唯一 ID（兼容非安全上下文） */
+export const generateId = (): string =>
+  "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+    (+c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))).toString(16),
+  );
 
 /** SaveMutation 类型（避免每个 Modal 重复定义） */
 export type SaveMutation = ReturnType<typeof useProtocolConfigSave>;
