@@ -66,7 +66,7 @@ const ByteOrderOptions: { value: Modbus.ByteOrder; label: string }[] = [
 /** 生成唯一 ID（兼容非安全上下文） */
 const generateId = (): string =>
   "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
-    (+c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))).toString(16),
+    (+c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))).toString(16)
   );
 
 /** 根据数据类型获取寄存器数量 */
@@ -628,10 +628,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
       let newRegisters: Modbus.Register[];
 
       if (mode === "create") {
-        newRegisters = [
-          ...(config.registers || []),
-          { id: generateId(), ...registerFields },
-        ];
+        newRegisters = [...(config.registers || []), { id: generateId(), ...registerFields }];
       } else {
         newRegisters = config.registers.map((r) =>
           r.id === current?.id ? { ...r, ...registerFields } : r
@@ -729,12 +726,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
 
           {(dataType === "FLOAT32" || dataType === "DOUBLE") && (
             <Form.Item label="小数位数" name="decimals">
-              <InputNumber
-                min={0}
-                max={8}
-                placeholder="不限制"
-                className="!w-full"
-              />
+              <InputNumber min={0} max={8} placeholder="不限制" className="!w-full" />
             </Form.Item>
           )}
 
