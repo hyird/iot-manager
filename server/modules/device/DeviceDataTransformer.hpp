@@ -221,6 +221,18 @@ public:
         item["link_mode"] = device.linkMode;
         item["protocol_name"] = device.protocolName;
         item["protocol_type"] = device.protocolType;
+        if (!device.heartbeatMode.empty() && device.heartbeatMode != "OFF") {
+            Json::Value hb;
+            hb["mode"] = device.heartbeatMode;
+            hb["content"] = device.heartbeatContent;
+            item["heartbeat"] = hb;
+        }
+        if (!device.registrationMode.empty() && device.registrationMode != "OFF") {
+            Json::Value reg;
+            reg["mode"] = device.registrationMode;
+            reg["content"] = device.registrationContent;
+            item["registration"] = reg;
+        }
 
         return item;
     }

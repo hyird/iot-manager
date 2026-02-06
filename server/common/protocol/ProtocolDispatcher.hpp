@@ -214,6 +214,16 @@ private:
             }
         }
 
+        // === 注册包拦截：配置了注册包的链路，未注册的连接不允许通过 ===
+        bool requiresRegistration = std::any_of(devices.begin(), devices.end(),
+            [](const auto* dev) { return dev->registrationMode != "OFF" && !dev->registrationBytes.empty(); });
+        if (requiresRegistration &&
+            !DeviceConnectionCache::instance().isClientRegistered(linkId, clientAddr)) {
+            LOG_WARN << "[Link " << linkId << "] Unregistered client " << clientAddr
+                     << ", dropping " << bytes.size() << "B";
+            return;
+        }
+
         // === 正常协议分发 ===
         std::string protocol = DeviceCache::instance().getProtocolByLinkIdSync(linkId);
         if (protocol.empty()) return;

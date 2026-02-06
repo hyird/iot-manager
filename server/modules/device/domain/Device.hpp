@@ -304,6 +304,12 @@ public:
         if (sid > 0) {
             json["slave_id"] = sid;
         }
+        if (protocolParams_.isMember("heartbeat")) {
+            json["heartbeat"] = protocolParams_["heartbeat"];
+        }
+        if (protocolParams_.isMember("registration")) {
+            json["registration"] = protocolParams_["registration"];
+        }
 
         // 关联信息
         json["link_name"] = linkName_;

@@ -73,6 +73,15 @@ public:
     }
 
     /**
+     * @brief 检查客户端是否已注册
+     */
+    bool isClientRegistered(int linkId, const std::string& clientAddr) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::string key = std::to_string(linkId) + ":" + clientAddr;
+        return clientDevices_.count(key) > 0;
+    }
+
+    /**
      * @brief 移除设备连接
      * @param deviceCode 设备编码
      */

@@ -29,9 +29,11 @@ public:
         std::string modbusMode;  // Modbus 模式: "TCP" / "RTU"
         // 心跳包配置（预编译为字节序列）
         std::string heartbeatMode;                // "OFF" / "HEX" / "ASCII"
+        std::string heartbeatContent;             // 原始内容字符串（用于 API 返回）
         std::vector<uint8_t> heartbeatBytes;      // 预编译的心跳内容
         // 注册包配置（预编译为字节序列）
         std::string registrationMode;             // "OFF" / "HEX" / "ASCII"
+        std::string registrationContent;          // 原始内容字符串（用于 API 返回）
         std::vector<uint8_t> registrationBytes;   // 预编译的注册内容
         std::string remark;
         std::string createdAt;
@@ -159,8 +161,9 @@ public:
                         const auto& hb = pp["heartbeat"];
                         device.heartbeatMode = hb.get("mode", "OFF").asString();
                         if (device.heartbeatMode != "OFF") {
+                            device.heartbeatContent = hb.get("content", "").asString();
                             device.heartbeatBytes = parsePacketContent(
-                                device.heartbeatMode, hb.get("content", "").asString());
+                                device.heartbeatMode, device.heartbeatContent);
                         }
                     }
 
@@ -169,8 +172,9 @@ public:
                         const auto& reg = pp["registration"];
                         device.registrationMode = reg.get("mode", "OFF").asString();
                         if (device.registrationMode != "OFF") {
+                            device.registrationContent = reg.get("content", "").asString();
                             device.registrationBytes = parsePacketContent(
-                                device.registrationMode, reg.get("content", "").asString());
+                                device.registrationMode, device.registrationContent);
                         }
                     }
                 }
