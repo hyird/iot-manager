@@ -1,4 +1,3 @@
-import { useDebounceFn } from "@/hooks";
 import {
   App,
   Button,
@@ -16,7 +15,7 @@ import type { ColumnsType, TablePaginationConfig } from "antd/es/table";
 import { useMemo, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { StatusTag } from "@/components/StatusTag";
-import { usePermission } from "@/hooks";
+import { useDebounceFn, usePermission } from "@/hooks";
 import {
   useDepartmentTreeSelect,
   useRoleOptions,

@@ -1,4 +1,3 @@
-import { useDebounceFn } from "@/hooks";
 import {
   App,
   Button,
@@ -17,8 +16,8 @@ import type { ColumnsType, TablePaginationConfig } from "antd/es/table";
 import { useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { StatusTag } from "@/components/StatusTag";
-import { usePermission } from "@/hooks";
-import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave } from "@/services";
+import { useDebounceFn, usePermission } from "@/hooks";
+import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave, usePublicIp } from "@/services";
 import type { Link } from "@/types";
 
 /** 连接状态配置 */
@@ -66,6 +65,9 @@ const LinkPage = () => {
   const { run: debouncedSearch } = useDebounceFn(doSearch, 300);
 
   // ========== 使用 Service Hooks ==========
+
+  // 服务器公网 IP
+  const { data: publicIpData } = usePublicIp({ enabled: canQuery });
 
   // 链路枚举值（模式和协议列表）
   const { data: linkEnums } = useLinkEnums({ enabled: canQuery });
@@ -259,7 +261,10 @@ const LinkPage = () => {
     <PageContainer
       header={
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-medium m-0">链路管理</h3>
+          <Space>
+            <h3 className="text-base font-medium m-0">链路管理</h3>
+            {publicIpData?.ip && <Tag color="blue">公网IP: {publicIpData.ip}</Tag>}
+          </Space>
           <Space>
             <Search
               allowClear

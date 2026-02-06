@@ -371,11 +371,7 @@ const SL651ConfigPage = () => {
                     key: String(t.id),
                     title: (
                       <Tooltip title={t.remark || "暂无备注"} placement="right">
-                        <Flex
-                          justify="space-between"
-                          align="center"
-                          className="h-8 p-1"
-                        >
+                        <Flex justify="space-between" align="center" className="h-8 p-1">
                           <Space size={4}>
                             <span>{t.name}</span>
                             <Tag color="blue">{mode}</Tag>

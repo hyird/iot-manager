@@ -11,6 +11,7 @@ const ENDPOINTS = {
   DETAIL: (id: number) => `/api/link/${id}`,
   OPTIONS: "/api/link/options",
   ENUMS: "/api/link/enums",
+  PUBLIC_IP: "/api/link/public-ip",
 } as const;
 
 /** 获取链路列表 */
@@ -46,4 +47,9 @@ export function getOptions() {
 /** 获取链路枚举值（模式和协议列表） */
 export function getEnums() {
   return request.get<Link.Enums>(ENDPOINTS.ENUMS);
+}
+
+/** 获取服务器公网 IP */
+export function getPublicIp() {
+  return request.get<{ ip: string }>(ENDPOINTS.PUBLIC_IP);
 }

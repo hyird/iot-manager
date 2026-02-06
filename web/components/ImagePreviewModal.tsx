@@ -15,7 +15,6 @@ interface ImagePreviewModalProps {
   onClose?: () => void;
 }
 
-
 const DEFAULT_TITLE = "图片预览";
 
 const ImagePreviewModal = forwardRef<ImagePreviewModalRef, ImagePreviewModalProps>(

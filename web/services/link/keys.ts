@@ -16,4 +16,6 @@ export const linkQueryKeys = {
   options: () => [...linkKeys.all, "options"] as const,
   /** 链路枚举值 */
   enums: () => [...linkKeys.all, "enums"] as const,
+  /** 服务器公网 IP */
+  publicIp: () => [...linkKeys.all, "publicIp"] as const,
 };

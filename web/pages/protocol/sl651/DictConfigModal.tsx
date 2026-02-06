@@ -205,10 +205,7 @@ const DictConfigModal = forwardRef<DictConfigModalRef, DictConfigModalProps>(
               {(fields, { add, remove }) => (
                 <>
                   {fields.map(({ key, name: itemName, ...restField }) => (
-                    <div
-                      key={key}
-                      className="mb-3 border border-gray-100 p-3 rounded"
-                    >
+                    <div key={key} className="mb-3 border border-gray-100 p-3 rounded">
                       {mapType === "BIT" ? (
                         <>
                           <Flex gap={8} align="center" wrap="nowrap">
@@ -302,14 +299,8 @@ const DictConfigModal = forwardRef<DictConfigModalRef, DictConfigModalProps>(
                                 ]) || [];
 
                               return conditions.length > 0 ? (
-                                <div
-                                  className="pl-3 border-l-2 border-gray-200 mt-2"
-                                >
-                                  <Flex
-                                    justify="space-between"
-                                    align="center"
-                                    className="mb-2"
-                                  >
+                                <div className="pl-3 border-l-2 border-gray-200 mt-2">
+                                  <Flex justify="space-between" align="center" className="mb-2">
                                     <span className="text-xs text-gray-500">依赖条件</span>
                                     <Form.Item
                                       name={[itemName, "dependsOn", "operator"]}
@@ -336,17 +327,10 @@ const DictConfigModal = forwardRef<DictConfigModalRef, DictConfigModalProps>(
                             {(condFields, { remove: removeCond }) => (
                               <>
                                 {condFields.length > 0 && (
-                                  <div
-                                    className="pl-3 border-l-2 border-gray-200 -mt-2"
-                                  >
+                                  <div className="pl-3 border-l-2 border-gray-200 -mt-2">
                                     {condFields.map(
                                       ({ key: condKey, name: condName, ...condRestField }) => (
-                                        <Flex
-                                          key={condKey}
-                                          gap={8}
-                                          align="center"
-                                          className="mb-1"
-                                        >
+                                        <Flex key={condKey} gap={8} align="center" className="mb-1">
                                           <span className="text-xs text-gray-400 w-[60px]">
                                             依赖位号
                                           </span>
@@ -364,9 +348,7 @@ const DictConfigModal = forwardRef<DictConfigModalRef, DictConfigModalProps>(
                                           >
                                             <Input size="small" placeholder="位号(0-31)" />
                                           </Form.Item>
-                                          <span className="text-xs text-gray-400">
-                                            期望值
-                                          </span>
+                                          <span className="text-xs text-gray-400">期望值</span>
                                           <Form.Item
                                             {...condRestField}
                                             name={[condName, "bitValue"]}

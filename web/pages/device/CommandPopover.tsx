@@ -119,10 +119,7 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
           const checked = selectedKeys.includes(key);
           const hasOptions = el.options && el.options.length > 0;
           return (
-            <div
-              key={key}
-              className={`mb-2 pb-2 ${hasOptions ? "border-b border-gray-100" : ""}`}
-            >
+            <div key={key} className={`mb-2 pb-2 ${hasOptions ? "border-b border-gray-100" : ""}`}>
               <Flex align="center" className={hasOptions ? "mb-1.5" : ""}>
                 <Checkbox
                   checked={checked}

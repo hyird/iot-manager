@@ -21,7 +21,6 @@ interface DeviceCardProps {
   extra?: React.ReactNode;
 }
 
-
 const DeviceCard: React.FC<DeviceCardProps> = ({
   title,
   subtitle,
@@ -68,10 +67,7 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
   }
   if (row.length > 0) rows.push(row);
 
-  const gridCols = useMemo(
-    () => ({ gridTemplateColumns: `repeat(${column}, 1fr)` }),
-    [column]
-  );
+  const gridCols = useMemo(() => ({ gridTemplateColumns: `repeat(${column}, 1fr)` }), [column]);
 
   return (
     <div className="bg-white rounded-lg px-3.5 py-3 border border-gray-200 shadow-[0_2px_8px_rgba(0,0,0,0.08)] flex flex-col gap-2.5 h-full">

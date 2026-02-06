@@ -1,6 +1,6 @@
-import { HomeOutlined } from "@ant-design/icons";
+import { CloseOutlined, HomeOutlined } from "@ant-design/icons";
 import type { MenuProps } from "antd";
-import { Dropdown, Tabs } from "antd";
+import { Button, Dropdown, Tabs, Tooltip } from "antd";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { HOME_TAB, useAuthStore, useTabsStore } from "@/store/hooks";
@@ -150,6 +150,13 @@ export default function PageTabs() {
     [tabs, activeKey, clearTabs, navigate, setTabsState, handleTabEdit]
   );
 
+  const hasClosableTabs = tabs.some((t) => t.key !== HOME_TAB.key);
+
+  const handleCloseAll = useCallback(() => {
+    clearTabs();
+    navigate(HOME_TAB.key);
+  }, [clearTabs, navigate]);
+
   const tabItems = useMemo(
     () =>
       tabs.map((tab) => ({
@@ -177,6 +184,19 @@ export default function PageTabs() {
       items={tabItems}
       size="small"
       className="page-tabs px-4 pt-2 pb-0 bg-white shrink-0"
+      tabBarExtraContent={
+        hasClosableTabs && (
+          <Tooltip title="关闭所有标签页">
+            <Button
+              type="text"
+              size="small"
+              icon={<CloseOutlined />}
+              onClick={handleCloseAll}
+              className="mr-2 text-gray-400 hover:text-gray-600"
+            />
+          </Tooltip>
+        )
+      }
     />
   );
 }

@@ -1,6 +1,5 @@
 import { PlusOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useDebounceFn } from "@/hooks";
 import {
   App,
   Button,
@@ -19,7 +18,7 @@ import type { ColumnsType } from "antd/es/table";
 import { useMemo, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { StatusTag } from "@/components/StatusTag";
-import { usePermission } from "@/hooks";
+import { useDebounceFn, usePermission } from "@/hooks";
 import { departmentApi, userApi } from "@/services";
 import type { Department, User } from "@/types";
 

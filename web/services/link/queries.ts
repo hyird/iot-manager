@@ -65,3 +65,17 @@ export function useLinkEnums(options?: Omit<UseQueryOptions<Link.Enums>, "queryK
     ...options,
   });
 }
+
+/**
+ * 获取服务器公网 IP
+ */
+export function usePublicIp(
+  options?: Omit<UseQueryOptions<{ ip: string }>, "queryKey" | "queryFn">
+) {
+  return useQuery({
+    queryKey: linkQueryKeys.publicIp(),
+    queryFn: api.getPublicIp,
+    staleTime: 5 * 60 * 1000, // 5分钟缓存
+    ...options,
+  });
+}

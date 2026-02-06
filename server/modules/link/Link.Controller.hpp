@@ -46,6 +46,7 @@ public:
     ADD_METHOD_TO(LinkController::remove, "/api/link/{id}", Delete, "AuthFilter");
     ADD_METHOD_TO(LinkController::options, "/api/link/options", Get, "AuthFilter");
     ADD_METHOD_TO(LinkController::enums, "/api/link/enums", Get, "AuthFilter");
+    ADD_METHOD_TO(LinkController::publicIp, "/api/link/public-ip", Get, "AuthFilter");
     METHOD_LIST_END
 
     /**
@@ -173,5 +174,52 @@ public:
         auto resp = Response::ok(result);
         ETagUtils::addETag(resp, "link_enums");
         co_return resp;
+    }
+
+    /**
+     * @brief 获取服务器公网 IP（缓存 5 分钟）
+     */
+    Task<HttpResponsePtr> publicIp(HttpRequestPtr req) {
+        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:query"});
+
+        static std::string cachedIp;
+        static std::chrono::steady_clock::time_point cacheTime;
+        constexpr auto CACHE_TTL = std::chrono::minutes(5);
+
+        auto now = std::chrono::steady_clock::now();
+        if (!cachedIp.empty() && (now - cacheTime) < CACHE_TTL) {
+            Json::Value data;
+            data["ip"] = cachedIp;
+            co_return Response::ok(data);
+        }
+
+        try {
+            auto client = drogon::HttpClient::newHttpClient("http://ip.sb",
+                drogon::app().getLoop());
+            client->setUserAgent("curl/8.0");
+            auto httpReq = drogon::HttpRequest::newHttpRequest();
+            httpReq->setPath("/");
+
+            auto httpResp = co_await client->sendRequestCoro(httpReq, 5.0);
+
+            if (httpResp && httpResp->getStatusCode() == drogon::k200OK) {
+                std::string ip = std::string(httpResp->getBody());
+                // 去除首尾空白
+                ip.erase(0, ip.find_first_not_of(" \t\r\n"));
+                ip.erase(ip.find_last_not_of(" \t\r\n") + 1);
+
+                cachedIp = ip;
+                cacheTime = now;
+
+                Json::Value data;
+                data["ip"] = ip;
+                co_return Response::ok(data);
+            }
+
+            co_return Response::internalError("获取公网 IP 失败");
+        } catch (const std::exception& e) {
+            LOG_ERROR << "Failed to fetch public IP: " << e.what();
+            co_return Response::internalError("获取公网 IP 失败");
+        }
     }
 };
