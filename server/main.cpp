@@ -109,8 +109,8 @@ int main() {
     // 1. 平台特定初始化
     PlatformUtils::initialize();
 
-    // 2. 初始化日志系统
-    LoggerManager::initialize("./logs/server.log");
+    // 2. 初始化日志系统（AsyncFileLogger 异步写盘 + 按日期轮转）
+    LoggerManager::initialize("./logs");
 
     // 3. 加载配置文件
     if (!ConfigManager::load()) {
@@ -120,7 +120,6 @@ int main() {
 
     // 4. 应用配置
     LoggerManager::setLogLevel(ConfigManager::getLogLevel());
-    LoggerManager::setConsoleOutput(ConfigManager::isConsoleLogEnabled());
 
     // 5. 设置全局异常处理
     AppExceptionHandler::setup();

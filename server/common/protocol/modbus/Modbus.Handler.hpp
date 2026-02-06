@@ -181,7 +181,19 @@ public:
             while (!linkBuffer.empty()) {
                 ModbusResponse response;
                 size_t consumed = ModbusUtils::parseResponse(mode, linkBuffer, response);
-                if (consumed == 0) break;
+                if (consumed == 0) {
+                    if (linkBuffer.size() > 256) {
+                        // 缓冲区堆积过多无效数据，清空防止内存泄漏
+                        LOG_ERROR << "[Modbus] Parse failed, buffer overflow (" << linkBuffer.size()
+                                  << "B), clearing | " << ModbusUtils::toHexString(linkBuffer);
+                        linkBuffer.clear();
+                    } else {
+                        LOG_ERROR << "[Modbus] Parse failed on link " << linkId
+                                  << " (" << linkBuffer.size() << "B) | "
+                                  << ModbusUtils::toHexString(linkBuffer);
+                    }
+                    break;
+                }
                 linkBuffer.erase(linkBuffer.begin(), linkBuffer.begin() + consumed);
                 parsedFrames.push_back(std::move(response));
             }

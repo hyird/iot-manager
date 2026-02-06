@@ -34,9 +34,13 @@ private:
         });
     }
 
-    /** 请求后拦截：记录请求日志 */
+    /** 请求后拦截：记录请求日志 + API 防缓存 */
     static void setupPostHandling() {
         drogon::app().registerPostHandlingAdvice([](const HttpRequestPtr &req, const HttpResponsePtr &resp) {
+            // API 响应禁止 CDN/代理缓存（ETag 需浏览器每次回源验证）
+            if (req->path().starts_with("/api/") && resp->getHeader("Cache-Control").empty()) {
+                resp->addHeader("Cache-Control", "no-cache");
+            }
             std::string username = "-";
             try {
                 username = req->attributes()->get<std::string>("username");

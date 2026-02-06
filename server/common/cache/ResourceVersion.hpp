@@ -198,7 +198,6 @@ namespace ETagUtils {
      */
     inline void addETag(const HttpResponsePtr& resp, const std::string& resourceKey) {
         resp->addHeader("ETag", ResourceVersion::instance().makeETag(resourceKey));
-        resp->addHeader("Cache-Control", "no-cache");
     }
 
     /**
@@ -208,6 +207,5 @@ namespace ETagUtils {
                              const std::string& resourceKey,
                              const std::string& params) {
         resp->addHeader("ETag", makeParamETag(resourceKey, params));
-        resp->addHeader("Cache-Control", "no-cache");
     }
 }

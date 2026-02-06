@@ -168,6 +168,9 @@ private:
         // === 全部在 TcpIoPool 线程执行，零跨线程解析 ===
         std::vector<uint8_t> bytes(data.begin(), data.end());
 
+        LOG_DEBUG << "[Link " << linkId << "] RX " << bytes.size() << "B from " << clientAddr
+                  << " | " << modbus::ModbusUtils::toHexString(bytes);
+
         if (!DeviceCache::instance().isLoaded()) {
             LOG_WARN << "[ProtocolDispatcher] DeviceCache not loaded, dropping data";
             return;

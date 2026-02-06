@@ -3,17 +3,63 @@
 namespace fs = std::filesystem;
 
 /**
- * @brief 日志管理器 - 管理文件日志和控制台输出
+ * @brief 日志管理器 - 使用 trantor::AsyncFileLogger 异步写盘 + 按日期轮转
+ *
+ * 文件命名: logs/iot-manager_YYYY-MM-DD_HHMMSS.log
+ * 轮转策略: 每天自动创建新文件 + 单文件超 100MB 时轮转
  */
 class LoggerManager {
 private:
-    static std::ofstream logFile_;
-    static std::mutex logMutex_;
-    static bool consoleEnabled_;
+    static std::unique_ptr<trantor::AsyncFileLogger> fileLogger_;
+    static std::shared_mutex loggerMutex_;
+    static std::string logDir_;
+    static std::atomic<int> currentDay_;
+    static constexpr uint64_t FILE_SIZE_LIMIT = 100 * 1024 * 1024;  // 100MB
+
+    /** 获取当天日期整数 YYYYMMDD，用于快速比较 */
+    static int todayInt() {
+        auto now = std::chrono::system_clock::now();
+        auto dp = std::chrono::floor<std::chrono::days>(now);
+        std::chrono::year_month_day ymd{dp};
+        return static_cast<int>(ymd.year()) * 10000
+             + static_cast<unsigned>(ymd.month()) * 100
+             + static_cast<unsigned>(ymd.day());
+    }
+
+    /** YYYYMMDD 整数转 "YYYY-MM-DD" 字符串 */
+    static std::string dayToStr(int day) {
+        char buf[11];
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d",
+                      day / 10000, day % 10000 / 100, day % 100);
+        return buf;
+    }
+
+    /** 创建并启动 AsyncFileLogger */
+    static std::unique_ptr<trantor::AsyncFileLogger> createLogger(int day) {
+        auto logger = std::make_unique<trantor::AsyncFileLogger>();
+        logger->setFileName(logDir_ + "/iot-manager_" + dayToStr(day));
+        logger->setFileSizeLimit(FILE_SIZE_LIMIT);
+        logger->startLogging();
+        return logger;
+    }
+
+    /** 日期变更时轮转日志文件 */
+    static void rotateDailyLog(int today) {
+        std::unique_ptr<trantor::AsyncFileLogger> oldLogger;
+        {
+            std::unique_lock lock(loggerMutex_);
+            if (today == currentDay_.load(std::memory_order_relaxed)) return;
+
+            oldLogger = std::move(fileLogger_);
+            fileLogger_ = createLogger(today);
+            currentDay_.store(today, std::memory_order_relaxed);
+        }
+        // oldLogger 在锁外析构，自动 flush 剩余数据
+    }
 
     /**
      * @brief 格式化日志消息
-     * @details 将 Drogon 原始日志格式转换为更易读的格式
+     * @details 将 trantor 原始日志格式转换为更易读的格式
      *          原始: "YYYYMMDD HH:MM:SS.microseconds ThreadID Level [func] message - file:line"
      *          目标: "YYYY-MM-DD HH:MM:SS ThreadID Level message"
      */
@@ -55,58 +101,45 @@ private:
         return logMsg;
     }
 
-    /**
-     * @brief 日志输出函数
-     */
+    /** 日志输出函数（注册到 trantor::Logger） */
     static void outputFunction(const char* msg, const uint64_t len) {
         std::string formatted = formatLogMessage(msg, len);
-        std::lock_guard<std::mutex> lock(logMutex_);
-        if (logFile_.is_open()) {
-            logFile_ << formatted;
+
+        // 检查日期轮转（原子整数比较，开销极小）
+        int today = todayInt();
+        if (today != currentDay_.load(std::memory_order_relaxed)) {
+            rotateDailyLog(today);
         }
-        if (consoleEnabled_) {
-            std::cout << formatted;
-            std::cout.flush();  // 非终端环境（systemd）下 stdout 全缓冲，需立即刷新
+
+        std::shared_lock lock(loggerMutex_);
+        if (fileLogger_) {
+            fileLogger_->output(formatted.c_str(), formatted.size());
         }
     }
 
-    /**
-     * @brief 日志刷新函数
-     */
+    /** 日志刷新函数（注册到 trantor::Logger） */
     static void flushFunction() {
-        std::lock_guard<std::mutex> lock(logMutex_);
-        if (logFile_.is_open()) {
-            logFile_.flush();
-        }
-        if (consoleEnabled_) {
-            std::cout.flush();
+        std::shared_lock lock(loggerMutex_);
+        if (fileLogger_) {
+            fileLogger_->flush();
         }
     }
 
 public:
     /**
      * @brief 初始化日志系统
-     * @param logFilePath 日志文件路径
-     * @param consoleOutput 是否输出到控制台
+     * @param logDir 日志目录路径
      */
-    static void initialize(const std::string& logFilePath, bool consoleOutput = false) {
-        // 创建日志目录
-        fs::path logPath(logFilePath);
-        if (logPath.has_parent_path()) {
-            fs::create_directories(logPath.parent_path());
-        }
+    static void initialize(const std::string& logDir) {
+        fs::create_directories(logDir);
+        logDir_ = logDir;
 
-        // 打开日志文件
-        logFile_.open(logFilePath, std::ios::app);
-        consoleEnabled_ = consoleOutput;
+        int today = todayInt();
+        currentDay_.store(today, std::memory_order_relaxed);
+        fileLogger_ = createLogger(today);
 
-        // 设置显示本地时间
         trantor::Logger::setDisplayLocalTime(true);
-
-        // 注册日志输出函数
         trantor::Logger::setOutputFunction(outputFunction, flushFunction);
-
-        // 设置默认日志级别
         trantor::Logger::setLogLevel(trantor::Logger::kInfo);
     }
 
@@ -130,24 +163,16 @@ public:
     }
 
     /**
-     * @brief 启用/禁用控制台输出
-     */
-    static void setConsoleOutput(bool enabled) {
-        consoleEnabled_ = enabled;
-    }
-
-    /**
-     * @brief 关闭日志文件
+     * @brief 关闭日志系统
      */
     static void close() {
-        std::lock_guard<std::mutex> lock(logMutex_);
-        if (logFile_.is_open()) {
-            logFile_.close();
-        }
+        std::unique_lock lock(loggerMutex_);
+        fileLogger_.reset();
     }
 };
 
 // 静态成员初始化
-std::ofstream LoggerManager::logFile_;
-std::mutex LoggerManager::logMutex_;
-bool LoggerManager::consoleEnabled_ = false;
+std::unique_ptr<trantor::AsyncFileLogger> LoggerManager::fileLogger_;
+std::shared_mutex LoggerManager::loggerMutex_;
+std::string LoggerManager::logDir_;
+std::atomic<int> LoggerManager::currentDay_{0};
