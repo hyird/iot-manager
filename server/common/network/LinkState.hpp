@@ -51,7 +51,7 @@ public:
     double getDelay() const {
         double delay = Constants::RECONNECT_BASE_DELAY_SEC
             * std::pow(2.0, static_cast<double>(attempts_));
-        delay = std::min(delay, Constants::RECONNECT_MAX_DELAY_SEC);
+        delay = (std::min)(delay, Constants::RECONNECT_MAX_DELAY_SEC);
 
         // ±20% 随机抖动
         thread_local std::mt19937 rng{std::random_device{}()};
@@ -59,7 +59,7 @@ public:
             -Constants::RECONNECT_JITTER_RATIO, Constants::RECONNECT_JITTER_RATIO);
         delay *= (1.0 + dist(rng));
 
-        return std::max(delay, Constants::RECONNECT_BASE_DELAY_SEC);
+        return (std::max)(delay, Constants::RECONNECT_BASE_DELAY_SEC);
     }
 
     /**
