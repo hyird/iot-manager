@@ -140,6 +140,28 @@ public:
     }
 
     /**
+     * @brief 清除指定设备的最新上报时间（标记为离线）
+     * 保留实时数据不变，仅清除 latest 键使设备显示为离线
+     */
+    void clearLatestTime(int deviceId) {
+        // Redis 操作必须在 Drogon IO 线程执行（可能从 TcpIoPool 线程调用）
+        drogon::app().getIOLoop(0)->queueInLoop([this, deviceId]() {
+            drogon::async_run([this, deviceId]() -> Task<void> {
+                try {
+                    RedisService redis;
+                    auto client = redis.getClient();
+                    if (!client) co_return;
+
+                    std::string key = std::string(REDIS_LATEST_PREFIX) + std::to_string(deviceId);
+                    co_await client->execCommandCoro("DEL %s", key.c_str());
+                } catch (const std::exception& e) {
+                    LOG_ERROR << "[RealtimeDataCache] clearLatestTime failed for device " << deviceId << ": " << e.what();
+                }
+            });
+        });
+    }
+
+    /**
      * @brief 清除指定设备的缓存
      */
     void invalidate(int deviceId) {

@@ -20,7 +20,7 @@ endif()
 project(iot-manager CXX)
 
 # ============== 构建选项 ==============
-option(BUILD_FRONTEND "Build and copy frontend" ON)
+option(BUILD_FRONTEND "Build and copy frontend" OFF)
 
 # C++ 标准
 set(CMAKE_CXX_STANDARD 20)

@@ -31,13 +31,7 @@ import DeviceCard from "@/components/DeviceCard";
 import ImagePreviewModal, { type ImagePreviewModalRef } from "@/components/ImagePreviewModal";
 import { PageContainer } from "@/components/PageContainer";
 import { useDebounceFn, usePermission } from "@/hooks";
-import {
-  useDeviceDelete,
-  useDeviceList,
-  useDeviceSave,
-  useLinkOptions,
-  useProtocolConfigOptions,
-} from "@/services";
+import { useDeviceDelete, useDeviceList, useDeviceSave, useLinkOptions } from "@/services";
 import type { Device } from "@/types";
 import CommandPopover from "./CommandPopover";
 import DeviceFormModal, { type DeviceFormValues } from "./DeviceFormModal";
@@ -86,7 +80,6 @@ const DevicePage = () => {
 
   const { data, isLoading, refetch } = useDeviceList({ enabled: canQuery });
   const { data: linkOptions = [] } = useLinkOptions({ enabled: canQuery });
-  const { data: protocolOptions } = useProtocolConfigOptions("SL651", { enabled: canQuery });
 
   const saveMutation = useDeviceSave();
   const deleteMutation = useDeviceDelete();
@@ -133,6 +126,7 @@ const DevicePage = () => {
       online_timeout: device.online_timeout,
       remote_control: device.remote_control,
       modbus_mode: device.modbus_mode,
+      slave_id: device.slave_id,
       timezone: device.timezone,
       remark: device.remark,
     });
@@ -526,7 +520,6 @@ const DevicePage = () => {
         editing={editing}
         loading={saveMutation.isPending}
         linkOptions={linkOptions}
-        protocolOptions={protocolOptions?.list || []}
         onCancel={() => {
           setFormModalVisible(false);
           setEditing(null);

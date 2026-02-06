@@ -3,6 +3,7 @@
 #include "SL651.Types.hpp"
 #include "SL651.Utils.hpp"
 #include "SL651.Builder.hpp"
+#include "common/protocol/ParsedResult.hpp"
 #include "common/database/DatabaseService.hpp"
 #include "common/cache/RealtimeDataCache.hpp"
 #include "common/cache/DeviceConnectionCache.hpp"
@@ -24,6 +25,8 @@ public:
     using ElementsGetter = std::function<std::vector<ElementDef>(const DeviceConfig& config, const std::string& funcCode)>;
     // 指令应答回调：设备编码, 功能码, 是否成功, 应答报文记录 ID
     using CommandResponseCallback = std::function<void(const std::string& deviceCode, const std::string& funcCode, bool success, int64_t responseId)>;
+    // 同步版本的设备配置获取器（TcpIoPool 线程使用，从缓存读取）
+    using DeviceConfigGetterSync = std::function<std::optional<DeviceConfig>(int linkId, const std::string& remoteCode)>;
 
 private:
     // 链路缓冲区
@@ -202,6 +205,465 @@ public:
             return "";
         }
     }
+
+    // ==================== 同步解析接口（TcpIoPool 线程使用） ====================
+
+    /**
+     * @brief 同步处理接收到的数据（TcpIoPool 线程调用）
+     * @return 解析结果列表，由调用方投递到 Drogon IO 线程保存
+     */
+    std::vector<ParsedFrameResult> parseDataSync(int linkId, const std::string& clientAddr,
+                                                  const std::vector<uint8_t>& data,
+                                                  const DeviceConfigGetterSync& getConfigSync) {
+        std::vector<ParsedFrameResult> results;
+        try {
+            std::vector<uint8_t> buffer;
+            {
+                std::lock_guard<std::mutex> lock(bufferMutex_);
+                auto& linkBuffer = buffers_[linkId];
+                linkBuffer.insert(linkBuffer.end(), data.begin(), data.end());
+                buffer = linkBuffer;
+            }
+
+            constexpr size_t HEADER_LEN = Constants::SL651_FRAME_HEADER_SIZE;
+
+            while (buffer.size() >= HEADER_LEN) {
+                int start = -1;
+                for (size_t i = 0; i + 1 < buffer.size(); ++i) {
+                    if (buffer[i] == 0x7E && buffer[i + 1] == 0x7E) {
+                        start = static_cast<int>(i);
+                        break;
+                    }
+                }
+
+                if (start == -1) {
+                    std::lock_guard<std::mutex> lock(bufferMutex_);
+                    buffers_[linkId].clear();
+                    break;
+                }
+
+                if (start > 0) {
+                    buffer.erase(buffer.begin(), buffer.begin() + start);
+                }
+
+                if (buffer.size() < HEADER_LEN) break;
+
+                uint16_t lenField = SL651Utils::readUInt16BE(buffer, 11);
+                uint16_t bodyLength = lenField & 0x0FFF;
+
+                if (buffer.size() < HEADER_LEN + 1) break;
+
+                size_t fullLen = 13 + 1 + bodyLength + 1 + 2;
+                if (buffer.size() < fullLen) break;
+
+                std::vector<uint8_t> frameBuf(buffer.begin(), buffer.begin() + fullLen);
+                buffer.erase(buffer.begin(), buffer.begin() + fullLen);
+
+                {
+                    std::lock_guard<std::mutex> lock(bufferMutex_);
+                    buffers_[linkId] = buffer;
+                }
+
+                auto frameResults = parseFrameSync(linkId, clientAddr, frameBuf, getConfigSync);
+                results.insert(results.end(),
+                              std::make_move_iterator(frameResults.begin()),
+                              std::make_move_iterator(frameResults.end()));
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(bufferMutex_);
+                buffers_[linkId] = buffer;
+            }
+
+        } catch (const std::exception& e) {
+            LOG_ERROR << "[SL651] parseDataSync error: " << e.what();
+        }
+        return results;
+    }
+
+private:
+    // ==================== 同步解析内部方法 ====================
+
+    /**
+     * @brief 同步解析单个帧
+     */
+    std::vector<ParsedFrameResult> parseFrameSync(int linkId, const std::string& clientAddr,
+                                                    const std::vector<uint8_t>& frame,
+                                                    const DeviceConfigGetterSync& getConfigSync) {
+        std::vector<ParsedFrameResult> results;
+        try {
+            size_t offset = 0;
+            offset += 2;
+
+            std::string centerCode = toHex(frame[offset++]);
+            std::string remoteCode = SL651Utils::readBCD(frame, offset, 5);
+            offset += 5;
+            std::string password = SL651Utils::readBCD(frame, offset, 2);
+            offset += 2;
+            std::string funcCode = toHex(frame[offset++]);
+
+            uint16_t lenField = SL651Utils::readUInt16BE(frame, offset);
+            Direction direction = (lenField & 0xF000) == 0 ? Direction::UP : Direction::DOWN;
+            uint16_t bodyLength = lenField & 0x0FFF;
+            offset += 2;
+
+            if (direction == Direction::UP && !clientAddr.empty()) {
+                DeviceConnectionCache::instance().registerConnection(remoteCode, linkId, clientAddr);
+            }
+
+            uint8_t stx = frame[offset++];
+            bool isMultiPacket = (stx == FrameControl::STX_MULTI);
+
+            int totalPk = 0, seqPk = 0;
+            uint16_t actualBodyLength = bodyLength;
+
+            if (isMultiPacket) {
+                uint8_t byte1 = frame[offset];
+                uint8_t byte2 = frame[offset + 1];
+                uint8_t byte3 = frame[offset + 2];
+                uint32_t value24 = (static_cast<uint32_t>(byte1) << 16) |
+                                   (static_cast<uint32_t>(byte2) << 8) | byte3;
+                totalPk = (value24 >> 12) & 0x0FFF;
+                seqPk = value24 & 0x0FFF;
+                offset += 3;
+                actualBodyLength = bodyLength - 3;
+            }
+
+            std::vector<uint8_t> body(frame.begin() + offset, frame.begin() + offset + actualBodyLength);
+            offset += actualBodyLength;
+
+            std::optional<std::string> serialNumber;
+            if (direction == Direction::UP && body.size() >= 2) {
+                serialNumber = SL651Utils::bufferToHex({body[0], body[1]});
+            }
+
+            uint8_t etx = frame[offset++];
+            bool isLastPacket = (etx == FrameControl::ETX_END);
+
+            uint16_t crcRecv = SL651Utils::readUInt16BE(frame, offset);
+            std::vector<uint8_t> crcData(frame.begin(), frame.end() - 2);
+            uint16_t crcCalc = SL651Utils::crc16Modbus(crcData);
+
+            Sl651Frame parsed;
+            parsed.direction = direction;
+            parsed.centerCode = centerCode;
+            parsed.remoteCode = remoteCode;
+            parsed.password = password;
+            parsed.funcCode = funcCode;
+            parsed.stx = stx;
+            parsed.etx = etx;
+            parsed.body = body;
+            parsed.crcRecv = crcRecv;
+            parsed.crcCalc = crcCalc;
+            parsed.crcValid = (crcCalc == crcRecv);
+            parsed.raw = frame;
+            parsed.isMultiPacket = isMultiPacket;
+            parsed.totalPk = totalPk;
+            parsed.seqPk = seqPk;
+            parsed.isLastPacket = isLastPacket;
+            parsed.serialNumber = serialNumber;
+
+            LOG_DEBUG << "[SL651] 帧: " << parsed.remoteCode << " | " << parsed.funcCode
+                     << " | CRC:" << (parsed.crcValid ? "OK" : "FAIL")
+                     << (isMultiPacket ? " | 多包" + std::to_string(parsed.seqPk) + "/" + std::to_string(parsed.totalPk) : "");
+
+            if (!isMultiPacket) {
+                auto configOpt = getConfigSync(linkId, parsed.remoteCode);
+                auto parsedBody = parseBodySync(parsed, configOpt);
+                if (parsedBody) {
+                    printParsedBody(*parsedBody);
+                }
+                auto result = buildFrameResult(linkId, parsed, parsedBody, configOpt);
+                if (result) {
+                    results.push_back(std::move(*result));
+                }
+            } else {
+                auto multiResults = handleMultiPacketSync(linkId, parsed, getConfigSync);
+                results.insert(results.end(),
+                              std::make_move_iterator(multiResults.begin()),
+                              std::make_move_iterator(multiResults.end()));
+            }
+
+        } catch (const std::exception& e) {
+            LOG_ERROR << "[SL651] parseFrameSync error: " << e.what();
+        }
+        return results;
+    }
+
+    /**
+     * @brief 同步解析正文数据（不涉及 DB 查询，从缓存获取配置）
+     */
+    std::optional<ParsedBody> parseBodySync(const Sl651Frame& frame,
+                                             const std::optional<DeviceConfig>& configOpt) {
+        if (!configOpt) {
+            LOG_WARN << "[SL651] parseBodySync: 无设备配置, code=" << frame.remoteCode;
+            return std::nullopt;
+        }
+
+        auto elements = getElements_(*configOpt, frame.funcCode);
+
+        if (frame.direction == Direction::UP && isDownFunc(*configOpt, frame.funcCode)) {
+            auto responseElements = getResponseElements(*configOpt, frame.funcCode);
+            if (!responseElements.empty()) {
+                LOG_DEBUG << "[SL651] 下行功能码 " << frame.funcCode << " 的上行应答，使用 responseElements 解析";
+                elements = responseElements;
+            } else if (elements.empty()) {
+                LOG_DEBUG << "[SL651] 下行功能码 " << frame.funcCode << " 的上行应答，无应答要素配置，不解析";
+                return ParsedBody{};
+            }
+        }
+
+        if (elements.empty()) {
+            LOG_WARN << "[SL651] 未找到功能码要素定义: funcCode=" << frame.funcCode;
+            return ParsedBody{};
+        }
+
+        ParsedBody result;
+        size_t offset = 0;
+
+        for (const auto& elem : elements) {
+            auto guideBytes = SL651Utils::hexToBuffer(elem.guideHex);
+            int guideIndex = SL651Utils::indexOf(frame.body, guideBytes, offset);
+
+            if (guideIndex == -1) continue;
+
+            offset = guideIndex + guideBytes.size();
+
+            if (elem.length == 0) {
+                std::vector<uint8_t> dataToEnd(frame.body.begin() + offset, frame.body.end());
+                std::string rawValue = SL651Utils::bufferToHex(dataToEnd);
+                std::string value = parseElementValue(dataToEnd, elem);
+                result.data.push_back({elem.name, elem.guideHex, rawValue, value, elem.unit, elem.id, elem.encode});
+                offset = frame.body.size();
+                break;
+            }
+
+            if (offset + elem.length > frame.body.size()) {
+                LOG_WARN << "[SL651] 数据长度不足: " << elem.name;
+                break;
+            }
+
+            std::vector<uint8_t> valueBuffer(frame.body.begin() + offset, frame.body.begin() + offset + elem.length);
+            offset += elem.length;
+
+            std::string rawValue = SL651Utils::bufferToHex(valueBuffer);
+            std::string value = parseElementValue(valueBuffer, elem);
+            result.data.push_back({elem.name, elem.guideHex, rawValue, value, elem.unit, elem.id, elem.encode});
+        }
+
+        if (offset < frame.body.size()) {
+            result.unparsed.assign(frame.body.begin() + offset, frame.body.end());
+        }
+
+        return result;
+    }
+
+    /**
+     * @brief 构建 ParsedFrameResult（单帧版本）
+     * 从 saveFrameData 提取 JSON 构建逻辑，不涉及 DB 操作
+     */
+    std::optional<ParsedFrameResult> buildFrameResult(int linkId, const Sl651Frame& frame,
+                                                       const std::optional<ParsedBody>& parsedBody,
+                                                       const std::optional<DeviceConfig>& configOpt) {
+        if (!configOpt) return std::nullopt;
+
+        ParsedFrameResult result;
+        result.deviceId = configOpt->deviceId;
+        result.linkId = linkId;
+        result.protocol = Constants::PROTOCOL_SL651;
+        result.funcCode = frame.funcCode;
+        result.reportTime = extractReportTime(frame.body);
+
+        if (!result.reportTime.empty()) {
+            result.reportTime += configOpt->timezone;
+        }
+
+        // 构建 JSONB 数据（与 saveFrameData 相同逻辑）
+        Json::Value data;
+        data["funcCode"] = frame.funcCode;
+        auto funcNameIt = configOpt->funcNames.find(frame.funcCode);
+        if (funcNameIt != configOpt->funcNames.end()) {
+            data["funcName"] = funcNameIt->second;
+        }
+        data["direction"] = directionToString(frame.direction);
+
+        Json::Value rawArr(Json::arrayValue);
+        rawArr.append(SL651Utils::bufferToHex(frame.raw));
+        data["raw"] = rawArr;
+
+        Json::Value frameMeta;
+        frameMeta["centerCode"] = frame.centerCode;
+        frameMeta["remoteCode"] = frame.remoteCode;
+        frameMeta["password"] = frame.password;
+        frameMeta["crcValid"] = frame.crcValid;
+        if (frame.serialNumber) {
+            frameMeta["serialNumber"] = *frame.serialNumber;
+        }
+        data["frame"] = frameMeta;
+
+        Json::Value dataObj(Json::objectValue);
+        if (parsedBody) {
+            for (const auto& elem : parsedBody->data) {
+                Json::Value e;
+                e["value"] = elem.value;
+                if (!elem.name.empty()) e["name"] = elem.name;
+                if (!elem.unit.empty()) e["unit"] = elem.unit;
+                e["type"] = encodeToString(elem.encode);
+                std::string key = frame.funcCode + "_" + elem.guideHex;
+                dataObj[key] = e;
+            }
+        }
+        data["data"] = dataObj;
+
+        result.data = data;
+
+        // 指令应答信息（上行帧）
+        if (frame.direction == Direction::UP) {
+            ParsedFrameResult::CommandResponse cmdResp;
+            cmdResp.deviceCode = frame.remoteCode;
+            cmdResp.funcCode = frame.funcCode;
+            cmdResp.success = (frame.funcCode != FuncCodes::ACK_ERR);
+            result.commandResponse = cmdResp;
+        }
+
+        return result;
+    }
+
+    /**
+     * @brief 同步处理多包帧
+     */
+    std::vector<ParsedFrameResult> handleMultiPacketSync(int linkId, const Sl651Frame& frame,
+                                                          const DeviceConfigGetterSync& getConfigSync) {
+        std::string sessionKey = frame.remoteCode + "_" + frame.funcCode;
+
+        cleanExpiredSessions();
+
+        MultiPacketSession* session = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(sessionMutex_);
+            auto it = multiPacketSessions_.find(sessionKey);
+            if (it == multiPacketSessions_.end() || it->second.totalPk != frame.totalPk) {
+                MultiPacketSession newSession;
+                newSession.remoteCode = frame.remoteCode;
+                newSession.funcCode = frame.funcCode;
+                newSession.totalPk = frame.totalPk;
+                newSession.startTime = std::chrono::steady_clock::now();
+                multiPacketSessions_[sessionKey] = newSession;
+            }
+            session = &multiPacketSessions_[sessionKey];
+        }
+
+        session->receivedPk.insert(frame.seqPk);
+        session->packets[frame.seqPk] = frame.body;
+        session->rawFrames[frame.seqPk] = frame.raw;
+
+        LOG_DEBUG << "[SL651] 多包缓存: " << sessionKey << " (" << session->receivedPk.size() << "/" << session->totalPk << ")";
+
+        if (static_cast<int>(session->receivedPk.size()) == session->totalPk) {
+            LOG_DEBUG << "[SL651] 多包完成: " << sessionKey << " (" << session->totalPk << "包)";
+            auto result = mergeAndBuildMultiPacketResult(linkId, *session, frame, getConfigSync);
+
+            std::lock_guard<std::mutex> lock(sessionMutex_);
+            multiPacketSessions_.erase(sessionKey);
+
+            if (result) {
+                return {std::move(*result)};
+            }
+        }
+
+        return {};
+    }
+
+    /**
+     * @brief 合并多包数据并构建 ParsedFrameResult
+     */
+    std::optional<ParsedFrameResult> mergeAndBuildMultiPacketResult(
+            int linkId, const MultiPacketSession& session, const Sl651Frame& lastFrame,
+            const DeviceConfigGetterSync& getConfigSync) {
+        try {
+            std::vector<uint8_t> mergedBody;
+            for (int i = 1; i <= session.totalPk; ++i) {
+                auto it = session.packets.find(i);
+                if (it != session.packets.end()) {
+                    mergedBody.insert(mergedBody.end(), it->second.begin(), it->second.end());
+                }
+            }
+
+            Sl651Frame virtualFrame;
+            virtualFrame.direction = Direction::UP;
+            virtualFrame.remoteCode = session.remoteCode;
+            virtualFrame.funcCode = session.funcCode;
+            virtualFrame.body = mergedBody;
+            virtualFrame.isMultiPacket = false;
+
+            auto configOpt = getConfigSync(linkId, session.remoteCode);
+            auto parsedBody = parseBodySync(virtualFrame, configOpt);
+            if (parsedBody) {
+                printParsedBody(*parsedBody);
+            }
+
+            if (!configOpt) return std::nullopt;
+
+            ParsedFrameResult result;
+            result.deviceId = configOpt->deviceId;
+            result.linkId = linkId;
+            result.protocol = Constants::PROTOCOL_SL651;
+            result.funcCode = session.funcCode;
+            result.reportTime = extractReportTime(mergedBody);
+
+            if (!result.reportTime.empty()) {
+                result.reportTime += configOpt->timezone;
+            }
+
+            Json::Value data;
+            data["funcCode"] = session.funcCode;
+            auto funcNameIt = configOpt->funcNames.find(session.funcCode);
+            if (funcNameIt != configOpt->funcNames.end()) {
+                data["funcName"] = funcNameIt->second;
+            }
+            data["direction"] = directionToString(Direction::UP);
+            data["isMultiPacket"] = true;
+            data["totalPackets"] = session.totalPk;
+
+            Json::Value frameMeta;
+            frameMeta["centerCode"] = lastFrame.centerCode;
+            frameMeta["remoteCode"] = session.remoteCode;
+            frameMeta["password"] = lastFrame.password;
+            data["frame"] = frameMeta;
+
+            Json::Value rawArr(Json::arrayValue);
+            for (int i = 1; i <= session.totalPk; ++i) {
+                auto rawIt = session.rawFrames.find(i);
+                if (rawIt != session.rawFrames.end()) {
+                    rawArr.append(SL651Utils::bufferToHex(rawIt->second));
+                }
+            }
+            data["raw"] = rawArr;
+
+            Json::Value dataObj(Json::objectValue);
+            if (parsedBody) {
+                for (const auto& elem : parsedBody->data) {
+                    Json::Value e;
+                    e["value"] = elem.value;
+                    if (!elem.name.empty()) e["name"] = elem.name;
+                    if (!elem.unit.empty()) e["unit"] = elem.unit;
+                    e["type"] = encodeToString(elem.encode);
+                    std::string key = session.funcCode + "_" + elem.guideHex;
+                    dataObj[key] = e;
+                }
+            }
+            data["data"] = dataObj;
+
+            result.data = data;
+            return result;
+
+        } catch (const std::exception& e) {
+            LOG_ERROR << "[SL651] mergeAndBuildMultiPacketResult error: " << e.what();
+            return std::nullopt;
+        }
+    }
+
+    // ==================== 原有异步方法（sendCommand 等仍使用） ====================
 
 private:
     /**
@@ -750,7 +1212,7 @@ private:
     Task<int> getDeviceId(int linkId, const std::string& deviceCode) {
         try {
             auto result = co_await dbService_.execSqlCoro(R"(
-                SELECT id FROM device WHERE link_id = ? AND device_code = ? AND deleted_at IS NULL
+                SELECT id FROM device WHERE link_id = ? AND protocol_params->>'device_code' = ? AND deleted_at IS NULL
             )", {std::to_string(linkId), deviceCode});
 
             if (!result.empty()) {

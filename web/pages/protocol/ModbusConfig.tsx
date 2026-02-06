@@ -52,19 +52,14 @@ const DataTypeOptions: { value: Modbus.DataType; label: string; quantity: number
   { value: "INT64", label: "INT64 (64位有符号)", quantity: 4 },
   { value: "UINT64", label: "UINT64 (64位无符号)", quantity: 4 },
   { value: "DOUBLE", label: "DOUBLE (64位浮点)", quantity: 4 },
-  { value: "STRING", label: "STRING (字符串)", quantity: 1 },
 ];
 
-/** 大小端选项 */
-const EndianOptions: { value: Modbus.Endian; label: string }[] = [
-  { value: "BIG", label: "大端 (Big Endian)" },
-  { value: "LITTLE", label: "小端 (Little Endian)" },
-];
-
-/** 字顺序选项 */
-const WordOrderOptions: { value: Modbus.WordOrder; label: string }[] = [
-  { value: "HIGH_FIRST", label: "高位在前 (AB CD)" },
-  { value: "LOW_FIRST", label: "低位在前 (CD AB)" },
+/** 字节序选项 */
+const ByteOrderOptions: { value: Modbus.ByteOrder; label: string }[] = [
+  { value: "BIG_ENDIAN", label: "Big-endian" },
+  { value: "LITTLE_ENDIAN", label: "Little-endian" },
+  { value: "BIG_ENDIAN_BYTE_SWAP", label: "Big-endian byte swap" },
+  { value: "LITTLE_ENDIAN_BYTE_SWAP", label: "Little-endian byte swap" },
 ];
 
 /** 生成唯一 ID */
@@ -179,8 +174,8 @@ const ModbusConfigPage = () => {
 
     const config = activeType.config as Modbus.Config;
     const newConfig: Modbus.Config = {
-      endian: config.endian,
-      wordOrder: config.wordOrder,
+      byteOrder: config.byteOrder,
+      readInterval: config.readInterval,
       registers: config.registers.filter((r) => r.id !== registerId),
     };
 
@@ -214,8 +209,16 @@ const ModbusConfigPage = () => {
     {
       title: "地址",
       dataIndex: "address",
-      width: 80,
-      render: (val: number) => String(val).padStart(4, "0"),
+      width: 100,
+      render: (val: number, r: Modbus.Register) => {
+        const prefixMap: Record<Modbus.RegisterType, string> = {
+          COIL: "0",
+          DISCRETE_INPUT: "1",
+          INPUT_REGISTER: "3",
+          HOLDING_REGISTER: "4",
+        };
+        return prefixMap[r.registerType] + String(val).padStart(4, "0");
+      },
     },
     {
       title: "数据类型",
@@ -344,13 +347,11 @@ const ModbusConfigPage = () => {
                 <Space>
                   <span>寄存器配置</span>
                   <Tag>
-                    {(activeType.config as Modbus.Config)?.endian === "BIG" ? "大端" : "小端"}
+                    {ByteOrderOptions.find(
+                      (o) => o.value === (activeType.config as Modbus.Config)?.byteOrder
+                    )?.label || "Big-endian"}
                   </Tag>
-                  <Tag>
-                    {(activeType.config as Modbus.Config)?.wordOrder === "HIGH_FIRST"
-                      ? "高位在前"
-                      : "低位在前"}
-                  </Tag>
+                  <Tag>间隔 {(activeType.config as Modbus.Config)?.readInterval ?? 1}s</Tag>
                 </Space>
               ) : (
                 "请选择设备类型"
@@ -431,15 +432,15 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
           form.setFieldsValue({
             name: data.name,
             enabled: data.enabled,
-            endian: config?.endian || "BIG",
-            wordOrder: config?.wordOrder || "HIGH_FIRST",
+            byteOrder: config?.byteOrder || "BIG_ENDIAN",
+            readInterval: config?.readInterval ?? 1,
             remark: data.remark,
           });
         } else {
           form.setFieldsValue({
             enabled: true,
-            endian: "BIG",
-            wordOrder: "HIGH_FIRST",
+            byteOrder: "BIG_ENDIAN",
+            readInterval: 1,
           });
         }
         setOpen(true);
@@ -456,8 +457,8 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
         name: values.name,
         enabled: values.enabled,
         config: {
-          endian: values.endian,
-          wordOrder: values.wordOrder,
+          byteOrder: values.byteOrder,
+          readInterval: values.readInterval,
           registers: existingConfig.registers || [],
         },
         remark: values.remark,
@@ -480,25 +481,16 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
           <Form.Item label="名称" name="name" rules={[{ required: true, message: "请输入名称" }]}>
             <Input placeholder="如：温湿度传感器、电表" />
           </Form.Item>
-          <Flex gap={16}>
-            <Form.Item
-              label="大小端"
-              name="endian"
-              rules={[{ required: true, message: "请选择大小端" }]}
-              className="flex-1"
-            >
-              <Select options={EndianOptions} />
-            </Form.Item>
-            <Form.Item
-              label="字顺序"
-              name="wordOrder"
-              rules={[{ required: true, message: "请选择字顺序" }]}
-              className="flex-1"
-              extra="多寄存器数据类型时使用"
-            >
-              <Select options={WordOrderOptions} />
-            </Form.Item>
-          </Flex>
+          <Form.Item
+            label="字节序"
+            name="byteOrder"
+            rules={[{ required: true, message: "请选择字节序" }]}
+          >
+            <Select options={ByteOrderOptions} />
+          </Form.Item>
+          <Form.Item label="读取间隔" name="readInterval" extra="轮询读取寄存器的时间间隔">
+            <InputNumber min={1} max={3600} addonAfter="秒" className="!w-full" />
+          </Form.Item>
           <Form.Item label="启用" name="enabled" valuePropName="checked">
             <Switch />
           </Form.Item>
@@ -607,8 +599,8 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
         id: typeId,
         protocol: "MODBUS",
         config: {
-          endian: config.endian,
-          wordOrder: config.wordOrder,
+          byteOrder: config.byteOrder,
+          readInterval: config.readInterval,
           registers: newRegisters,
         },
       });
@@ -617,8 +609,9 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
       setOpen(false);
     };
 
-    // 判断是否为线圈或离散输入（只支持 BOOL）
+    // 线圈/离散输入只支持 BOOL；保持寄存器/输入寄存器不支持 BOOL
     const isBitRegister = registerType === "COIL" || registerType === "DISCRETE_INPUT";
+    const isWordRegister = registerType === "HOLDING_REGISTER" || registerType === "INPUT_REGISTER";
 
     return (
       <Modal
@@ -645,9 +638,10 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
               <Select
                 options={RegisterTypeOptions}
                 onChange={(val) => {
-                  // 线圈和离散输入只支持 BOOL
                   if (val === "COIL" || val === "DISCRETE_INPUT") {
                     form.setFieldsValue({ dataType: "BOOL" });
+                  } else if (form.getFieldValue("dataType") === "BOOL") {
+                    form.setFieldsValue({ dataType: "UINT16" });
                   }
                 }}
               />
@@ -671,7 +665,9 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
               options={
                 isBitRegister
                   ? [{ value: "BOOL" as const, label: "BOOL (1 bit)", quantity: 1 }]
-                  : DataTypeOptions
+                  : isWordRegister
+                    ? DataTypeOptions.filter((o) => o.value !== "BOOL")
+                    : DataTypeOptions
               }
               disabled={isBitRegister}
             />

@@ -22,6 +22,9 @@ public:
 
         LOG_INFO << "Checking database initialization...";
 
+        // 抑制 IF NOT EXISTS 产生的 NOTICE（"relation already exists, skipping"）
+        co_await db->execSqlCoro("SET client_min_messages = WARNING");
+
         // 数据库级别固定 UTC 时区（所有连接生效，无需每个连接 SET timezone）
         co_await db->execSqlCoro(R"(
             DO $$ BEGIN
@@ -235,29 +238,29 @@ private:
             CREATE TABLE IF NOT EXISTS device (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(100) NOT NULL,
-                device_code VARCHAR(50) NOT NULL,
                 link_id INT NOT NULL,
                 protocol_config_id INT NOT NULL,
                 status status_enum DEFAULT 'enabled',
-                online_timeout INT DEFAULT 300,
-                remote_control BOOLEAN DEFAULT TRUE,
-                timezone VARCHAR(6) DEFAULT '+08:00',
+                protocol_params JSONB DEFAULT '{}',
                 remark TEXT,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 deleted_at TIMESTAMPTZ NULL
             )
         )");
-        // 兼容旧表结构，添加缺失字段
-        co_await db->execSqlCoro(R"(ALTER TABLE device ADD COLUMN IF NOT EXISTS online_timeout INT DEFAULT 300)");
-        co_await db->execSqlCoro(R"(ALTER TABLE device ADD COLUMN IF NOT EXISTS remote_control BOOLEAN DEFAULT TRUE)");
-        co_await db->execSqlCoro(R"(ALTER TABLE device ADD COLUMN IF NOT EXISTS modbus_mode VARCHAR(10))");
-        co_await db->execSqlCoro(R"(ALTER TABLE device ADD COLUMN IF NOT EXISTS timezone VARCHAR(6) DEFAULT '+08:00')");
         co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_device_link ON device (link_id))");
         co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_device_protocol ON device (protocol_config_id))");
         co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_device_deleted ON device (deleted_at))");
         co_await db->execSqlCoro(R"(CREATE UNIQUE INDEX IF NOT EXISTS idx_device_name ON device (name) WHERE deleted_at IS NULL)");
-        co_await db->execSqlCoro(R"(CREATE UNIQUE INDEX IF NOT EXISTS idx_device_code ON device (device_code) WHERE deleted_at IS NULL)");
+
+        // JSONB 函数索引：device_code 唯一性
+        co_await db->execSqlCoro(R"(
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_device_protocol_params_code
+            ON device ((protocol_params->>'device_code'))
+            WHERE deleted_at IS NULL
+              AND protocol_params->>'device_code' IS NOT NULL
+              AND protocol_params->>'device_code' != ''
+        )");
 
         // 创建统一的设备数据表（存储所有协议的原始报文和解析数据）
         // 协议特有字段（如 SL651 的 funcCode）存储在 JSONB 的 data 字段中

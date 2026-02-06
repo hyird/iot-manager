@@ -48,11 +48,13 @@ public:
             uuid = drogon::utils::getUuid();
             versions_[key] = uuid;
         }
-        LOG_DEBUG << "[ResourceVersion] " << key << " version updated to " << uuid;
+        LOG_TRACE << "[ResourceVersion] " << key << " -> " << uuid;
 
-        // 异步同步到 Redis
-        drogon::async_run([this, key, uuid]() -> Task<void> {
-            co_await syncToRedis(key, uuid);
+        // Redis 写入必须在 Drogon IO 线程执行（incrementVersion 可能从 TcpIoPool 线程调用）
+        drogon::app().getIOLoop(0)->queueInLoop([this, key, uuid]() {
+            drogon::async_run([this, key, uuid]() -> Task<void> {
+                co_await syncToRedis(key, uuid);
+            });
         });
     }
 

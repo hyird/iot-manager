@@ -49,16 +49,27 @@ public:
             const auto& elementsObj = dataObj["data"];
             for (const auto& fullKey : elementsObj.getMemberNames()) {
                 const auto& elemData = elementsObj[fullKey];
-                std::string guideHex = extractGuideHex(fullKey);
 
+                ElementData ed = {
+                    elemData.get("name", "").asString(),
+                    elemData.get("value", Json::nullValue),
+                    elemData.get("unit", "").asString(),
+                    reportTime
+                };
+
+                // 按 guideHex 存储（SL651: "34_F1F1" → "F1F1"）
+                std::string guideHex = extractGuideHex(fullKey);
                 auto it = realtimeValues.find(guideHex);
                 if (it == realtimeValues.end() || reportTime > it->second.reportTime) {
-                    realtimeValues[guideHex] = {
-                        elemData.get("name", "").asString(),
-                        elemData.get("value", Json::nullValue),
-                        elemData.get("unit", "").asString(),
-                        reportTime
-                    };
+                    realtimeValues[guideHex] = ed;
+                }
+
+                // 同时按 fullKey 存储（Modbus: "HOLDING_REGISTER_0" 保持完整）
+                if (fullKey != guideHex) {
+                    auto it2 = realtimeValues.find(fullKey);
+                    if (it2 == realtimeValues.end() || reportTime > it2->second.reportTime) {
+                        realtimeValues[fullKey] = ed;
+                    }
                 }
             }
         }
@@ -215,6 +226,42 @@ public:
     }
 
     /**
+     * @brief 解析 Modbus 寄存器为 elements 格式
+     */
+    static void parseModbusRegisters(
+        const DeviceCache::CachedDevice& device,
+        const std::map<std::string, ElementData>& realtimeValues,
+        Json::Value& outElements
+    ) {
+        const auto& config = device.protocolConfig;
+        if (!config.isMember("registers") || !config["registers"].isArray()) return;
+
+        for (const auto& reg : config["registers"]) {
+            Json::Value element;
+            element["name"] = reg.get("name", "").asString();
+
+            std::string unit = reg.get("unit", "").asString();
+            if (!unit.empty()) element["unit"] = unit;
+
+            // Modbus dictConfig 没有 mapType，补上 "VALUE" 以兼容前端
+            if (reg.isMember("dictConfig") && reg["dictConfig"].isObject()
+                && reg["dictConfig"].isMember("items")) {
+                Json::Value dictConfig = reg["dictConfig"];
+                dictConfig["mapType"] = "VALUE";
+                element["dictConfig"] = dictConfig;
+            }
+
+            // 从实时数据中匹配值（key 格式: registerType_address）
+            std::string regKey = reg.get("registerType", "").asString()
+                + "_" + std::to_string(reg.get("address", 0).asInt());
+            auto it = realtimeValues.find(regKey);
+            element["value"] = (it != realtimeValues.end()) ? it->second.value : Json::nullValue;
+
+            outElements.append(element);
+        }
+    }
+
+    /**
      * @brief 解析协议配置中的功能定义
      * @param device 缓存的设备信息
      * @param realtimeValues 实时数据（可选，用于填充 elements 的 value）
@@ -235,40 +282,39 @@ public:
         outDownFuncs = Json::Value(Json::arrayValue);
         outImageFuncs = Json::Value(Json::arrayValue);
 
-        if (device.protocolConfig.isNull() || device.protocolType != Constants::PROTOCOL_SL651) {
-            return;
-        }
+        if (device.protocolConfig.isNull()) return;
 
-        const auto& config = device.protocolConfig;
-        if (!config.isMember("funcs") || !config["funcs"].isArray()) {
-            return;
-        }
+        if (device.protocolType == Constants::PROTOCOL_SL651) {
+            const auto& config = device.protocolConfig;
+            if (!config.isMember("funcs") || !config["funcs"].isArray()) return;
 
-        std::set<std::string> addedGuideHex;
+            std::set<std::string> addedGuideHex;
 
-        for (const auto& func : config["funcs"]) {
-            std::string dir = func.get("dir", "").asString();
-            std::string funcCode = func.get("funcCode", "").asString();
+            for (const auto& func : config["funcs"]) {
+                std::string dir = func.get("dir", "").asString();
+                std::string funcCode = func.get("funcCode", "").asString();
 
-            if (!func.isMember("elements") || !func["elements"].isArray()) continue;
+                if (!func.isMember("elements") || !func["elements"].isArray()) continue;
 
-            if (dir == "UP") {
-                if (hasJpegElement(func)) {
-                    Json::Value imageFunc = parseImageFuncBase(func);
-                    // 查找图片数据
-                    auto imageData = findImageData(funcCode, funcDataMap);
-                    if (imageData) {
-                        Json::Value latestImage;
-                        latestImage["data"] = *imageData;
-                        imageFunc["latestImage"] = latestImage;
+                if (dir == "UP") {
+                    if (hasJpegElement(func)) {
+                        Json::Value imageFunc = parseImageFuncBase(func);
+                        auto imageData = findImageData(funcCode, funcDataMap);
+                        if (imageData) {
+                            Json::Value latestImage;
+                            latestImage["data"] = *imageData;
+                            imageFunc["latestImage"] = latestImage;
+                        }
+                        outImageFuncs.append(imageFunc);
+                    } else {
+                        parseUpElements(func, realtimeValues, addedGuideHex, outElements);
                     }
-                    outImageFuncs.append(imageFunc);
-                } else {
-                    parseUpElements(func, realtimeValues, addedGuideHex, outElements);
+                } else if (dir == "DOWN") {
+                    outDownFuncs.append(parseDownFunc(func));
                 }
-            } else if (dir == "DOWN") {
-                outDownFuncs.append(parseDownFunc(func));
             }
+        } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
+            parseModbusRegisters(device, realtimeValues, outElements);
         }
     }
 
@@ -284,7 +330,7 @@ public:
         outImageFuncs = Json::Value(Json::arrayValue);
 
         if (device.protocolConfig.isNull() || device.protocolType != Constants::PROTOCOL_SL651) {
-            return;
+            return;  // Modbus 无 downFuncs/imageFuncs，直接返回
         }
 
         const auto& config = device.protocolConfig;

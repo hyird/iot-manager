@@ -1,5 +1,11 @@
 # IoT Manager - Claude Code 项目指南
 
+## 语言要求
+
+- 使用中文回答
+- 使用中文思考
+- Compact 总结也要使用中文
+
 ## 项目概况
 
 IoT 设备管理平台：C++20 后端 (Drogon) + React 19 前端 (Vite + Bun)。
@@ -226,3 +232,4 @@ JSON 格式：`{ code: 0, message: "...", data: ... }`
 - `initialData` 用函数形式 `() => store.getState()...` 避免订阅
 - 含 JSX 的函数不适合提取到纯 utils
 - 新增业务模块：后端创建 `modules/xxx/` (Controller + Service + domain/)，前端创建 `services/xxx/` + `pages/xxx/` 并在 `pages/index.ts` 注册
+- `DatabaseInitializer.hpp` 只保留最终表结构（CREATE TABLE），不写迁移代码（ALTER/UPDATE/DROP），数据库变更由开发者手动重建

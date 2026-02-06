@@ -29,6 +29,8 @@ export interface DeviceItem {
   remote_control?: boolean;
   /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
   modbus_mode?: ModbusMode;
+  /** Modbus 从站地址（1-247），默认 1 */
+  slave_id?: number;
   /** 设备时区（用于报文时间解析，默认 +08:00） */
   timezone?: string;
   /** 备注 */
@@ -71,6 +73,8 @@ export interface CreateDeviceDto {
   remote_control?: boolean;
   /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
   modbus_mode?: ModbusMode;
+  /** Modbus 从站地址（1-247），默认 1 */
+  slave_id?: number;
   /** 设备时区（默认 +08:00） */
   timezone?: string;
   remark?: string;
@@ -89,6 +93,8 @@ export interface UpdateDeviceDto {
   remote_control?: boolean;
   /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
   modbus_mode?: ModbusMode;
+  /** Modbus 从站地址（1-247），默认 1 */
+  slave_id?: number;
   /** 设备时区 */
   timezone?: string;
   remark?: string;
@@ -108,6 +114,7 @@ export interface DeviceStaticData {
   online_timeout?: number;
   remote_control?: boolean;
   modbus_mode?: ModbusMode;
+  slave_id?: number;
   timezone?: string;
   remark?: string;
   created_at?: string;

@@ -82,7 +82,6 @@ public:
         if (!json) co_return Response::badRequest("请求体格式错误");
 
         ValidatorHelper::requireNonEmptyString(*json, "name", "设备名称").throwIfInvalid();
-        ValidatorHelper::requireNonEmptyString(*json, "device_code", "设备编码").throwIfInvalid();
         ValidatorHelper::requirePositiveInt(*json, "link_id", "关联链路").throwIfInvalid();
         ValidatorHelper::requirePositiveInt(*json, "protocol_config_id", "协议配置").throwIfInvalid();
 

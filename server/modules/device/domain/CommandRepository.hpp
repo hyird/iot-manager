@@ -43,7 +43,7 @@ public:
                 id = result[0]["id"].as<int64_t>();
             }
 
-            LOG_DEBUG << "[CommandRepository] 指令已保存: id=" << id << ", deviceId=" << deviceId;
+            LOG_TRACE << "[CommandRepository] Saved: id=" << id << ", deviceId=" << deviceId;
             co_return id;
 
         } catch (const std::exception& e) {

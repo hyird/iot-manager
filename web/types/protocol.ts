@@ -109,14 +109,14 @@ export type ModbusDataType =
   | "FLOAT32"
   | "INT64"
   | "UINT64"
-  | "DOUBLE"
-  | "STRING";
+  | "DOUBLE";
 
-/** Modbus 大小端 */
-export type ModbusEndian = "BIG" | "LITTLE";
-
-/** Modbus 字顺序（多寄存器时的排列顺序） */
-export type ModbusWordOrder = "HIGH_FIRST" | "LOW_FIRST";
+/** Modbus 字节序 */
+export type ModbusByteOrder =
+  | "BIG_ENDIAN"
+  | "LITTLE_ENDIAN"
+  | "BIG_ENDIAN_BYTE_SWAP"
+  | "LITTLE_ENDIAN_BYTE_SWAP";
 
 /** Modbus 字典映射项 */
 export interface ModbusDictMapItem {
@@ -156,10 +156,10 @@ export interface ModbusRegister {
 
 /** Modbus 配置结构 */
 export interface ModbusConfig {
-  /** 大小端（设备类型级别配置） */
-  endian: ModbusEndian;
-  /** 字顺序（多寄存器时使用，设备类型级别配置） */
-  wordOrder: ModbusWordOrder;
+  /** 字节序 */
+  byteOrder: ModbusByteOrder;
+  /** 读取间隔（秒），默认 1 */
+  readInterval?: number;
   /** 寄存器列表 */
   registers: ModbusRegister[];
 }
@@ -232,8 +232,7 @@ export namespace SL651 {
 export namespace Modbus {
   export type RegisterType = ModbusRegisterType;
   export type DataType = ModbusDataType;
-  export type Endian = ModbusEndian;
-  export type WordOrder = ModbusWordOrder;
+  export type ByteOrder = ModbusByteOrder;
   export type DictMapItem = ModbusDictMapItem;
   export type DictConfig = ModbusDictConfig;
   export type Register = ModbusRegister;

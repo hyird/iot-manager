@@ -25,6 +25,8 @@ public:
         int onlineTimeout;  // 在线超时时间（秒），默认 300
         bool remoteControl;  // 是否允许远控，默认 true
         std::string timezone;  // 设备时区
+        uint8_t slaveId = 1;     // Modbus 从站地址，默认 1
+        std::string modbusMode;  // Modbus 模式: "TCP" / "RTU"
         std::string remark;
         std::string createdAt;
         std::string linkName;
@@ -46,7 +48,7 @@ public:
         auto now = std::chrono::steady_clock::now();
 
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::unique_lock lock(mutex_);
             // 缓存有效，直接返回
             if (!devices_.empty() &&
                 std::chrono::duration_cast<std::chrono::seconds>(now - lastRefresh_).count() < CACHE_TTL_SECONDS) {
@@ -64,7 +66,7 @@ public:
         // 等待其他协程刷新完成
         while (true) {
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::unique_lock lock(mutex_);
                 if (!refreshing_) {
                     // 其他协程已完成刷新，返回缓存
                     co_return devices_;
@@ -85,12 +87,12 @@ public:
         try {
             co_await refreshCache();
         } catch (...) {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::unique_lock lock(mutex_);
             refreshing_ = false;
             throw;
         }
 
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock lock(mutex_);
         refreshing_ = false;
         co_return devices_;
     }
@@ -102,8 +104,8 @@ public:
         DatabaseService dbService;
 
         std::string sql = R"(
-            SELECT d.id, d.name, d.device_code, d.link_id, d.protocol_config_id,
-                   d.status, d.online_timeout, d.remote_control, d.timezone, d.remark, d.created_at,
+            SELECT d.id, d.name, d.link_id, d.protocol_config_id,
+                   d.status, d.protocol_params, d.remark, d.created_at,
                    p.name as protocol_name, p.protocol as protocol_type, p.config as protocol_config,
                    l.name as link_name, l.mode as link_mode
             FROM device d
@@ -122,19 +124,35 @@ public:
             CachedDevice device;
             device.id = FieldHelper::getInt(row["id"]);
             device.name = FieldHelper::getString(row["name"], "");
-            device.deviceCode = FieldHelper::getString(row["device_code"], "");
             device.linkId = row["link_id"].isNull() ? 0 : FieldHelper::getInt(row["link_id"]);
             device.protocolConfigId = row["protocol_config_id"].isNull() ? 0 : FieldHelper::getInt(row["protocol_config_id"]);
             device.status = FieldHelper::getString(row["status"], Constants::USER_STATUS_ENABLED);
-            device.onlineTimeout = row["online_timeout"].isNull() ? 300 : FieldHelper::getInt(row["online_timeout"]);
-            device.remoteControl = row["remote_control"].isNull() ? true : row["remote_control"].as<bool>();
-            device.timezone = FieldHelper::getString(row["timezone"], "+08:00");
             device.remark = FieldHelper::getString(row["remark"], "");
             device.createdAt = FieldHelper::getString(row["created_at"], "");
             device.linkName = FieldHelper::getString(row["link_name"], "");
             device.linkMode = FieldHelper::getString(row["link_mode"], "");
             device.protocolName = FieldHelper::getString(row["protocol_name"], "");
             device.protocolType = FieldHelper::getString(row["protocol_type"], "");
+
+            // 解析 protocol_params JSONB
+            std::string ppStr = FieldHelper::getString(row["protocol_params"], "");
+            if (!ppStr.empty()) {
+                Json::Value pp;
+                std::string errs;
+                std::istringstream ppIss(ppStr);
+                if (Json::parseFromStream(readerBuilder, ppIss, &pp, &errs)) {
+                    device.deviceCode = pp.get("device_code", "").asString();
+                    device.onlineTimeout = pp.get("online_timeout", 300).asInt();
+                    device.remoteControl = pp.get("remote_control", true).asBool();
+                    device.timezone = pp.get("timezone", "+08:00").asString();
+                    device.slaveId = static_cast<uint8_t>(pp.get("slave_id", 1).asInt());
+                    device.modbusMode = pp.get("modbus_mode", "").asString();
+                }
+            } else {
+                device.onlineTimeout = 300;
+                device.remoteControl = true;
+                device.timezone = "+08:00";
+            }
 
             // 解析协议配置 JSON
             std::string configStr = FieldHelper::getString(row["protocol_config"], "");
@@ -148,7 +166,7 @@ public:
         }
 
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::unique_lock lock(mutex_);
             devices_ = std::move(newDevices);
             // 重建索引
             deviceIndex_.clear();
@@ -165,7 +183,7 @@ public:
      * @brief 清除全部缓存（协议配置/链路更新时调用）
      */
     void invalidate() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock lock(mutex_);
         devices_.clear();
         deviceIndex_.clear();
         LOG_DEBUG << "[DeviceCache] Cache fully invalidated";
@@ -176,7 +194,7 @@ public:
      * 使用 swap-and-pop 技术实现 O(1) 删除
      */
     void invalidateById(int deviceId) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock lock(mutex_);
         auto indexIt = deviceIndex_.find(deviceId);
         if (indexIt == deviceIndex_.end()) {
             return;  // 设备不在缓存中
@@ -204,7 +222,7 @@ public:
      * 注意：批量删除时，由于索引会动态变化，需要逐个处理
      */
     void invalidateByIds(const std::vector<int>& deviceIds) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock lock(mutex_);
         int removedCount = 0;
 
         for (int deviceId : deviceIds) {
@@ -235,7 +253,7 @@ public:
      * @brief 标记需要刷新（下次访问时重新加载）
      */
     void markStale() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock lock(mutex_);
         lastRefresh_ = std::chrono::steady_clock::time_point{};
         LOG_DEBUG << "[DeviceCache] Cache marked as stale";
     }
@@ -248,6 +266,57 @@ private:
     std::vector<CachedDevice> devices_;
     std::map<int, size_t> deviceIndex_;  // deviceId -> index in devices_
     std::chrono::steady_clock::time_point lastRefresh_;
-    std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
     bool refreshing_ = false;  // 防止多协程同时刷新缓存
+
+public:
+    // ==================== 同步访问接口（TcpIoPool 线程使用） ====================
+
+    /**
+     * @brief 通过 linkId 同步获取协议类型
+     * 线程安全：shared_lock 读，不触发缓存刷新
+     */
+    std::string getProtocolByLinkIdSync(int linkId) const {
+        std::shared_lock lock(mutex_);
+        for (const auto& device : devices_) {
+            if (device.linkId == linkId && !device.protocolType.empty()) {
+                return device.protocolType;
+            }
+        }
+        return "";
+    }
+
+    /**
+     * @brief 通过 linkId + deviceCode 同步查找设备
+     */
+    std::optional<CachedDevice> findByLinkAndCodeSync(int linkId, const std::string& deviceCode) const {
+        std::shared_lock lock(mutex_);
+        for (const auto& device : devices_) {
+            if (device.linkId == linkId && device.deviceCode == deviceCode) {
+                return device;
+            }
+        }
+        return std::nullopt;
+    }
+
+    /**
+     * @brief 通过 deviceCode 同步查找设备
+     */
+    std::optional<CachedDevice> findByCodeSync(const std::string& deviceCode) const {
+        std::shared_lock lock(mutex_);
+        for (const auto& device : devices_) {
+            if (device.deviceCode == deviceCode) {
+                return device;
+            }
+        }
+        return std::nullopt;
+    }
+
+    /**
+     * @brief 检查缓存是否已加载
+     */
+    bool isLoaded() const {
+        std::shared_lock lock(mutex_);
+        return !devices_.empty();
+    }
 };

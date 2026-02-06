@@ -8,7 +8,6 @@
       "features": ["postgres", "redis"]
     },
     "hiredis",
-    "libpq",
-    "libmodbus"
+    "libpq"
   ]
 }

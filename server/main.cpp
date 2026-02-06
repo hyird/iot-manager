@@ -75,6 +75,10 @@ void onServerStarted() {
 
         // 2. 清理缓存（数据库初始化可能变更 schema，确保缓存与新结构一致）
         DeviceCache::instance().markStale();
+
+        // 3. 预加载 DeviceCache（确保 TcpIoPool 同步访问时有数据）
+        co_await DeviceCache::instance().getDevices();
+
         RealtimeDataCache::instance().invalidateAll();
 
         // 3. 加载资源版本号（从 Redis），然后重置以强制客户端重新获取数据

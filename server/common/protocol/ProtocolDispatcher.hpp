@@ -2,10 +2,17 @@
 
 #include "common/database/DatabaseService.hpp"
 #include "common/network/TcpLinkManager.hpp"
+#include "common/cache/DeviceCache.hpp"
 #include "common/cache/DeviceConnectionCache.hpp"
+#include "common/cache/RealtimeDataCache.hpp"
+#include "common/cache/ResourceVersion.hpp"
+#include "common/domain/EventBus.hpp"
 #include "common/utils/Constants.hpp"
 #include "modules/device/domain/CommandRepository.hpp"
+#include "modules/device/domain/Events.hpp"
+#include "modules/protocol/domain/Events.hpp"
 #include "sl651/SL651.hpp"
+#include "modbus/Modbus.hpp"
 
 /**
  * @brief 待应答的指令
@@ -66,18 +73,33 @@ public:
             }
         );
 
-        // 设置连接状态回调（回调在 TcpLinkManager IO 线程触发，分发到 Drogon IO 线程处理）
+        // 设置连接状态回调（TcpIoPool 线程直接处理，无需跨线程）
         TcpLinkManager::instance().setConnectionCallback(
             [this](int linkId, const std::string& clientAddr, bool connected) {
-                auto* ioLoop = getNextDrogonLoop();
-                ioLoop->queueInLoop([linkId, clientAddr, connected]() {
-                    if (!connected) {
-                        DeviceConnectionCache::instance().removeByClient(linkId, clientAddr);
-                    }
-                    ResourceVersion::instance().incrementVersion("link");
-                });
+                // Modbus 轮询管理（定时器已在 TcpIoPool 线程）
+                if (modbusHandler_) {
+                    modbusHandler_->onConnectionChanged(linkId, clientAddr, connected);
+                }
+
+                // 以下操作线程安全，可直接在 TcpIoPool 调用
+                if (!connected) {
+                    DeviceConnectionCache::instance().removeByClient(linkId, clientAddr);
+                }
+                ResourceVersion::instance().incrementVersion("link");
             }
         );
+
+        // 创建 Modbus 处理器并初始化
+        modbusHandler_ = std::make_unique<modbus::ModbusHandler>();
+        auto* modbusLoop = getNextDrogonLoop();
+        modbusLoop->queueInLoop([this]() {
+            drogon::async_run([this]() -> Task<> {
+                co_await modbusHandler_->initialize();
+            });
+        });
+
+        // 订阅设备/协议配置事件，触发 Modbus 重载
+        registerEventSubscriptions();
 
         LOG_DEBUG << "[ProtocolDispatcher] Initialized";
     }
@@ -89,39 +111,95 @@ private:
     ProtocolDispatcher& operator=(const ProtocolDispatcher&) = delete;
 
     /**
+     * @brief 注册设备/协议配置事件订阅
+     * 设备或协议配置变更时，重载 Modbus 设备并清除协议缓存
+     */
+    void registerEventSubscriptions() {
+        auto& bus = EventBus::instance();
+
+        // 设备事件 → 重载 Modbus + 清除链路协议缓存
+        bus.subscribe<DeviceCreated>([this](const DeviceCreated&) -> Task<void> {
+            LOG_INFO << "[ProtocolDispatcher] DeviceCreated event, reloading Modbus devices";
+            reloadModbusDevices();
+            co_return;
+        });
+
+        bus.subscribe<DeviceUpdated>([this](const DeviceUpdated&) -> Task<void> {
+            LOG_INFO << "[ProtocolDispatcher] DeviceUpdated event, reloading Modbus devices";
+            reloadModbusDevices();
+            co_return;
+        });
+
+        bus.subscribe<DeviceDeleted>([this](const DeviceDeleted&) -> Task<void> {
+            LOG_INFO << "[ProtocolDispatcher] DeviceDeleted event, reloading Modbus devices";
+            reloadModbusDevices();
+            co_return;
+        });
+
+        // 协议配置事件 → 重载 Modbus + 清除链路协议缓存
+        bus.subscribe<ProtocolConfigCreated>([this](const ProtocolConfigCreated&) -> Task<void> {
+            LOG_INFO << "[ProtocolDispatcher] ProtocolConfigCreated event, reloading Modbus devices";
+            reloadModbusDevices();
+            co_return;
+        });
+
+        bus.subscribe<ProtocolConfigUpdated>([this](const ProtocolConfigUpdated&) -> Task<void> {
+            LOG_INFO << "[ProtocolDispatcher] ProtocolConfigUpdated event, reloading Modbus devices";
+            reloadModbusDevices();
+            co_return;
+        });
+
+        bus.subscribe<ProtocolConfigDeleted>([this](const ProtocolConfigDeleted&) -> Task<void> {
+            LOG_INFO << "[ProtocolDispatcher] ProtocolConfigDeleted event, reloading Modbus devices";
+            reloadModbusDevices();
+            co_return;
+        });
+
+        LOG_INFO << "[ProtocolDispatcher] Event subscriptions registered";
+    }
+
+    /**
      * @brief 数据接收回调
      * @param linkId 链路ID
      * @param clientAddr 客户端地址（用于建立设备连接映射）
      * @param data 接收到的数据
      */
     void onDataReceived(int linkId, const std::string& clientAddr, const std::string& data) {
-
-        // 将数据转换为字节数组
+        // === 全部在 TcpIoPool 线程执行，零跨线程解析 ===
         std::vector<uint8_t> bytes(data.begin(), data.end());
 
-        // 将处理转移到 Drogon 的 IO 工作线程，因为数据库操作依赖 IOThreadStorage
-        // TcpLinkManager 使用独立线程池，需要确保在 Drogon IO 线程上执行数据库操作
-        auto* ioLoop = getNextDrogonLoop();
-        ioLoop->queueInLoop([this, linkId, clientAddr, bytes]() {
-            // 使用协程处理，避免在 EventLoop 中同步调用数据库导致死锁
-            drogon::async_run([this, linkId, clientAddr, bytes]() -> Task<> {
-                // 获取链路关联的协议类型
-                std::string protocol = co_await getLinkProtocolAsync(linkId);
+        if (!DeviceCache::instance().isLoaded()) {
+            LOG_WARN << "[ProtocolDispatcher] DeviceCache not loaded, dropping data";
+            return;
+        }
 
-                if (protocol.empty()) {
-                    co_return;
-                }
+        std::string protocol = DeviceCache::instance().getProtocolByLinkIdSync(linkId);
+        if (protocol.empty()) return;
 
-                // 根据协议类型分发（传递 clientAddr 用于建立设备连接映射）
-                if (protocol == Constants::PROTOCOL_SL651) {
-                    co_await sl651Parser_->handleData(linkId, clientAddr, bytes);
-                } else if (protocol == Constants::PROTOCOL_MODBUS) {
-                    LOG_WARN << "[ProtocolDispatcher] Modbus 协议暂未实现";
-                } else {
-                    LOG_WARN << "[ProtocolDispatcher] 未知协议: " << protocol;
-                }
+        std::vector<ParsedFrameResult> results;
+
+        if (protocol == Constants::PROTOCOL_SL651) {
+            results = sl651Parser_->parseDataSync(linkId, clientAddr, bytes,
+                [this](int lid, const std::string& code) {
+                    return buildDeviceConfigFromCache(lid, code);
+                });
+        } else if (protocol == Constants::PROTOCOL_MODBUS) {
+            results = modbusHandler_->parseDataSync(linkId, clientAddr, bytes);
+        } else {
+            LOG_WARN << "[ProtocolDispatcher] 未知协议: " << protocol;
+        }
+
+        // === 解析完成，投递到 Drogon IO 做 DB 写入 ===
+        if (!results.empty()) {
+            auto* ioLoop = getNextDrogonLoop();
+            ioLoop->queueInLoop([this, results = std::move(results)]() {
+                drogon::async_run([this, results = std::move(results)]() -> Task<> {
+                    for (const auto& r : results) {
+                        co_await saveParsedResult(r);
+                    }
+                });
             });
-        });
+        }
     }
 
     /**
@@ -137,48 +215,64 @@ private:
     }
 
     /**
-     * @brief 获取链路关联的协议类型（异步版本）
+     * @brief 保存解析结果到数据库（Drogon IO 线程执行）
      */
-    Task<std::string> getLinkProtocolAsync(int linkId) {
-        // 检查缓存
-        {
-            std::lock_guard<std::mutex> lock(cacheMutex_);
-            auto it = linkProtocolCache_.find(linkId);
-            if (it != linkProtocolCache_.end()) {
-                co_return it->second;
-            }
-        }
-
-        // 从数据库查询
+    Task<void> saveParsedResult(const ParsedFrameResult& result) {
         try {
-            auto dbClient = AppDbConfig::useFast()
-                ? drogon::app().getFastDbClient("default")
-                : drogon::app().getDbClient("default");
+            // 委托给 CommandRepository 执行数据库操作
+            int64_t recordId = co_await CommandRepository::save(
+                result.deviceId, result.linkId, result.protocol, result.data, result.reportTime
+            );
 
-            auto result = co_await dbClient->execSqlCoro(R"(
-                SELECT pc.protocol
-                FROM device d
-                JOIN protocol_config pc ON d.protocol_config_id = pc.id
-                WHERE d.link_id = $1 AND d.deleted_at IS NULL AND pc.deleted_at IS NULL
-                LIMIT 1
-            )", std::to_string(linkId));
+            // 更新实时数据缓存
+            RealtimeDataCache::instance().update(result.deviceId, result.funcCode, result.data, result.reportTime);
 
-            if (!result.empty()) {
-                std::string protocol = result[0]["protocol"].as<std::string>();
+            // 更新资源版本号
+            ResourceVersion::instance().incrementVersion("device");
 
-                // 缓存结果
-                std::lock_guard<std::mutex> lock(cacheMutex_);
-                linkProtocolCache_[linkId] = protocol;
-
-                co_return protocol;
-            } else {
-                LOG_WARN << "[ProtocolDispatcher] linkId=" << linkId << " 未关联协议配置";
+            // 处理指令应答通知（SL651 上行帧可能是指令应答）
+            if (result.commandResponse) {
+                notifyCommandResponse(
+                    result.commandResponse->deviceCode,
+                    result.commandResponse->funcCode,
+                    result.commandResponse->success,
+                    recordId
+                );
             }
+
+            LOG_TRACE << "[ProtocolDispatcher] Saved: device=" << result.deviceId
+                      << " func=" << result.funcCode;
         } catch (const std::exception& e) {
-            LOG_ERROR << "[ProtocolDispatcher] 查询协议失败: " << e.what();
+            LOG_ERROR << "[ProtocolDispatcher] saveParsedResult failed: " << e.what();
+        }
+    }
+
+    /**
+     * @brief 从 DeviceCache 同步构建 SL651 设备配置（TcpIoPool 线程调用）
+     */
+    std::optional<sl651::DeviceConfig> buildDeviceConfigFromCache(int linkId, const std::string& remoteCode) {
+        auto cachedOpt = DeviceCache::instance().findByLinkAndCodeSync(linkId, remoteCode);
+        if (!cachedOpt) return std::nullopt;
+
+        const auto& cached = *cachedOpt;
+
+        sl651::DeviceConfig config;
+        config.deviceId = cached.id;
+        config.deviceName = cached.name;
+        config.deviceCode = cached.deviceCode;
+        config.protocolConfigId = cached.protocolConfigId;
+        config.linkId = cached.linkId;
+        config.timezone = cached.timezone;
+
+        // 从缓存的协议配置 JSON 解析要素定义
+        if (!cached.protocolConfig.isNull()) {
+            Json::StreamWriterBuilder writer;
+            writer["indentation"] = "";
+            std::string configJson = Json::writeString(writer, cached.protocolConfig);
+            parseElementsFromConfig(config, configJson);
         }
 
-        co_return "";
+        return config;
     }
 
     /**
@@ -191,11 +285,11 @@ private:
                 : drogon::app().getDbClient("default");
 
             auto result = co_await dbClient->execSqlCoro(R"(
-                SELECT d.id, d.name, d.device_code, d.protocol_config_id, d.link_id,
-                       d.timezone, pc.config
+                SELECT d.id, d.name, d.protocol_params, d.protocol_config_id, d.link_id,
+                       pc.config
                 FROM device d
                 JOIN protocol_config pc ON d.protocol_config_id = pc.id
-                WHERE d.link_id = $1 AND d.device_code = $2
+                WHERE d.link_id = $1 AND d.protocol_params->>'device_code' = $2
                   AND d.deleted_at IS NULL AND pc.deleted_at IS NULL
             )", std::to_string(linkId), remoteCode);
 
@@ -203,13 +297,23 @@ private:
                 co_return std::nullopt;
             }
 
+            // 解析 protocol_params JSONB
+            Json::Value pp;
+            std::string ppStr = result[0]["protocol_params"].isNull() ? "" : result[0]["protocol_params"].as<std::string>();
+            if (!ppStr.empty()) {
+                Json::CharReaderBuilder rb;
+                std::istringstream iss(ppStr);
+                std::string errs;
+                Json::parseFromStream(rb, iss, &pp, &errs);
+            }
+
             sl651::DeviceConfig config;
             config.deviceId = result[0]["id"].as<int>();
             config.deviceName = result[0]["name"].as<std::string>();
-            config.deviceCode = result[0]["device_code"].as<std::string>();
+            config.deviceCode = pp.get("device_code", "").asString();
             config.protocolConfigId = result[0]["protocol_config_id"].as<int>();
             config.linkId = result[0]["link_id"].as<int>();
-            config.timezone = result[0]["timezone"].isNull() ? "+08:00" : result[0]["timezone"].as<std::string>();
+            config.timezone = pp.get("timezone", "+08:00").asString();
 
             // 解析协议配置中的要素定义
             std::string configJson = result[0]["config"].as<std::string>();
@@ -394,19 +498,17 @@ private:
 
 public:
     /**
-     * @brief 清除链路协议缓存
+     * @brief 重新加载 Modbus 设备配置（设备/协议变更时调用）
      */
-    void clearLinkCache(int linkId) {
-        std::lock_guard<std::mutex> lock(cacheMutex_);
-        linkProtocolCache_.erase(linkId);
-    }
-
-    /**
-     * @brief 清除所有缓存
-     */
-    void clearAllCache() {
-        std::lock_guard<std::mutex> lock(cacheMutex_);
-        linkProtocolCache_.clear();
+    void reloadModbusDevices() {
+        if (modbusHandler_) {
+            auto* ioLoop = getNextDrogonLoop();
+            ioLoop->queueInLoop([this]() {
+                drogon::async_run([this]() -> Task<> {
+                    co_await modbusHandler_->reloadDevices();
+                });
+            });
+        }
     }
 
     /**
@@ -423,15 +525,15 @@ public:
                            const Json::Value& elements, int userId, int timeoutMs = 10000) {
         int64_t downCommandId = 0;
         try {
-            // 获取设备配置
-            auto configOpt = co_await getDeviceConfigAsync(linkId, deviceCode);
+            // 获取设备配置（从缓存同步读取）
+            auto configOpt = buildDeviceConfigFromCache(linkId, deviceCode);
             if (!configOpt) {
                 LOG_ERROR << "[ProtocolDispatcher] 设备未找到: linkId=" << linkId << ", code=" << deviceCode;
                 co_return false;
             }
 
-            // 获取协议类型
-            std::string protocol = co_await getLinkProtocolAsync(linkId);
+            // 获取协议类型（从缓存同步读取）
+            std::string protocol = DeviceCache::instance().getProtocolByLinkIdSync(linkId);
             if (protocol.empty()) {
                 LOG_ERROR << "[ProtocolDispatcher] 链路未关联协议: linkId=" << linkId;
                 // 保存失败记录（无报文数据）
@@ -582,23 +684,20 @@ public:
             }
         }
 
-        // 异步更新下行指令记录，关联应答报文 ID
+        // 异步更新下行指令记录，关联应答报文 ID（确保在 Drogon IO 线程执行）
         if (downCommandId > 0 && responseId > 0) {
-            auto* loop = trantor::EventLoop::getEventLoopOfCurrentThread();
-            if (loop) {
-                loop->queueInLoop([this, downCommandId, responseId]() {
-                    drogon::async_run([this, downCommandId, responseId]() -> Task<> {
-                        co_await updateDownCommandResponse(downCommandId, responseId);
-                    });
+            auto* ioLoop = getNextDrogonLoop();
+            ioLoop->queueInLoop([this, downCommandId, responseId]() {
+                drogon::async_run([this, downCommandId, responseId]() -> Task<> {
+                    co_await updateDownCommandResponse(downCommandId, responseId);
                 });
-            }
+            });
         }
     }
 
 private:
     std::unique_ptr<sl651::SL651Parser> sl651Parser_;
-    std::map<int, std::string> linkProtocolCache_;
-    std::mutex cacheMutex_;
+    std::unique_ptr<modbus::ModbusHandler> modbusHandler_;
     std::atomic<size_t> ioLoopIndex_{0};  // 轮询 IO 线程索引
 
     // 待应答指令

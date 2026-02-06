@@ -75,9 +75,13 @@ public:
         auto device = Device::create(data);
 
         device.require(Device::nameUnique)
-              .require(Device::codeUnique)
               .require(Device::linkExists)
               .require(Device::protocolConfigExists);
+
+        // 设备编码非空时才检查唯一性（Modbus 设备无编码）
+        if (data.isMember("device_code") && !data["device_code"].asString().empty()) {
+            device.require(Device::codeUnique);
+        }
 
         co_await device.save();
 
@@ -316,32 +320,35 @@ public:
             Json::Value elements(Json::arrayValue);
             Json::Value image = Json::nullValue;
 
-            if (!device.protocolConfig.isNull() && device.protocolType == Constants::PROTOCOL_SL651) {
-                const auto& config = device.protocolConfig;
-                if (config.isMember("funcs") && config["funcs"].isArray()) {
-                    std::set<std::string> addedGuideHex;
+            if (!device.protocolConfig.isNull()) {
+                if (device.protocolType == Constants::PROTOCOL_SL651) {
+                    const auto& config = device.protocolConfig;
+                    if (config.isMember("funcs") && config["funcs"].isArray()) {
+                        std::set<std::string> addedGuideHex;
 
-                    for (const auto& func : config["funcs"]) {
-                        std::string dir = func.get("dir", "").asString();
-                        std::string funcCode = func.get("funcCode", "").asString();
+                        for (const auto& func : config["funcs"]) {
+                            std::string dir = func.get("dir", "").asString();
+                            std::string funcCode = func.get("funcCode", "").asString();
 
-                        if (dir != "UP" || !func.isMember("elements") || !func["elements"].isArray()) {
-                            continue;
-                        }
-
-                        if (DeviceDataTransformer::hasJpegElement(func)) {
-                            // 查找图片数据
-                            auto imageData = DeviceDataTransformer::findImageData(funcCode, funcDataMap);
-                            if (imageData) {
-                                Json::Value latestImage;
-                                latestImage["funcCode"] = funcCode;
-                                latestImage["data"] = *imageData;
-                                image = latestImage;
+                            if (dir != "UP" || !func.isMember("elements") || !func["elements"].isArray()) {
+                                continue;
                             }
-                        } else {
-                            DeviceDataTransformer::parseUpElements(func, realtimeValues, addedGuideHex, elements);
+
+                            if (DeviceDataTransformer::hasJpegElement(func)) {
+                                auto imageData = DeviceDataTransformer::findImageData(funcCode, funcDataMap);
+                                if (imageData) {
+                                    Json::Value latestImage;
+                                    latestImage["funcCode"] = funcCode;
+                                    latestImage["data"] = *imageData;
+                                    image = latestImage;
+                                }
+                            } else {
+                                DeviceDataTransformer::parseUpElements(func, realtimeValues, addedGuideHex, elements);
+                            }
                         }
                     }
+                } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
+                    DeviceDataTransformer::parseModbusRegisters(device, realtimeValues, elements);
                 }
             }
 
@@ -377,7 +384,7 @@ public:
     ) {
         // 1. 先获取 device_id（避免后续 JOIN，利用索引）
         auto deviceResult = co_await dbService_.execSqlCoro(
-            "SELECT id FROM device WHERE device_code = ? AND deleted_at IS NULL",
+            "SELECT id FROM device WHERE protocol_params->>'device_code' = ? AND deleted_at IS NULL",
             {code}
         );
 

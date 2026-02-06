@@ -54,7 +54,7 @@ public:
         std::string key = std::to_string(linkId) + ":" + clientAddr;
         clientDevices_[key].insert(deviceCode);
 
-        LOG_DEBUG << "[DeviceConnectionCache] Registered: " << deviceCode
+        LOG_TRACE << "[DeviceConnectionCache] Registered: " << deviceCode
                   << " -> " << linkId << ":" << clientAddr;
     }
 

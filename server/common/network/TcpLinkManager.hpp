@@ -177,8 +177,7 @@ public:
             buf->retrieveAll();
 
             std::string clientAddr = conn->peerAddr().toIpPort();
-            LOG_INFO << "[Link " << linkId << "] Received from " << clientAddr
-                     << " (" << data.size() << " bytes): " << toHexString(data);
+            LOG_TRACE << "[Link " << linkId << "] Recv " << data.size() << "B from " << clientAddr;
 
             {
                 std::lock_guard<std::mutex> lock(rt->connMutex);
@@ -257,6 +256,11 @@ public:
                 if (connectionCallback_) {
                     connectionCallback_(linkId, serverAddr, isConnected);
                 }
+
+                // Trantor 的 Connector::restart()/retry() 在 Windows 上不可靠，需手动调度重连
+                if (!isConnected) {
+                    scheduleReconnect(linkId, runtimeWeak);
+                }
             });
 
             // 设置消息回调
@@ -268,8 +272,7 @@ public:
                 buf->retrieveAll();
 
                 std::string serverAddr = conn->peerAddr().toIpPort();
-                LOG_INFO << "[Link " << linkId << "] Received from server " << serverAddr
-                         << " (" << data.size() << " bytes): " << toHexString(data);
+                LOG_TRACE << "[Link " << linkId << "] Recv " << data.size() << "B from " << serverAddr;
 
                 {
                     std::lock_guard<std::mutex> lock(rt->connMutex);
@@ -285,14 +288,18 @@ public:
             });
 
             // 设置连接错误回调
-            client->setConnectionErrorCallback([linkId, runtimeWeak = std::weak_ptr(runtime)]() {
+            client->setConnectionErrorCallback([this, linkId, runtimeWeak = std::weak_ptr(runtime)]() {
                 auto rt = runtimeWeak.lock();
                 if (!rt) return;
 
                 LOG_WARN << "[Link " << linkId << "] Connection failed, will retry...";
-                std::lock_guard<std::mutex> lock(rt->connMutex);
-                rt->info.connStatus = "connecting";
-                rt->info.errorMsg = "Connection failed, retrying...";
+                {
+                    std::lock_guard<std::mutex> lock(rt->connMutex);
+                    rt->info.connStatus = "connecting";
+                    rt->info.errorMsg = "Connection failed, retrying...";
+                }
+
+                scheduleReconnect(linkId, runtimeWeak);
             });
 
             client->enableRetry();
@@ -467,7 +474,7 @@ public:
         // TCP Client 模式
         if (runtime->clientConn && runtime->clientConn->connected()) {
             runtime->clientConn->send(data);
-            LOG_DEBUG << "[Link " << linkId << "] Sent " << data.size() << " bytes to server";
+            LOG_TRACE << "[Link " << linkId << "] Sent " << data.size() << "B";
             return true;
         }
 
@@ -502,11 +509,24 @@ public:
         for (const auto& conn : runtime->serverConns) {
             if (conn->connected() && conn->peerAddr().toIpPort() == clientAddr) {
                 conn->send(data);
-                LOG_DEBUG << "[Link " << linkId << "] Sent " << data.size() << " bytes to " << clientAddr;
+                LOG_TRACE << "[Link " << linkId << "] Sent " << data.size() << "B to " << clientAddr;
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * @brief 获取指定链路的 EventLoop（TcpIoPool 线程）
+     * 用于在链路对应的 TcpIoPool 线程上执行操作（如 Modbus 轮询定时器）
+     */
+    EventLoop* getLinkLoop(int linkId) const {
+        std::shared_lock lock(mutex_);
+        auto it = runtimes_.find(linkId);
+        if (it != runtimes_.end()) {
+            return it->second->loop;
+        }
+        return nullptr;
     }
 
 private:
@@ -530,6 +550,41 @@ private:
         return drogon::app().getLoop();
     }
 
+    /**
+     * @brief 调度 TCP Client 断线重连
+     * 安全检查：runtime 已销毁、链路已被替换、已重连成功 → 均放弃重连
+     */
+    void scheduleReconnect(int linkId, const std::weak_ptr<LinkRuntime>& runtimeWeak) {
+        auto rt = runtimeWeak.lock();
+        if (!rt || !rt->loop) return;
+
+        rt->loop->runAfter(RECONNECT_DELAY_SEC, [this, linkId, runtimeWeak]() {
+            auto rt2 = runtimeWeak.lock();
+            if (!rt2) return;
+
+            // 确认该 runtime 仍是当前链路的实例（未被 stop/reload 替换）
+            {
+                std::shared_lock lock(mutex_);
+                auto it = runtimes_.find(linkId);
+                if (it == runtimes_.end() || it->second != rt2) return;
+            }
+
+            std::string name, ip;
+            uint16_t port;
+            {
+                std::lock_guard<std::mutex> lock(rt2->connMutex);
+                if (rt2->info.connStatus == "connected") return;
+                name = rt2->info.name;
+                ip = rt2->info.ip;
+                port = rt2->info.port;
+            }
+
+            LOG_INFO << "[Link " << linkId << "] Attempting reconnection to "
+                     << ip << ":" << port;
+            startClient(linkId, name, ip, port);
+        });
+    }
+
     // 注意：调用此函数时必须持有 rt->connMutex
     void updateRuntimeClientsLocked(const std::shared_ptr<LinkRuntime>& rt) {
         rt->info.clients.clear();
@@ -551,6 +606,8 @@ private:
         }
         return oss.str();
     }
+
+    static constexpr double RECONNECT_DELAY_SEC = 2.0;  // 断线重连延迟（秒）
 
 private:
     mutable std::shared_mutex mutex_;

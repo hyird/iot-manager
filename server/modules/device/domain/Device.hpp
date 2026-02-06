@@ -73,7 +73,7 @@ public:
         QueryBuilder qb;
         qb.notDeleted("d.deleted_at");
         if (!page.keyword.empty()) {
-            qb.likeAny({"d.name", "d.device_code"}, page.keyword);
+            qb.likeAny({"d.name", "d.protocol_params->>'device_code'"}, page.keyword);
         }
         if (linkId > 0) qb.eq("d.link_id", std::to_string(linkId));
         if (protocolConfigId > 0) qb.eq("d.protocol_config_id", std::to_string(protocolConfigId));
@@ -115,7 +115,7 @@ public:
     static Task<Json::Value> options() {
         DatabaseService db;
         auto result = co_await db.execSqlCoro(
-            "SELECT id, name, device_code FROM device WHERE deleted_at IS NULL ORDER BY name ASC"
+            "SELECT id, name, protocol_params->>'device_code' as device_code FROM device WHERE deleted_at IS NULL ORDER BY name ASC"
         );
 
         Json::Value items(Json::arrayValue);
@@ -123,7 +123,7 @@ public:
             Json::Value item;
             item["id"] = FieldHelper::getInt(row["id"]);
             item["name"] = FieldHelper::getString(row["name"]);
-            item["device_code"] = FieldHelper::getString(row["device_code"]);
+            item["device_code"] = FieldHelper::getString(row["device_code"], "");
             items.append(item);
         }
         co_return items;
@@ -154,9 +154,12 @@ public:
      * @brief 约束：设备编码唯一
      */
     static Task<void> codeUnique(const Device& device) {
+        auto code = device.deviceCode();
+        if (code.empty()) co_return;
+
         DatabaseService db;
-        std::string sql = "SELECT 1 FROM device WHERE device_code = ? AND deleted_at IS NULL";
-        std::vector<std::string> params = {device.deviceCode_};
+        std::string sql = "SELECT 1 FROM device WHERE protocol_params->>'device_code' = ? AND deleted_at IS NULL";
+        std::vector<std::string> params = {code};
 
         if (device.id() > 0) {
             sql += " AND id != ?";
@@ -213,10 +216,6 @@ public:
             name_ = data["name"].asString();
             markDirty();
         }
-        if (data.isMember("device_code")) {
-            deviceCode_ = data["device_code"].asString();
-            markDirty();
-        }
         if (data.isMember("link_id")) {
             linkId_ = data["link_id"].asInt();
             markDirty();
@@ -229,25 +228,17 @@ public:
             status_ = data["status"].asString();
             markDirty();
         }
-        if (data.isMember("online_timeout")) {
-            onlineTimeout_ = data["online_timeout"].asInt();
-            markDirty();
-        }
-        if (data.isMember("remote_control")) {
-            remoteControl_ = data["remote_control"].asBool();
-            markDirty();
-        }
-        if (data.isMember("modbus_mode")) {
-            modbusMode_ = data["modbus_mode"].asString();
-            markDirty();
-        }
-        if (data.isMember("timezone")) {
-            timezone_ = data["timezone"].asString();
-            markDirty();
-        }
         if (data.isMember("remark")) {
             remark_ = data["remark"].asString();
             markDirty();
+        }
+
+        // 协议特有参数
+        for (const auto& key : {"device_code", "online_timeout", "remote_control", "modbus_mode", "slave_id", "timezone"}) {
+            if (data.isMember(key)) {
+                protocolParams_[key] = data[key];
+                markDirty();
+            }
         }
         return *this;
     }
@@ -263,15 +254,19 @@ public:
     // ==================== 数据访问 ====================
 
     const std::string& name() const { return name_; }
-    const std::string& deviceCode() const { return deviceCode_; }
     int linkId() const { return linkId_; }
     int protocolConfigId() const { return protocolConfigId_; }
     const std::string& status() const { return status_; }
-    int onlineTimeout() const { return onlineTimeout_; }
-    bool remoteControl() const { return remoteControl_; }
-    const std::string& modbusMode() const { return modbusMode_; }
-    const std::string& timezone() const { return timezone_; }
     const std::string& remark() const { return remark_; }
+    const Json::Value& protocolParams() const { return protocolParams_; }
+
+    // 协议参数便捷访问
+    std::string deviceCode() const { return protocolParams_.get("device_code", "").asString(); }
+    int onlineTimeout() const { return protocolParams_.get("online_timeout", 300).asInt(); }
+    bool remoteControl() const { return protocolParams_.get("remote_control", true).asBool(); }
+    std::string modbusMode() const { return protocolParams_.get("modbus_mode", "").asString(); }
+    int slaveId() const { return protocolParams_.get("slave_id", 1).asInt(); }
+    std::string timezone() const { return protocolParams_.get("timezone", "+08:00").asString(); }
 
     // 关联数据
     const std::string& linkName() const { return linkName_; }
@@ -287,19 +282,26 @@ public:
         Json::Value json;
         json["id"] = id();
         json["name"] = name_;
-        json["device_code"] = deviceCode_;
         json["link_id"] = linkId_;
         json["protocol_config_id"] = protocolConfigId_;
         json["status"] = status_;
-        json["online_timeout"] = onlineTimeout_;
-        json["remote_control"] = remoteControl_;
-        if (!modbusMode_.empty()) {
-            json["modbus_mode"] = modbusMode_;
-        }
-        json["timezone"] = timezone_;
         json["remark"] = remark_;
         json["created_at"] = createdAt_;
         json["updated_at"] = updatedAt_;
+
+        // 协议参数展开为顶层字段（API 兼容）
+        json["device_code"] = deviceCode();
+        json["online_timeout"] = onlineTimeout();
+        json["remote_control"] = remoteControl();
+        json["timezone"] = timezone();
+        auto mm = modbusMode();
+        if (!mm.empty()) {
+            json["modbus_mode"] = mm;
+        }
+        auto sid = slaveId();
+        if (sid > 0) {
+            json["slave_id"] = sid;
+        }
 
         // 关联信息
         json["link_name"] = linkName_;
@@ -326,14 +328,10 @@ public:
 private:
     // 设备基本字段
     std::string name_;
-    std::string deviceCode_;
     int linkId_ = 0;
     int protocolConfigId_ = 0;
     std::string status_ = Constants::USER_STATUS_ENABLED;
-    int onlineTimeout_ = 300;
-    bool remoteControl_ = true;
-    std::string modbusMode_;  // Modbus 通信模式: TCP / RTU（仅当链路是 TCP Server 且协议是 Modbus 时使用）
-    std::string timezone_ = "+08:00";  // 设备时区（用于报文时间解析）
+    Json::Value protocolParams_ = Json::objectValue;  // 协议特有参数 (JSONB)
     std::string remark_;
     std::string createdAt_;
     std::string updatedAt_;
@@ -347,21 +345,24 @@ private:
 
     void applyCreate(const Json::Value& data) {
         name_ = data.get("name", "").asString();
-        deviceCode_ = data.get("device_code", "").asString();
         linkId_ = data.get("link_id", 0).asInt();
         protocolConfigId_ = data.get("protocol_config_id", 0).asInt();
         status_ = data.get("status", Constants::USER_STATUS_ENABLED).asString();
-        onlineTimeout_ = data.get("online_timeout", 300).asInt();
-        remoteControl_ = data.get("remote_control", true).asBool();
-        modbusMode_ = data.get("modbus_mode", "").asString();
-        timezone_ = data.get("timezone", "+08:00").asString();
         remark_ = data.get("remark", "").asString();
+
+        // 收集协议特有参数
+        protocolParams_ = Json::objectValue;
+        for (const auto& key : {"device_code", "online_timeout", "remote_control", "modbus_mode", "slave_id", "timezone"}) {
+            if (data.isMember(key) && !data[key].isNull()) {
+                protocolParams_[key] = data[key];
+            }
+        }
     }
 
     Task<void> load(int deviceId) {
         auto result = co_await db().execSqlCoro(R"(
             SELECT d.*,
-                   l.name as link_name, l.mode as link_mode,
+                   l.name as link_name, l.mode as link_mode, l.protocol as link_protocol,
                    p.name as protocol_name, p.protocol as protocol_type
             FROM device d
             LEFT JOIN link l ON d.link_id = l.id AND l.deleted_at IS NULL
@@ -380,17 +381,22 @@ private:
     void fromRow(const Row& row, bool withRelations = false) {
         setId(FieldHelper::getInt(row["id"]));
         name_ = FieldHelper::getString(row["name"]);
-        deviceCode_ = FieldHelper::getString(row["device_code"]);
         linkId_ = FieldHelper::getInt(row["link_id"]);
         protocolConfigId_ = FieldHelper::getInt(row["protocol_config_id"]);
         status_ = FieldHelper::getString(row["status"], Constants::USER_STATUS_ENABLED);
-        onlineTimeout_ = row["online_timeout"].isNull() ? 300 : FieldHelper::getInt(row["online_timeout"]);
-        remoteControl_ = row["remote_control"].isNull() ? true : row["remote_control"].as<bool>();
-        modbusMode_ = FieldHelper::getString(row["modbus_mode"], "");
-        timezone_ = FieldHelper::getString(row["timezone"], "+08:00");
         remark_ = FieldHelper::getString(row["remark"], "");
         createdAt_ = FieldHelper::getString(row["created_at"], "");
         updatedAt_ = FieldHelper::getString(row["updated_at"], "");
+
+        // 解析 protocol_params JSONB
+        protocolParams_ = Json::objectValue;
+        std::string ppStr = FieldHelper::getString(row["protocol_params"], "");
+        if (!ppStr.empty()) {
+            Json::CharReaderBuilder rb;
+            std::istringstream iss(ppStr);
+            std::string errs;
+            Json::parseFromStream(rb, iss, &protocolParams_, &errs);
+        }
 
         if (withRelations) {
             linkName_ = FieldHelper::getString(row["link_name"], "");
@@ -402,30 +408,36 @@ private:
     }
 
     Task<void> persistCreate(TransactionGuard& tx) {
+        Json::StreamWriterBuilder wb;
+        wb["indentation"] = "";
+        std::string ppJson = Json::writeString(wb, protocolParams_);
+
         auto result = co_await tx.execSqlCoro(R"(
-            INSERT INTO device (name, device_code, link_id, protocol_config_id,
-                               status, online_timeout, remote_control, modbus_mode, timezone, remark, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+            INSERT INTO device (name, link_id, protocol_config_id,
+                               status, protocol_params, remark, created_at)
+            VALUES (?, ?, ?, ?, ?::jsonb, ?, ?) RETURNING id
         )", {
-            name_, deviceCode_, std::to_string(linkId_), std::to_string(protocolConfigId_),
-            status_, std::to_string(onlineTimeout_), remoteControl_ ? "true" : "false",
-            modbusMode_, timezone_, remark_, TimestampHelper::now()
+            name_, std::to_string(linkId_), std::to_string(protocolConfigId_),
+            status_, ppJson, remark_, TimestampHelper::now()
         });
 
         setId(FieldHelper::getInt(result[0]["id"]));
-        raiseEvent<DeviceCreated>(id(), deviceCode_);
+        raiseEvent<DeviceCreated>(id(), deviceCode());
     }
 
     Task<void> persistUpdate(TransactionGuard& tx) {
+        Json::StreamWriterBuilder wb;
+        wb["indentation"] = "";
+        std::string ppJson = Json::writeString(wb, protocolParams_);
+
         co_await tx.execSqlCoro(R"(
             UPDATE device
-            SET name = ?, device_code = ?, link_id = ?, protocol_config_id = ?,
-                status = ?, online_timeout = ?, remote_control = ?, modbus_mode = ?, timezone = ?, remark = ?, updated_at = ?
+            SET name = ?, link_id = ?, protocol_config_id = ?,
+                status = ?, protocol_params = ?::jsonb, remark = ?, updated_at = ?
             WHERE id = ?
         )", {
-            name_, deviceCode_, std::to_string(linkId_), std::to_string(protocolConfigId_),
-            status_, std::to_string(onlineTimeout_), remoteControl_ ? "true" : "false",
-            modbusMode_, timezone_, remark_, TimestampHelper::now(), std::to_string(id())
+            name_, std::to_string(linkId_), std::to_string(protocolConfigId_),
+            status_, ppJson, remark_, TimestampHelper::now(), std::to_string(id())
         });
 
         raiseEvent<DeviceUpdated>(id());
