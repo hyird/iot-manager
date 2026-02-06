@@ -35,7 +35,7 @@ interface DeviceFormModalProps {
 const toProtocolType = (linkProtocol?: string): Protocol.Type | undefined => {
   if (!linkProtocol) return undefined;
   if (linkProtocol === "SL651") return "SL651";
-  return "MODBUS";
+  return "Modbus";
 };
 
 const DeviceFormModal = ({
@@ -145,15 +145,16 @@ const DeviceFormModal = ({
           {({ getFieldValue }) => {
             const currentLinkId = getFieldValue("link_id");
             const currentLink = linkOptions.find((opt) => opt.id === currentLinkId);
+            // TCP Server 固定 RTU（串口透传），TCP Client 可选 TCP/RTU
             const showModbusMode =
-              currentLink?.mode === "TCP Server" && currentLink?.protocol === "Modbus";
+              currentLink?.mode === "TCP Client" && currentLink?.protocol === "Modbus";
             if (!showModbusMode) return null;
             return (
               <Form.Item
                 label="Modbus 模式"
                 name="modbus_mode"
                 rules={[{ required: true, message: "请选择 Modbus 模式" }]}
-                extra="TCP Server 模式下需要指定设备的 Modbus 通信模式"
+                extra="TCP Client 模式下需要指定 Modbus 通信模式"
               >
                 <Select placeholder="选择 Modbus 模式">
                   <Select.Option value="TCP">Modbus TCP</Select.Option>
@@ -163,7 +164,7 @@ const DeviceFormModal = ({
             );
           }}
         </Form.Item>
-        {protocolType === "MODBUS" && (
+        {protocolType === "Modbus" && (
           <Form.Item
             label="从站地址 (Slave ID)"
             name="slave_id"

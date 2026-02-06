@@ -96,7 +96,8 @@ const LinkPage = () => {
   /** 根据模式获取可用的协议列表 */
   const getProtocolsByMode = (mode: Link.Mode): Link.Protocol[] => {
     if (mode === "TCP Server") {
-      return ["SL651", "Modbus"];
+      // TCP Server: SL651 或 Modbus RTU（串口透传）
+      return ["SL651", "Modbus RTU"];
     } else {
       return ["SL651", "Modbus TCP", "Modbus RTU"];
     }
@@ -118,13 +119,9 @@ const LinkPage = () => {
     const currentProtocol = form.getFieldValue("protocol") as Link.Protocol;
     const availableProtocols = getProtocolsByMode(mode);
     if (currentProtocol && !availableProtocols.includes(currentProtocol)) {
-      // 如果当前协议是 Modbus，切换到 Client 模式时改为 Modbus TCP
-      if (currentProtocol === "Modbus") {
-        form.setFieldValue("protocol", "Modbus TCP");
-      }
-      // 如果当前协议是 Modbus TCP 或 Modbus RTU，切换到 Server 模式时改为 Modbus
-      else if (currentProtocol === "Modbus TCP" || currentProtocol === "Modbus RTU") {
-        form.setFieldValue("protocol", "Modbus");
+      // Modbus TCP 在 Server 模式不可用，自动切换为 Modbus RTU
+      if (currentProtocol === "Modbus TCP") {
+        form.setFieldValue("protocol", "Modbus RTU");
       }
     }
   };
@@ -347,7 +344,7 @@ const LinkPage = () => {
                   rules={[{ required: true, message: "请选择协议" }]}
                   extra={
                     mode === "TCP Server"
-                      ? "Server 模式下 Modbus 协议的 TCP/RTU 模式在设备中配置"
+                      ? "Server 模式下 Modbus 仅支持 RTU（串口透传）"
                       : undefined
                   }
                 >

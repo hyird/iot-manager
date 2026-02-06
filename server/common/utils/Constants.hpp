@@ -69,7 +69,7 @@ inline constexpr const char* LINK_MODE_TCP_CLIENT = "TCP Client";
 inline constexpr const char* PROTOCOL_SL651 = "SL651";
 
 /** Modbus 协议（通用寄存器配置） */
-inline constexpr const char* PROTOCOL_MODBUS = "MODBUS";
+inline constexpr const char* PROTOCOL_MODBUS = "Modbus";
 
 /** Modbus TCP 协议 */
 inline constexpr const char* PROTOCOL_MODBUS_TCP = "Modbus TCP";

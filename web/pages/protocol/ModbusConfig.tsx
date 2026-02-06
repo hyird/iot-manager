@@ -120,7 +120,7 @@ const ModbusConfigPage = () => {
     data: configPage,
     isLoading: loadingTypes,
     refetch: refetchTypes,
-  } = useProtocolConfigList({ protocol: "MODBUS" }, { enabled: canQuery });
+  } = useProtocolConfigList({ protocol: "Modbus" }, { enabled: canQuery });
 
   // 保存和删除 mutations
   const saveMutation = useProtocolConfigSave();
@@ -181,7 +181,7 @@ const ModbusConfigPage = () => {
 
     await saveMutation.mutateAsync({
       id: activeTypeId,
-      protocol: "MODBUS",
+      protocol: "Modbus",
       config: newConfig,
     });
   };
@@ -453,7 +453,7 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
 
       await saveMutation.mutateAsync({
         id: current?.id,
-        protocol: "MODBUS",
+        protocol: "Modbus",
         name: values.name,
         enabled: values.enabled,
         config: {
@@ -597,7 +597,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
 
       await saveMutation.mutateAsync({
         id: typeId,
-        protocol: "MODBUS",
+        protocol: "Modbus",
         config: {
           byteOrder: config.byteOrder,
           readInterval: config.readInterval,

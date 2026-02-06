@@ -13,7 +13,7 @@
 struct ParsedFrameResult {
     int deviceId = 0;
     int linkId = 0;
-    std::string protocol;       // "SL651" / "MODBUS"
+    std::string protocol;       // "SL651" / "Modbus"
     std::string funcCode;
     Json::Value data;           // 完整 JSONB（直接序列化入库）
     std::string reportTime;

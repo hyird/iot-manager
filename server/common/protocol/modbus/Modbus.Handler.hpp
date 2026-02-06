@@ -79,6 +79,8 @@ public:
     Task<void> reloadDevices() {
         LOG_INFO << "[Modbus] Reloading devices...";
         stopAllPolling();
+        // 强制刷新 DeviceCache，避免竞态返回旧数据
+        co_await DeviceCache::instance().refreshCache();
         co_await loadDeviceContexts();
         startPollingForRunningLinks();
         LOG_INFO << "[Modbus] Reloaded, " << deviceContexts_.size() << " device(s)";
@@ -356,11 +358,11 @@ private:
         ctx.linkMode = device.linkMode;
         ctx.slaveId = device.slaveId;
 
-        // 帧模式
+        // 帧模式：TCP Server 固定 RTU（串口透传），TCP Client 可选 TCP/RTU
         if (device.linkMode == Constants::LINK_MODE_TCP_CLIENT) {
-            ctx.frameMode = FrameMode::TCP;  // TCP Client 默认 Modbus TCP
-        } else {
             ctx.frameMode = parseFrameMode(device.modbusMode);
+        } else {
+            ctx.frameMode = FrameMode::RTU;
         }
 
         // 从协议配置解析

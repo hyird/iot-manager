@@ -5,7 +5,7 @@
 import type { PageParams } from "./common";
 
 /** 协议类型 */
-export type ProtocolType = "SL651" | "MODBUS";
+export type ProtocolType = "SL651" | "Modbus";
 
 /** SL651 传输方向 */
 export type SL651Direction = "UP" | "DOWN";
