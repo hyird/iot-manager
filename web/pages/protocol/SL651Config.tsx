@@ -4,6 +4,7 @@
  * 布局：左侧设备类型列表 + 右侧功能码/要素配置
  */
 
+import { DownloadOutlined, UploadOutlined } from "@ant-design/icons";
 import {
   Button,
   Card,
@@ -22,7 +23,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { useMemo, useRef, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
-import { usePermission } from "@/hooks";
+import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { SL651 } from "@/types";
 import {
@@ -54,6 +55,8 @@ const SL651ConfigPage = () => {
   const canAdd = usePermission("iot:protocol:add");
   const canEdit = usePermission("iot:protocol:edit");
   const canDelete = usePermission("iot:protocol:delete");
+  const canImport = usePermission("iot:protocol:import");
+  const canExport = usePermission("iot:protocol:export");
 
   // 设备类型列表查询
   const {
@@ -65,6 +68,9 @@ const SL651ConfigPage = () => {
   // 保存和删除 mutations
   const saveMutation = useProtocolConfigSave();
   const deleteMutation = useProtocolConfigDelete();
+
+  // 导入导出
+  const { exportConfigs, triggerImport, importing } = useProtocolImportExport("SL651");
 
   // 当前选中的设备类型 ID（用户手动选择）
   const [selectedTypeId, setSelectedTypeId] = useState<number>();
@@ -348,6 +354,20 @@ const SL651ConfigPage = () => {
                       删除
                     </Button>
                   </Popconfirm>
+                )}
+                {canExport && (
+                  <Button
+                    icon={<DownloadOutlined />}
+                    disabled={!types.length}
+                    onClick={() => exportConfigs(types)}
+                  >
+                    导出
+                  </Button>
+                )}
+                {canImport && (
+                  <Button icon={<UploadOutlined />} loading={importing} onClick={triggerImport}>
+                    导入
+                  </Button>
                 )}
               </Space>
             }

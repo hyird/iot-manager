@@ -110,6 +110,8 @@ registerPage({
     { code: "iot:protocol:add", name: "新增配置", action: "add" },
     { code: "iot:protocol:edit", name: "编辑配置", action: "edit" },
     { code: "iot:protocol:delete", name: "删除配置", action: "delete" },
+    { code: "iot:protocol:import", name: "导入配置", action: "import" },
+    { code: "iot:protocol:export", name: "导出配置", action: "export" },
   ],
 });
 
@@ -125,6 +127,8 @@ registerPage({
     { code: "iot:protocol:add", name: "新增配置", action: "add" },
     { code: "iot:protocol:edit", name: "编辑配置", action: "edit" },
     { code: "iot:protocol:delete", name: "删除配置", action: "delete" },
+    { code: "iot:protocol:import", name: "导入配置", action: "import" },
+    { code: "iot:protocol:export", name: "导出配置", action: "export" },
   ],
 });
 

@@ -712,6 +712,8 @@ private:
         co_await insertButton(db, "新增配置", sl651Id, "iot:protocol:add", 2);
         co_await insertButton(db, "编辑配置", sl651Id, "iot:protocol:edit", 3);
         co_await insertButton(db, "删除配置", sl651Id, "iot:protocol:delete", 4);
+        co_await insertButton(db, "导入配置", sl651Id, "iot:protocol:import", 5);
+        co_await insertButton(db, "导出配置", sl651Id, "iot:protocol:export", 6);
 
         // Modbus配置
         int modbusId = co_await insertMenu(db, "Modbus配置", protocolId, Constants::MENU_TYPE_PAGE, "/iot/modbus", "ModbusConfig", "", "SettingOutlined", false, 1);
@@ -719,6 +721,8 @@ private:
         co_await insertButton(db, "新增配置", modbusId, "iot:protocol:add", 2);
         co_await insertButton(db, "编辑配置", modbusId, "iot:protocol:edit", 3);
         co_await insertButton(db, "删除配置", modbusId, "iot:protocol:delete", 4);
+        co_await insertButton(db, "导入配置", modbusId, "iot:protocol:import", 5);
+        co_await insertButton(db, "导出配置", modbusId, "iot:protocol:export", 6);
 
         // ==================== 设备管理 ====================
         int deviceId = co_await insertMenu(db, "设备管理", 0, Constants::MENU_TYPE_PAGE, "/device", "Device", "", "HddOutlined", false, 3);
