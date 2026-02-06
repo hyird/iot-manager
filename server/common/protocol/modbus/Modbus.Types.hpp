@@ -100,6 +100,7 @@ struct RegisterDef {
     uint16_t quantity;     // 占用的寄存器数
     std::string unit;
     std::string remark;
+    int decimals = -1;     // 小数位数，-1 表示不限制（仅 FLOAT32/DOUBLE 生效）
     Json::Value dictConfig;
 };
 

@@ -264,24 +264,23 @@ const SystemRolePage = () => {
   }
 
   const columns: ColumnsType<Role.Item> = [
-    { title: "角色名称", dataIndex: "name", width: 150 },
-    { title: "角色编码", dataIndex: "code", width: 150 },
+    { title: "角色名称", dataIndex: "name" },
+    { title: "角色编码", dataIndex: "code" },
     {
       title: "状态",
       dataIndex: "status",
-      width: 100,
       render: (v: Role.Status) => <StatusTag status={v} />,
     },
     {
       title: "权限数量",
       dataIndex: "menu_ids",
-      width: 100,
       render: (ids: number[]) => <Tag color="blue">{ids?.length || 0} 个</Tag>,
     },
     {
       title: "操作",
       key: "actions",
       width: 240,
+      fixed: "right" as const,
       render: (_, record) => {
         const isSuperadmin = record.code === "superadmin";
         return (
@@ -343,6 +342,7 @@ const SystemRolePage = () => {
         }}
         onChange={handleTableChange}
         size="middle"
+        scroll={{ x: "max-content" }}
         sticky
       />
 

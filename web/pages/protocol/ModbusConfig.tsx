@@ -30,7 +30,7 @@ import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "reac
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
-import type { Modbus, Protocol } from "@/types";
+import type { Modbus, ModbusDictConfig, Protocol } from "@/types";
 
 const { Sider, Content } = Layout;
 
@@ -198,12 +198,10 @@ const ModbusConfigPage = () => {
   // ========== 寄存器表格列 ==========
 
   const registerColumns: ColumnsType<Modbus.Register> = [
-    { title: "名称", dataIndex: "name", width: 120 },
+    { title: "名称", dataIndex: "name" },
     {
       title: "寄存器类型",
       dataIndex: "registerType",
-      width: 200,
-      minWidth: 150,
       render: (val: Modbus.RegisterType) => {
         const opt = RegisterTypeOptions.find((o) => o.value === val);
         const colorMap: Record<Modbus.RegisterType, string> = {
@@ -218,7 +216,6 @@ const ModbusConfigPage = () => {
     {
       title: "地址",
       dataIndex: "address",
-      width: 100,
       render: (val: number, r: Modbus.Register) => {
         const prefixMap: Record<Modbus.RegisterType, string> = {
           COIL: "0",
@@ -232,17 +229,17 @@ const ModbusConfigPage = () => {
     {
       title: "数据类型",
       dataIndex: "dataType",
-      width: 160,
       render: (val: Modbus.DataType) => {
         const opt = DataTypeOptions.find((o) => o.value === val);
         return opt?.label || val;
       },
     },
-    { title: "单位", dataIndex: "unit", width: 60 },
-    { title: "备注", dataIndex: "remark", width: 150, ellipsis: true },
+    { title: "单位", dataIndex: "unit" },
+    { title: "备注", dataIndex: "remark", ellipsis: true },
     {
       title: "操作",
       width: 120,
+      fixed: "right" as const,
       render: (_, r) => (
         <Space>
           {canEdit && (
@@ -416,7 +413,7 @@ const ModbusConfigPage = () => {
                   loading={loadingRegisters}
                   sticky
                   columns={registerColumns}
-                  scroll={{ x: 1000 }}
+                  scroll={{ x: "max-content" }}
                 />
               </div>
             )}
@@ -553,8 +550,9 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
     const [current, setCurrent] = useState<Modbus.Register>();
     const [form] = Form.useForm();
 
-    // 监听寄存器类型变化
+    // 监听寄存器类型和数据类型变化
     const registerType = Form.useWatch("registerType", form);
+    const dataType = Form.useWatch("dataType", form);
 
     useImperativeHandle(ref, () => ({
       open(m, t, register) {
@@ -562,12 +560,18 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
         setTypeId(t);
         setCurrent(register);
         form.resetFields();
-        form.setFieldsValue(
-          register ?? {
+        if (register) {
+          form.setFieldsValue({
+            ...register,
+            boolLabel0: register.dictConfig?.items?.find((i) => i.key === "0")?.label,
+            boolLabel1: register.dictConfig?.items?.find((i) => i.key === "1")?.label,
+          });
+        } else {
+          form.setFieldsValue({
             registerType: "HOLDING_REGISTER",
             dataType: "UINT16",
-          }
-        );
+          });
+        }
         setOpen(true);
       },
     }));
@@ -598,34 +602,39 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
         return;
       }
 
+      // 构建 dictConfig（Bool 值映射）
+      const dictConfig: ModbusDictConfig | undefined =
+        values.boolLabel0 || values.boolLabel1
+          ? {
+              items: [
+                ...(values.boolLabel0 ? [{ key: "0", label: values.boolLabel0 }] : []),
+                ...(values.boolLabel1 ? [{ key: "1", label: values.boolLabel1 }] : []),
+              ],
+            }
+          : undefined;
+
+      const registerFields = {
+        name: values.name,
+        registerType: values.registerType,
+        address: values.address,
+        dataType: values.dataType,
+        quantity: actualQuantity,
+        unit: values.unit,
+        decimals: values.decimals,
+        dictConfig,
+        remark: values.remark,
+      };
+
       let newRegisters: Modbus.Register[];
 
       if (mode === "create") {
-        const newRegister: Modbus.Register = {
-          id: generateId(),
-          name: values.name,
-          registerType: values.registerType,
-          address: values.address,
-          dataType: values.dataType,
-          quantity: actualQuantity,
-          unit: values.unit,
-          remark: values.remark,
-        };
-        newRegisters = [...(config.registers || []), newRegister];
+        newRegisters = [
+          ...(config.registers || []),
+          { id: generateId(), ...registerFields },
+        ];
       } else {
         newRegisters = config.registers.map((r) =>
-          r.id === current?.id
-            ? {
-                ...r,
-                name: values.name,
-                registerType: values.registerType,
-                address: values.address,
-                dataType: values.dataType,
-                quantity: actualQuantity,
-                unit: values.unit,
-                remark: values.remark,
-              }
-            : r
+          r.id === current?.id ? { ...r, ...registerFields } : r
         );
       }
 
@@ -673,9 +682,13 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                 options={RegisterTypeOptions}
                 onChange={(val) => {
                   if (val === "COIL" || val === "DISCRETE_INPUT") {
-                    form.setFieldsValue({ dataType: "BOOL" });
+                    form.setFieldsValue({ dataType: "BOOL", decimals: undefined });
                   } else if (form.getFieldValue("dataType") === "BOOL") {
-                    form.setFieldsValue({ dataType: "UINT16" });
+                    form.setFieldsValue({
+                      dataType: "UINT16",
+                      boolLabel0: undefined,
+                      boolLabel1: undefined,
+                    });
                   }
                 }}
               />
@@ -704,8 +717,37 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                     : DataTypeOptions
               }
               disabled={isBitRegister}
+              onChange={() => {
+                form.setFieldsValue({
+                  decimals: undefined,
+                  boolLabel0: undefined,
+                  boolLabel1: undefined,
+                });
+              }}
             />
           </Form.Item>
+
+          {(dataType === "FLOAT32" || dataType === "DOUBLE") && (
+            <Form.Item label="小数位数" name="decimals">
+              <InputNumber
+                min={0}
+                max={8}
+                placeholder="不限制"
+                className="!w-full"
+              />
+            </Form.Item>
+          )}
+
+          {dataType === "BOOL" && (
+            <Flex gap={16}>
+              <Form.Item label="0 值显示" name="boolLabel0" className="flex-1">
+                <Input placeholder="如：关闭、OFF" />
+              </Form.Item>
+              <Form.Item label="1 值显示" name="boolLabel1" className="flex-1">
+                <Input placeholder="如：开启、ON" />
+              </Form.Item>
+            </Flex>
+          )}
 
           <Flex gap={16}>
             <Form.Item label="单位" name="unit" className="flex-1">

@@ -423,7 +423,6 @@ const SystemMenuPage = () => {
     {
       title: "名称",
       dataIndex: "name",
-      minWidth: 180,
     },
     {
       title: "类型",
@@ -456,25 +455,23 @@ const SystemMenuPage = () => {
     {
       title: "权限标识",
       dataIndex: "permission_code",
-      minWidth: 120,
       render: (v: string | undefined, record) =>
         record.type === "button" ? v || <span className="text-[#faad14]">未配置</span> : "-",
     },
     {
       title: "排序",
       dataIndex: "sort_order",
-      width: 80,
     },
     {
       title: "状态",
       dataIndex: "status",
-      width: 100,
       render: (v: Menu.Status) => <StatusTag status={v} />,
     },
     {
       title: "操作",
       key: "actions",
       width: 260,
+      fixed: "right" as const,
       render: (_, record) => (
         <Space>
           {canEdit && (
@@ -537,6 +534,7 @@ const SystemMenuPage = () => {
         loading={isLoading}
         pagination={false}
         size="middle"
+        scroll={{ x: "max-content" }}
         expandable={{
           defaultExpandAllRows: true,
           rowExpandable: (record) => Array.isArray(record.children) && record.children.length > 0,

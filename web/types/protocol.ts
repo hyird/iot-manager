@@ -148,6 +148,8 @@ export interface ModbusRegister {
   quantity: number;
   /** 单位 */
   unit?: string;
+  /** 小数位数（仅 FLOAT32/DOUBLE 生效，-1 或 undefined 表示不限制） */
+  decimals?: number;
   /** 字典配置 */
   dictConfig?: ModbusDictConfig;
   /** 备注 */

@@ -176,21 +176,19 @@ const LinkPage = () => {
   }
 
   const columns: ColumnsType<Link.Item> = [
-    { title: "链路名称", dataIndex: "name", width: 150 },
-    { title: "模式", dataIndex: "mode", width: 120 },
-    { title: "协议", dataIndex: "protocol", width: 120 },
-    { title: "IP地址", dataIndex: "ip", width: 150 },
-    { title: "端口", dataIndex: "port", width: 100 },
+    { title: "链路名称", dataIndex: "name" },
+    { title: "模式", dataIndex: "mode" },
+    { title: "协议", dataIndex: "protocol" },
+    { title: "IP地址", dataIndex: "ip" },
+    { title: "端口", dataIndex: "port" },
     {
       title: "启用",
       dataIndex: "status",
-      width: 80,
       render: (v: Link.Status) => <StatusTag status={v} />,
     },
     {
       title: "连接状态",
       key: "conn_status",
-      width: 160,
       render: (_, record) => {
         const status = record.conn_status || "stopped";
         const config = connStatusConfig[status] || connStatusConfig.stopped;
@@ -232,11 +230,12 @@ const LinkPage = () => {
         return <Tag color={config.color}>{config.label}</Tag>;
       },
     },
-    { title: "创建时间", dataIndex: "created_at", width: 180 },
+    { title: "创建时间", dataIndex: "created_at" },
     {
       title: "操作",
       key: "actions",
       width: 150,
+      fixed: "right" as const,
       render: (_, record) => (
         <Space>
           {canEdit && (
@@ -293,7 +292,7 @@ const LinkPage = () => {
         }}
         onChange={handleTableChange}
         size="middle"
-        scroll={{ x: 1200 }}
+        scroll={{ x: "max-content" }}
         sticky
       />
 

@@ -226,18 +226,15 @@ const SystemDepartmentPage = () => {
     {
       title: "部门名称",
       dataIndex: "name",
-      width: 200,
     },
     {
       title: "部门编码",
       dataIndex: "code",
-      width: 120,
       render: (v) => v || "-",
     },
     {
       title: "负责人",
       dataIndex: "leader_id",
-      width: 100,
       render: (v: number | null) =>
         v ? userMap.get(v)?.nickname || userMap.get(v)?.username || "-" : "-",
     },
@@ -245,31 +242,28 @@ const SystemDepartmentPage = () => {
       title: "联系电话",
       dataIndex: "leader_id",
       key: "phone",
-      width: 130,
       render: (v: number | null) => (v ? userMap.get(v)?.phone || "-" : "-"),
     },
     {
       title: "邮箱",
       dataIndex: "leader_id",
       key: "email",
-      width: 180,
       render: (v: number | null) => (v ? userMap.get(v)?.email || "-" : "-"),
     },
     {
       title: "排序",
       dataIndex: "sort_order",
-      width: 80,
     },
     {
       title: "状态",
       dataIndex: "status",
-      width: 80,
       render: (v: Department.Status) => <StatusTag status={v} />,
     },
     {
       title: "操作",
       key: "actions",
       width: 200,
+      fixed: "right" as const,
       render: (_, record) => (
         <Space>
           {canAdd && (
@@ -330,7 +324,7 @@ const SystemDepartmentPage = () => {
           defaultExpandAllRows: true,
           rowExpandable: (record) => Array.isArray(record.children) && record.children.length > 0,
         }}
-        scroll={{ x: 1100 }}
+        scroll={{ x: "max-content" }}
         sticky
       />
 

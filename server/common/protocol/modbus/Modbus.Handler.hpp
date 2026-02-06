@@ -653,6 +653,7 @@ private:
                 def.quantity = static_cast<uint16_t>(reg.get("quantity", 1).asUInt());
                 def.unit = reg.get("unit", "").asString();
                 def.remark = reg.get("remark", "").asString();
+                def.decimals = reg.get("decimals", -1).asInt();
                 if (reg.isMember("dictConfig") && reg["dictConfig"].isObject()) {
                     def.dictConfig = reg["dictConfig"];
                 }
@@ -1002,7 +1003,11 @@ private:
                         || reg->dataType == DataType::UINT64) {
                         elem["value"] = static_cast<int64_t>(value);
                     } else {
-                        // FLOAT32 / DOUBLE 保留小数
+                        // FLOAT32 / DOUBLE：按配置的小数位数截断
+                        if (reg->decimals >= 0) {
+                            double factor = std::pow(10.0, reg->decimals);
+                            value = std::round(value * factor) / factor;
+                        }
                         elem["value"] = value;
                     }
                 } else {

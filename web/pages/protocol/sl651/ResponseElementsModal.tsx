@@ -105,6 +105,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                   rowKey="key"
                   pagination={false}
                   size="small"
+                  scroll={{ x: "max-content" }}
                   columns={[
                     {
                       title: "要素名称",
@@ -191,6 +192,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                     {
                       title: "操作",
                       width: 60,
+                      fixed: "right" as const,
                       render: (_, field) => (
                         <Button type="text" danger onClick={() => remove(field.name)}>
                           删除

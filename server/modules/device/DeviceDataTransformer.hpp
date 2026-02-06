@@ -206,7 +206,14 @@ public:
         item["link_id"] = device.linkId;
         item["protocol_config_id"] = device.protocolConfigId;
         item["status"] = device.status;
-        item["online_timeout"] = device.onlineTimeout;
+        // Modbus 设备：在线超时 = 2 × 采集间隔；其他协议使用配置值
+        if (device.protocolType == "Modbus" && device.protocolConfig.isMember("readInterval")) {
+            int readInterval = device.protocolConfig.get("readInterval", 1).asInt();
+            int timeout = readInterval * 2;
+            item["online_timeout"] = timeout < 10 ? 10 : timeout;  // 最小 10 秒
+        } else {
+            item["online_timeout"] = device.onlineTimeout;
+        }
         item["remote_control"] = device.remoteControl;
         item["remark"] = device.remark;
         item["created_at"] = device.createdAt;

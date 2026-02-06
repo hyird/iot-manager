@@ -157,23 +157,20 @@ const SL651ConfigPage = () => {
   // ========== 功能码表格列 ==========
 
   const funcColumns: ColumnsType<FuncWithElements> = [
-    { title: "功能码", dataIndex: "funcCode", width: 100 },
-    { title: "名称", dataIndex: "name", width: 150 },
+    { title: "功能码", dataIndex: "funcCode" },
+    { title: "名称", dataIndex: "name" },
     {
       title: "方向",
-      width: 100,
       render: (_, r) => (
         <Tag color={r.dir === "UP" ? "green" : "orange"}>{r.dir === "UP" ? "上行" : "下行"}</Tag>
       ),
     },
     {
       title: "要素数",
-      width: 100,
       render: (_, r) => r.elements?.length ?? 0,
     },
     {
       title: "应答要素",
-      width: 100,
       render: (_, r) =>
         r.dir === "DOWN" ? (
           <Tooltip title="下行指令应答报文的解析要素">
@@ -190,6 +187,7 @@ const SL651ConfigPage = () => {
     {
       title: "操作",
       width: 320,
+      fixed: "right" as const,
       render: (_, r) => (
         <Space>
           {canEdit && (
@@ -234,18 +232,17 @@ const SL651ConfigPage = () => {
   // ========== 要素表格列 ==========
 
   const elementColumns = (funcId: string, funcDir: SL651.Direction): ColumnsType<SL651.Element> => [
-    { title: "要素名称", dataIndex: "name", width: 150 },
-    { title: "引导符", dataIndex: "guideHex", width: 100 },
-    { title: "编码", dataIndex: "encode", width: 100 },
-    { title: "长度", dataIndex: "length", width: 80 },
-    { title: "小数位", dataIndex: "digits", width: 80 },
-    { title: "单位", dataIndex: "unit", width: 80 },
+    { title: "要素名称", dataIndex: "name" },
+    { title: "引导符", dataIndex: "guideHex" },
+    { title: "编码", dataIndex: "encode" },
+    { title: "长度", dataIndex: "length" },
+    { title: "小数位", dataIndex: "digits" },
+    { title: "单位", dataIndex: "unit" },
     ...(funcDir === "DOWN"
       ? [
           {
             title: "预设值",
             dataIndex: "options",
-            width: 100,
             render: (options: SL651.Element["options"]) =>
               options?.length ? `${options.length}个` : "-",
           },
@@ -254,17 +251,17 @@ const SL651ConfigPage = () => {
     {
       title: "字典配置",
       dataIndex: "dictConfig",
-      width: 100,
       render: (dictConfig: SL651.Element["dictConfig"]) => {
         if (!dictConfig?.items?.length) return "-";
         const typeLabel = dictConfig.mapType === "VALUE" ? "值" : "位";
         return `${typeLabel}映射(${dictConfig.items.length}个)`;
       },
     },
-    { title: "备注", dataIndex: "remark", width: 120 },
+    { title: "备注", dataIndex: "remark" },
     {
       title: "操作",
       width: funcDir === "DOWN" ? 300 : 240,
+      fixed: "right" as const,
       render: (_, r) => (
         <Space>
           {canEdit && (
@@ -446,6 +443,7 @@ const SL651ConfigPage = () => {
                   pagination={false}
                   loading={loadingFuncs}
                   sticky
+                  scroll={{ x: "max-content" }}
                   expandable={{
                     expandedRowRender: (record) => (
                       <Table
@@ -454,6 +452,7 @@ const SL651ConfigPage = () => {
                         rowKey="id"
                         pagination={false}
                         size="small"
+                        scroll={{ x: "max-content" }}
                       />
                     ),
                   }}

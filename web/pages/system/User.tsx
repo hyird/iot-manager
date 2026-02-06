@@ -148,20 +148,18 @@ const SystemUserPage = () => {
   }
 
   const columns: ColumnsType<User.Item> = [
-    { title: "用户名", dataIndex: "username", width: 120 },
-    { title: "昵称", dataIndex: "nickname", width: 120 },
-    { title: "手机号", dataIndex: "phone", width: 140 },
-    { title: "邮箱", dataIndex: "email", width: 180 },
+    { title: "用户名", dataIndex: "username" },
+    { title: "昵称", dataIndex: "nickname" },
+    { title: "手机号", dataIndex: "phone" },
+    { title: "邮箱", dataIndex: "email" },
     {
       title: "部门",
       dataIndex: "department_id",
-      width: 120,
       render: (id: number | null) => (id ? departmentMap.get(id)?.name || "-" : "-"),
     },
     {
       title: "角色",
       dataIndex: "roles",
-      width: 200,
       render: (roles: User.Item["roles"]) =>
         roles.map((r) => (
           <Tag key={r.id} color="blue">
@@ -172,13 +170,13 @@ const SystemUserPage = () => {
     {
       title: "状态",
       dataIndex: "status",
-      width: 80,
       render: (v: User.Status) => <StatusTag status={v} />,
     },
     {
       title: "操作",
       key: "actions",
       width: 150,
+      fixed: "right" as const,
       render: (_, record) => {
         const isBuiltinAdmin = record.username === "admin";
         return (
@@ -235,7 +233,7 @@ const SystemUserPage = () => {
         }}
         onChange={handleTableChange}
         size="middle"
-        scroll={{ x: 1200 }}
+        scroll={{ x: "max-content" }}
         sticky
       />
 
