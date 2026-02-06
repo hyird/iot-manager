@@ -27,6 +27,12 @@ public:
         std::string timezone;  // 设备时区
         uint8_t slaveId = 1;     // Modbus 从站地址，默认 1
         std::string modbusMode;  // Modbus 模式: "TCP" / "RTU"
+        // 心跳包配置（预编译为字节序列）
+        std::string heartbeatMode;                // "OFF" / "HEX" / "ASCII"
+        std::vector<uint8_t> heartbeatBytes;      // 预编译的心跳内容
+        // 注册包配置（预编译为字节序列）
+        std::string registrationMode;             // "OFF" / "HEX" / "ASCII"
+        std::vector<uint8_t> registrationBytes;   // 预编译的注册内容
         std::string remark;
         std::string createdAt;
         std::string linkName;
@@ -147,6 +153,26 @@ public:
                     device.timezone = pp.get("timezone", "+08:00").asString();
                     device.slaveId = static_cast<uint8_t>(pp.get("slave_id", 1).asInt());
                     device.modbusMode = pp.get("modbus_mode", "").asString();
+
+                    // 心跳包配置
+                    if (pp.isMember("heartbeat") && pp["heartbeat"].isObject()) {
+                        const auto& hb = pp["heartbeat"];
+                        device.heartbeatMode = hb.get("mode", "OFF").asString();
+                        if (device.heartbeatMode != "OFF") {
+                            device.heartbeatBytes = parsePacketContent(
+                                device.heartbeatMode, hb.get("content", "").asString());
+                        }
+                    }
+
+                    // 注册包配置
+                    if (pp.isMember("registration") && pp["registration"].isObject()) {
+                        const auto& reg = pp["registration"];
+                        device.registrationMode = reg.get("mode", "OFF").asString();
+                        if (device.registrationMode != "OFF") {
+                            device.registrationBytes = parsePacketContent(
+                                device.registrationMode, reg.get("content", "").asString());
+                        }
+                    }
                 }
             } else {
                 device.onlineTimeout = 300;
@@ -256,6 +282,63 @@ public:
         std::unique_lock lock(mutex_);
         lastRefresh_ = std::chrono::steady_clock::time_point{};
         LOG_DEBUG << "[DeviceCache] Cache marked as stale";
+    }
+
+    /**
+     * @brief 通过 linkId 同步获取该链路下所有设备（心跳/注册包匹配用）
+     */
+    std::vector<const CachedDevice*> getDevicesByLinkIdSync(int linkId) const {
+        std::shared_lock lock(mutex_);
+        std::vector<const CachedDevice*> result;
+        for (const auto& device : devices_) {
+            if (device.linkId == linkId) {
+                result.push_back(&device);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @brief 解析心跳/注册包内容为字节序列
+     * @param mode "HEX" 或 "ASCII"
+     * @param content 内容字符串
+     */
+    static std::vector<uint8_t> parsePacketContent(const std::string& mode, const std::string& content) {
+        if (content.empty()) return {};
+
+        if (mode == "HEX") {
+            // "AABBCC" → {0xAA, 0xBB, 0xCC}
+            std::vector<uint8_t> bytes;
+            bytes.reserve(content.size() / 2);
+            for (size_t i = 0; i + 1 < content.size(); i += 2) {
+                auto byte = static_cast<uint8_t>(
+                    std::stoul(content.substr(i, 2), nullptr, 16));
+                bytes.push_back(byte);
+            }
+            return bytes;
+        }
+
+        if (mode == "ASCII") {
+            // 处理转义序列: \r → 0x0D, \n → 0x0A, \t → 0x09
+            std::vector<uint8_t> bytes;
+            bytes.reserve(content.size());
+            for (size_t i = 0; i < content.size(); ++i) {
+                if (content[i] == '\\' && i + 1 < content.size()) {
+                    switch (content[i + 1]) {
+                        case 'r': bytes.push_back(0x0D); ++i; break;
+                        case 'n': bytes.push_back(0x0A); ++i; break;
+                        case 't': bytes.push_back(0x09); ++i; break;
+                        case '\\': bytes.push_back('\\'); ++i; break;
+                        default: bytes.push_back(static_cast<uint8_t>(content[i])); break;
+                    }
+                } else {
+                    bytes.push_back(static_cast<uint8_t>(content[i]));
+                }
+            }
+            return bytes;
+        }
+
+        return {};
     }
 
 private:

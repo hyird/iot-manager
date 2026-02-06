@@ -17,6 +17,8 @@ namespace modbus {
  */
 class ModbusUtils {
 public:
+    /** 帧校验失败标记（CRC 不匹配或帧格式异常），调用方应跳过 1 字节重新对齐 */
+    static constexpr size_t FRAME_CORRUPT = SIZE_MAX;
     // ==================== CRC16 (Modbus RTU) ====================
 
     static uint16_t crc16(const uint8_t* data, size_t len) {
@@ -112,8 +114,8 @@ public:
         uint16_t protoId = (static_cast<uint16_t>(buffer[2]) << 8) | buffer[3];
         uint16_t length  = (static_cast<uint16_t>(buffer[4]) << 8) | buffer[5];
 
-        // Protocol ID 必须为 0
-        if (protoId != 0) return 0;
+        // Protocol ID 必须为 0，Length 必须合理（UnitID + PDU，最大 254）
+        if (protoId != 0 || length < 2 || length > 254) return FRAME_CORRUPT;
 
         // Length 包含 UnitID 之后的全部字节
         size_t totalLen = 6 + length;  // MBAP header(6) + payload(length)
@@ -159,13 +161,12 @@ public:
         // 异常响应
         if (fc & 0x80) {
             size_t frameLen = 5;  // SlaveAddr + FC + ExcCode + CRC16
-            if (buffer.size() < frameLen) return 0;
 
-            // CRC 校验
+            // CRC 校验（数据已足够，失败即损坏）
             uint16_t crcRecv = static_cast<uint16_t>(buffer[frameLen - 2])
                              | (static_cast<uint16_t>(buffer[frameLen - 1]) << 8);
             uint16_t crcCalc = crc16(buffer.data(), frameLen - 2);
-            if (crcRecv != crcCalc) return 0;
+            if (crcRecv != crcCalc) return FRAME_CORRUPT;
 
             out.mode = FrameMode::RTU;
             out.slaveId = buffer[0];
@@ -179,15 +180,19 @@ public:
         if (buffer.size() < 3) return 0;
 
         uint8_t byteCount = buffer[2];
+
+        // ByteCount 合理性检查（FC01-04 最大 250 字节）
+        if (byteCount == 0 || byteCount > 250) return FRAME_CORRUPT;
+
         size_t frameLen = 3 + byteCount + 2;  // SlaveAddr + FC + ByteCount + Data + CRC16
 
-        if (buffer.size() < frameLen) return 0;
+        if (buffer.size() < frameLen) return 0;  // 数据确实不足
 
-        // CRC 校验
+        // CRC 校验（数据已足够，失败即损坏）
         uint16_t crcRecv = static_cast<uint16_t>(buffer[frameLen - 2])
                          | (static_cast<uint16_t>(buffer[frameLen - 1]) << 8);
         uint16_t crcCalc = crc16(buffer.data(), frameLen - 2);
-        if (crcRecv != crcCalc) return 0;
+        if (crcRecv != crcCalc) return FRAME_CORRUPT;
 
         out.mode = FrameMode::RTU;
         out.slaveId = buffer[0];
@@ -343,6 +348,55 @@ public:
     }
 
     // ==================== 工具函数 ====================
+
+    /**
+     * @brief 检查两个字节是否可能是合法的 Modbus RTU 帧头
+     * 地址: 1-247，功能码: 01-04（读）或 0x81-0x84（异常）
+     */
+    static bool couldBeRtuFrameStart(uint8_t addr, uint8_t fc) {
+        if (addr == 0 || addr > 247) return false;
+        uint8_t rawFc = fc & 0x7F;
+        return rawFc >= 1 && rawFc <= 4;
+    }
+
+    /**
+     * @brief 扫描 RTU 缓冲区，跳过前端非 Modbus 数据（如 DTU JSON 心跳）
+     * @return 需要跳过的字节数（0 = 头部可能是合法帧）
+     */
+    static size_t skipNonRtuData(const std::vector<uint8_t>& buffer) {
+        if (buffer.size() < 2) return 0;
+        if (couldBeRtuFrameStart(buffer[0], buffer[1])) return 0;
+
+        for (size_t i = 1; i + 1 < buffer.size(); ++i) {
+            if (couldBeRtuFrameStart(buffer[i], buffer[i + 1])) return i;
+        }
+        return buffer.size();
+    }
+
+    /**
+     * @brief 检查是否可能是合法的 MBAP Header
+     * Protocol ID = 0, Length 2-254, FC 1-4（或异常 0x81-0x84）
+     */
+    static bool couldBeMbapHeader(const uint8_t* data) {
+        uint16_t protoId = (static_cast<uint16_t>(data[2]) << 8) | data[3];
+        uint16_t length  = (static_cast<uint16_t>(data[4]) << 8) | data[5];
+        uint8_t rawFc = data[7] & 0x7F;
+        return protoId == 0 && length >= 2 && length <= 254 && rawFc >= 1 && rawFc <= 4;
+    }
+
+    /**
+     * @brief 扫描 TCP 缓冲区，跳过非法 MBAP Header 数据
+     * @return 需要跳过的字节数（0 = 头部可能是合法 MBAP Header）
+     */
+    static size_t skipInvalidMbapData(const std::vector<uint8_t>& buffer) {
+        if (buffer.size() < 8) return 0;
+        if (couldBeMbapHeader(buffer.data())) return 0;
+
+        for (size_t i = 1; i + 7 < buffer.size(); ++i) {
+            if (couldBeMbapHeader(buffer.data() + i)) return i;
+        }
+        return buffer.size();
+    }
 
     static std::string toHexString(const std::vector<uint8_t>& data) {
         std::ostringstream oss;

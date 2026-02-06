@@ -176,6 +176,45 @@ private:
             return;
         }
 
+        // === 心跳包 / 注册包预处理 ===
+        auto devices = DeviceCache::instance().getDevicesByLinkIdSync(linkId);
+
+        // 1. 注册包匹配（ON 模式：智能判断完整匹配或前缀匹配）
+        for (const auto* dev : devices) {
+            if (dev->registrationMode != "OFF" && !dev->registrationBytes.empty()) {
+                if (bytes == dev->registrationBytes) {
+                    // 完整匹配：整包就是注册包
+                    DeviceConnectionCache::instance().registerConnection(dev->deviceCode, linkId, clientAddr);
+                    LOG_INFO << "[Link " << linkId << "] Registration matched device "
+                             << dev->deviceCode << " from " << clientAddr;
+                    return;  // 注册包不传给协议解析器
+                }
+                if (bytes.size() > dev->registrationBytes.size() &&
+                    std::equal(dev->registrationBytes.begin(), dev->registrationBytes.end(), bytes.begin())) {
+                    // 前缀匹配：数据以注册包开头
+                    DeviceConnectionCache::instance().registerConnection(dev->deviceCode, linkId, clientAddr);
+                    LOG_INFO << "[Link " << linkId << "] Registration prefix matched device "
+                             << dev->deviceCode << " from " << clientAddr;
+                    // 剥离前缀，继续协议解析
+                    bytes.erase(bytes.begin(), bytes.begin() + static_cast<ptrdiff_t>(dev->registrationBytes.size()));
+                    break;
+                }
+            }
+        }
+
+        // 2. 心跳包匹配
+        for (const auto* dev : devices) {
+            if (dev->heartbeatMode != "OFF" && !dev->heartbeatBytes.empty()) {
+                if (bytes == dev->heartbeatBytes) {
+                    DeviceConnectionCache::instance().registerConnection(dev->deviceCode, linkId, clientAddr);
+                    LOG_DEBUG << "[Link " << linkId << "] Heartbeat matched device "
+                              << dev->deviceCode << " from " << clientAddr;
+                    return;  // 心跳包不传给协议解析器
+                }
+            }
+        }
+
+        // === 正常协议分发 ===
         std::string protocol = DeviceCache::instance().getProtocolByLinkIdSync(linkId);
         if (protocol.empty()) return;
 

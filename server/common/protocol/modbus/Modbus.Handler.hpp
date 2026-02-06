@@ -25,6 +25,9 @@ inline constexpr int DEFAULT_READ_INTERVAL = 1;
 /** Modbus 请求超时（毫秒） */
 inline constexpr int RESPONSE_TIMEOUT_MS = 5000;
 
+/** 接收缓冲区上限（字节），超过则清空防止内存泄漏 */
+inline constexpr size_t MAX_BUFFER_SIZE = 1024;
+
 /**
  * @brief Modbus 协议处理器
  *
@@ -95,6 +98,12 @@ public:
      * @param connected 连接/断开
      */
     void onConnectionChanged(int linkId, const std::string& clientAddr, bool connected) {
+        // 连接变化时清理缓冲区：连接时清残留数据，断连时清不完整帧
+        {
+            std::lock_guard<std::mutex> lock(bufferMutex_);
+            buffers_.erase(linkId);
+        }
+
         if (connected) {
             LOG_INFO << "[Modbus] Link " << linkId << " connected, starting poll";
             startPollingForLink(linkId);
@@ -127,22 +136,7 @@ public:
      * @brief 处理接收到的数据（被 ProtocolDispatcher 调用）
      */
     Task<void> handleData(int linkId, const std::string& clientAddr, const std::vector<uint8_t>& data) {
-        FrameMode mode = getLinkFrameMode(linkId);
-
-        std::vector<ModbusResponse> parsedFrames;
-        {
-            std::lock_guard<std::mutex> lock(bufferMutex_);
-            auto& linkBuffer = buffers_[linkId];
-            linkBuffer.insert(linkBuffer.end(), data.begin(), data.end());
-
-            while (!linkBuffer.empty()) {
-                ModbusResponse response;
-                size_t consumed = ModbusUtils::parseResponse(mode, linkBuffer, response);
-                if (consumed == 0) break;
-                linkBuffer.erase(linkBuffer.begin(), linkBuffer.begin() + consumed);
-                parsedFrames.push_back(std::move(response));
-            }
-        }
+        auto parsedFrames = appendAndParseFrames(linkId, data);
 
         for (auto& response : parsedFrames) {
             if (!clientAddr.empty()) {
@@ -170,34 +164,7 @@ public:
                                                   const std::vector<uint8_t>& data) {
         std::vector<ParsedFrameResult> results;
 
-        FrameMode mode = getLinkFrameMode(linkId);
-
-        std::vector<ModbusResponse> parsedFrames;
-        {
-            std::lock_guard<std::mutex> lock(bufferMutex_);
-            auto& linkBuffer = buffers_[linkId];
-            linkBuffer.insert(linkBuffer.end(), data.begin(), data.end());
-
-            while (!linkBuffer.empty()) {
-                ModbusResponse response;
-                size_t consumed = ModbusUtils::parseResponse(mode, linkBuffer, response);
-                if (consumed == 0) {
-                    if (linkBuffer.size() > 256) {
-                        // 缓冲区堆积过多无效数据，清空防止内存泄漏
-                        LOG_ERROR << "[Modbus] Parse failed, buffer overflow (" << linkBuffer.size()
-                                  << "B), clearing | " << ModbusUtils::toHexString(linkBuffer);
-                        linkBuffer.clear();
-                    } else {
-                        LOG_ERROR << "[Modbus] Parse failed on link " << linkId
-                                  << " (" << linkBuffer.size() << "B) | "
-                                  << ModbusUtils::toHexString(linkBuffer);
-                    }
-                    break;
-                }
-                linkBuffer.erase(linkBuffer.begin(), linkBuffer.begin() + consumed);
-                parsedFrames.push_back(std::move(response));
-            }
-        }
+        auto parsedFrames = appendAndParseFrames(linkId, data);
 
         for (auto& response : parsedFrames) {
             if (!clientAddr.empty()) {
@@ -312,7 +279,84 @@ private:
         return result;
     }
 
-    // ==================== 原有异步方法（仍保留供 handleData 使用） ====================
+    // ==================== 帧解析（公共） ====================
+
+    /**
+     * @brief 将数据追加到缓冲区并解析出所有完整帧
+     *
+     * 统一处理 TCP 流式传输的粘包/拆包：
+     * - 数据追加到 linkId 对应的缓冲区
+     * - while 循环持续解析，处理粘包（一次接收多帧）
+     * - consumed == 0 时 break，处理拆包（帧不完整）
+     * - FRAME_CORRUPT 时跳过 1 字节重新对齐
+     * - 缓冲区超限时清空防止内存泄漏
+     */
+    std::vector<ModbusResponse> appendAndParseFrames(int linkId, const std::vector<uint8_t>& data) {
+        FrameMode mode = getLinkFrameMode(linkId);
+        std::vector<ModbusResponse> parsedFrames;
+
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        auto& linkBuffer = buffers_[linkId];
+        linkBuffer.insert(linkBuffer.end(), data.begin(), data.end());
+
+        while (!linkBuffer.empty()) {
+            // RTU 模式：跳过非 Modbus 数据（如 DTU JSON 心跳）
+            if (mode == FrameMode::RTU) {
+                size_t skip = ModbusUtils::skipNonRtuData(linkBuffer);
+                if (skip > 0) {
+                    auto end = linkBuffer.begin() + static_cast<ptrdiff_t>((std::min)(skip, size_t(64)));
+                    LOG_WARN << "[Modbus] Skipping " << skip << "B non-RTU data on link " << linkId
+                             << " | " << ModbusUtils::toHexString({linkBuffer.begin(), end});
+                    linkBuffer.erase(linkBuffer.begin(), linkBuffer.begin() + static_cast<ptrdiff_t>(skip));
+                    continue;
+                }
+            }
+
+            // TCP 模式：跳过非法 MBAP Header 数据
+            if (mode == FrameMode::TCP) {
+                size_t skip = ModbusUtils::skipInvalidMbapData(linkBuffer);
+                if (skip > 0) {
+                    auto end = linkBuffer.begin() + static_cast<ptrdiff_t>((std::min)(skip, size_t(64)));
+                    LOG_WARN << "[Modbus] Skipping " << skip << "B invalid MBAP data on link " << linkId
+                             << " | " << ModbusUtils::toHexString({linkBuffer.begin(), end});
+                    linkBuffer.erase(linkBuffer.begin(), linkBuffer.begin() + static_cast<ptrdiff_t>(skip));
+                    continue;
+                }
+            }
+
+            ModbusResponse response;
+            size_t consumed = ModbusUtils::parseResponse(mode, linkBuffer, response);
+
+            if (consumed == ModbusUtils::FRAME_CORRUPT) {
+                // 帧校验失败（CRC 不匹配或帧格式异常），跳过 1 字节重新对齐
+                LOG_WARN << "[Modbus] Corrupt frame on link " << linkId
+                         << ", skip 1B for resync | head="
+                         << ModbusUtils::toHexString({linkBuffer.begin(),
+                            linkBuffer.begin() + static_cast<ptrdiff_t>((std::min)(linkBuffer.size(), size_t(8)))});
+                linkBuffer.erase(linkBuffer.begin());
+                continue;
+            }
+
+            if (consumed == 0) {
+                // 数据不足；缓冲区超限则清空
+                if (linkBuffer.size() > MAX_BUFFER_SIZE) {
+                    LOG_ERROR << "[Modbus] Parse failed, buffer overflow (" << linkBuffer.size()
+                              << "B) on link " << linkId << ", clearing | "
+                              << ModbusUtils::toHexString(linkBuffer);
+                    linkBuffer.clear();
+                } else {
+                    LOG_DEBUG << "[Modbus] Incomplete frame on link " << linkId
+                              << " (" << linkBuffer.size() << "B), waiting for more data";
+                }
+                break;
+            }
+
+            linkBuffer.erase(linkBuffer.begin(), linkBuffer.begin() + static_cast<ptrdiff_t>(consumed));
+            parsedFrames.push_back(std::move(response));
+        }
+
+        return parsedFrames;
+    }
 
 private:
     // ==================== 设备上下文管理 ====================

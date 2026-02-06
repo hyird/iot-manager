@@ -234,7 +234,9 @@ public:
         }
 
         // 协议特有参数
-        for (const auto& key : {"device_code", "online_timeout", "remote_control", "modbus_mode", "slave_id", "timezone"}) {
+        for (const auto& key : {"device_code", "online_timeout", "remote_control",
+                                  "modbus_mode", "slave_id", "timezone",
+                                  "heartbeat", "registration"}) {
             if (data.isMember(key)) {
                 protocolParams_[key] = data[key];
                 markDirty();
@@ -352,7 +354,9 @@ private:
 
         // 收集协议特有参数
         protocolParams_ = Json::objectValue;
-        for (const auto& key : {"device_code", "online_timeout", "remote_control", "modbus_mode", "slave_id", "timezone"}) {
+        for (const auto& key : {"device_code", "online_timeout", "remote_control",
+                                  "modbus_mode", "slave_id", "timezone",
+                                  "heartbeat", "registration"}) {
             if (data.isMember(key) && !data[key].isNull()) {
                 protocolParams_[key] = data[key];
             }

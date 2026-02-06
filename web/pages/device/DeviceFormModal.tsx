@@ -19,6 +19,8 @@ interface DeviceFormValues {
   modbus_mode?: Device.ModbusMode;
   slave_id?: number;
   timezone?: string;
+  heartbeat?: Device.HeartbeatConfig;
+  registration?: Device.RegistrationConfig;
   remark?: string;
 }
 
@@ -70,11 +72,19 @@ const DeviceFormModal = ({
         modbus_mode: editing.modbus_mode,
         slave_id: editing.slave_id ?? 1,
         timezone: editing.timezone ?? "+08:00",
+        heartbeat: editing.heartbeat ?? { mode: "OFF" },
+        registration: editing.registration ?? { mode: "OFF" },
         remark: editing.remark,
       });
     } else if (isOpen) {
       form.resetFields();
-      form.setFieldsValue({ status: "enabled", remote_control: true, timezone: "+08:00" });
+      form.setFieldsValue({
+        status: "enabled",
+        remote_control: true,
+        timezone: "+08:00",
+        heartbeat: { mode: "OFF" },
+        registration: { mode: "OFF" },
+      });
     }
   };
 
@@ -227,6 +237,52 @@ const DeviceFormModal = ({
             </Select>
           </Form.Item>
         )}
+        <Form.Item label="心跳包模式" name={["heartbeat", "mode"]}>
+          <Select>
+            <Select.Option value="OFF">关闭</Select.Option>
+            <Select.Option value="HEX">HEX</Select.Option>
+            <Select.Option value="ASCII">ASCII</Select.Option>
+          </Select>
+        </Form.Item>
+        <Form.Item noStyle dependencies={[["heartbeat", "mode"]]}>
+          {({ getFieldValue }) => {
+            const hbMode = getFieldValue(["heartbeat", "mode"]);
+            if (hbMode === "OFF" || !hbMode) return null;
+            return (
+              <Form.Item
+                label="心跳包内容"
+                name={["heartbeat", "content"]}
+                rules={[{ required: true, message: "请输入心跳包内容" }]}
+                extra={hbMode === "HEX" ? "十六进制字符串，如: AABBCCDD" : "ASCII 字符串，支持 \\r \\n 转义"}
+              >
+                <Input placeholder={hbMode === "HEX" ? "AABBCCDD" : "HELLO\\r\\n"} />
+              </Form.Item>
+            );
+          }}
+        </Form.Item>
+        <Form.Item label="注册包模式" name={["registration", "mode"]}>
+          <Select>
+            <Select.Option value="OFF">关闭</Select.Option>
+            <Select.Option value="HEX">HEX</Select.Option>
+            <Select.Option value="ASCII">ASCII</Select.Option>
+          </Select>
+        </Form.Item>
+        <Form.Item noStyle dependencies={[["registration", "mode"]]}>
+          {({ getFieldValue }) => {
+            const regMode = getFieldValue(["registration", "mode"]);
+            if (regMode === "OFF" || !regMode) return null;
+            return (
+              <Form.Item
+                label="注册包内容"
+                name={["registration", "content"]}
+                rules={[{ required: true, message: "请输入注册包内容" }]}
+                extra={regMode === "HEX" ? "十六进制字符串，如: AABBCCDD" : "ASCII 字符串，支持 \\r \\n 转义"}
+              >
+                <Input placeholder={regMode === "HEX" ? "AABBCCDD" : "HELLO\\r\\n"} />
+              </Form.Item>
+            );
+          }}
+        </Form.Item>
         <Form.Item label="备注" name="remark">
           <Input.TextArea rows={3} placeholder="备注信息" />
         </Form.Item>

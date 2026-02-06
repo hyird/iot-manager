@@ -11,6 +11,24 @@ export type DeviceStatus = "enabled" | "disabled";
 /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
 export type ModbusMode = "TCP" | "RTU";
 
+/** 心跳包模式 */
+export type HeartbeatMode = "OFF" | "HEX" | "ASCII";
+
+/** 注册包模式 */
+export type RegistrationMode = "OFF" | "HEX" | "ASCII";
+
+/** 心跳包配置 */
+export interface HeartbeatConfig {
+  mode: HeartbeatMode;
+  content?: string;
+}
+
+/** 注册包配置 */
+export interface RegistrationConfig {
+  mode: RegistrationMode;
+  content?: string;
+}
+
 /** 设备列表项 */
 export interface DeviceItem {
   id: number;
@@ -33,6 +51,10 @@ export interface DeviceItem {
   slave_id?: number;
   /** 设备时区（用于报文时间解析，默认 +08:00） */
   timezone?: string;
+  /** 心跳包配置 */
+  heartbeat?: HeartbeatConfig;
+  /** 注册包配置 */
+  registration?: RegistrationConfig;
   /** 备注 */
   remark?: string;
   created_at?: string;
@@ -77,6 +99,10 @@ export interface CreateDeviceDto {
   slave_id?: number;
   /** 设备时区（默认 +08:00） */
   timezone?: string;
+  /** 心跳包配置 */
+  heartbeat?: HeartbeatConfig;
+  /** 注册包配置 */
+  registration?: RegistrationConfig;
   remark?: string;
 }
 
@@ -97,6 +123,10 @@ export interface UpdateDeviceDto {
   slave_id?: number;
   /** 设备时区 */
   timezone?: string;
+  /** 心跳包配置 */
+  heartbeat?: HeartbeatConfig;
+  /** 注册包配置 */
+  registration?: RegistrationConfig;
   remark?: string;
 }
 
@@ -306,6 +336,8 @@ export namespace Device {
   export type Query = DeviceQuery;
   export type CreateDto = CreateDeviceDto;
   export type UpdateDto = UpdateDeviceDto;
+  export type HeartbeatConfig = import("./device").HeartbeatConfig;
+  export type RegistrationConfig = import("./device").RegistrationConfig;
 
   // 静态数据（ETag 缓存）
   export type StaticData = DeviceStaticData;
