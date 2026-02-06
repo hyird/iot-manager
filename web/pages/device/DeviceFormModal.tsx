@@ -197,12 +197,6 @@ const DeviceFormModal = ({
             <Input placeholder="如: 12345678" />
           </Form.Item>
         )}
-        <Form.Item label="状态" name="status" rules={[{ required: true }]}>
-          <Select>
-            <Select.Option value="enabled">启用</Select.Option>
-            <Select.Option value="disabled">禁用</Select.Option>
-          </Select>
-        </Form.Item>
         {protocolType === "SL651" && (
           <Form.Item
             label="在线超时时间"
@@ -282,6 +276,12 @@ const DeviceFormModal = ({
               </Form.Item>
             );
           }}
+        </Form.Item>
+        <Form.Item label="状态" name="status" rules={[{ required: true }]}>
+          <Select>
+            <Select.Option value="enabled">启用</Select.Option>
+            <Select.Option value="disabled">禁用</Select.Option>
+          </Select>
         </Form.Item>
         <Form.Item label="备注" name="remark">
           <Input.TextArea rows={3} placeholder="备注信息" />
