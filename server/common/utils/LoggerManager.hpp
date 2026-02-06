@@ -66,6 +66,7 @@ private:
         }
         if (consoleEnabled_) {
             std::cout << formatted;
+            std::cout.flush();  // 非终端环境（systemd）下 stdout 全缓冲，需立即刷新
         }
     }
 

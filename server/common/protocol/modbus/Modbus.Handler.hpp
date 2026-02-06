@@ -548,16 +548,24 @@ private:
             // TCP Server 模式：通过设备连接映射定向发送
             std::string connKey = "modbus_" + std::to_string(ctx.slaveId);
             auto connOpt = DeviceConnectionCache::instance().getConnection(connKey);
+            std::string data(frame.begin(), frame.end());
             if (connOpt) {
-                std::string data(frame.begin(), frame.end());
+                // 已有映射：定向发送到已知客户端
                 sent = TcpLinkManager::instance().sendToClient(connOpt->linkId, connOpt->clientAddr, data);
                 if (!sent) {
                     LOG_WARN << "[Modbus] sendToClient failed: linkId=" << connOpt->linkId
                              << " client=" << connOpt->clientAddr << " device=" << ctx.deviceName;
                 }
             } else {
-                LOG_WARN << "[Modbus] No connection mapping for " << connKey
-                         << ", device=" << ctx.deviceName << " (waiting for device to connect)";
+                // RTU 从站无注册包：向该链路所有客户端广播，收到响应后自动建立映射
+                sent = TcpLinkManager::instance().sendData(ctx.linkId, data);
+                if (sent) {
+                    LOG_DEBUG << "[Modbus] Broadcast query for slave=" << static_cast<int>(ctx.slaveId)
+                              << " on link " << ctx.linkId << " (no mapping yet)";
+                } else {
+                    LOG_WARN << "[Modbus] No clients on link " << ctx.linkId
+                             << ", device=" << ctx.deviceName;
+                }
             }
         }
 
