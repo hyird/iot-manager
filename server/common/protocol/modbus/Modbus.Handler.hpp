@@ -2,6 +2,8 @@
 
 #include "Modbus.Types.hpp"
 #include "Modbus.Utils.hpp"
+
+#include <deque>
 #include "common/protocol/ParsedResult.hpp"
 #include "common/database/DatabaseService.hpp"
 #include "common/cache/DeviceCache.hpp"
@@ -203,13 +205,14 @@ private:
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
             auto it = pendingRequests_.find(pendingKey);
-            if (it == pendingRequests_.end()) {
+            if (it == pendingRequests_.end() || it->second.empty()) {
                 LOG_WARN << "[Modbus] No pending request for key=" << pendingKey
                          << " (unexpected response or already timed out)";
                 return std::nullopt;
             }
-            pending = std::move(it->second);
-            pendingRequests_.erase(it);
+            pending = std::move(it->second.front());
+            it->second.pop_front();
+            if (it->second.empty()) pendingRequests_.erase(it);
         }
 
         DeviceContext ctx;
@@ -645,7 +648,7 @@ private:
             pending.transactionId = req.transactionId;
 
             std::lock_guard<std::mutex> lock(pendingMutex_);
-            pendingRequests_[pendingKey] = std::move(pending);
+            pendingRequests_[pendingKey].push_back(std::move(pending));
         }
     }
 
@@ -655,7 +658,7 @@ private:
      * @brief 处理解析后的 Modbus 响应
      */
     Task<void> processResponse(int linkId, [[maybe_unused]] const std::string& clientAddr, const ModbusResponse& response) {
-        // 查找对应的 PendingRequest
+        // 查找对应的 PendingRequest（FIFO：取队列头部）
         std::string pendingKey = std::to_string(linkId) + ":"
             + std::to_string(response.slaveId) + ":"
             + std::to_string(response.functionCode);
@@ -664,13 +667,14 @@ private:
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
             auto it = pendingRequests_.find(pendingKey);
-            if (it == pendingRequests_.end()) {
+            if (it == pendingRequests_.end() || it->second.empty()) {
                 LOG_WARN << "[Modbus] No pending request for key=" << pendingKey
                          << " (unexpected response or already timed out)";
                 co_return;
             }
-            pending = std::move(it->second);
-            pendingRequests_.erase(it);
+            pending = std::move(it->second.front());
+            it->second.pop_front();
+            if (it->second.empty()) pendingRequests_.erase(it);
         }
 
         // 获取设备上下文
@@ -947,8 +951,9 @@ private:
     std::map<int, std::vector<uint8_t>> buffers_;
     std::mutex bufferMutex_;
 
-    // 待应答请求: "linkId:slaveId:fc" → PendingRequest
-    std::map<std::string, PendingRequest> pendingRequests_;
+    // 待应答请求队列: "linkId:slaveId:fc" → FIFO queue
+    // 同一 key 可能有多个请求（同从站同FC的多个 ReadGroup），按发送顺序匹配响应
+    std::map<std::string, std::deque<PendingRequest>> pendingRequests_;
     std::mutex pendingMutex_;
 
     // Transaction ID 计数器
