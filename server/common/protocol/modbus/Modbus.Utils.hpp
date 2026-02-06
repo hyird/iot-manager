@@ -369,17 +369,17 @@ private:
     static void reorderBytes(std::vector<uint8_t>& buf, ByteOrder order) {
         // Step 1: 将输入从指定字节序转为标准大端
         switch (order) {
-            case ByteOrder::BIG_ENDIAN:
+            case ByteOrder::Big:
                 break;
-            case ByteOrder::LITTLE_ENDIAN:
+            case ByteOrder::Little:
                 // 完全反转: HG FE DC BA → AB CD EF GH
                 std::reverse(buf.begin(), buf.end());
                 break;
-            case ByteOrder::BIG_ENDIAN_BYTE_SWAP:
+            case ByteOrder::BigSwap:
                 // Word 内字节交换: BA DC FE HG → AB CD EF GH
                 swapBytesInWords(buf);
                 break;
-            case ByteOrder::LITTLE_ENDIAN_BYTE_SWAP:
+            case ByteOrder::LittleSwap:
                 // Word 顺序反转: GH EF CD AB → AB CD EF GH
                 reverseWords(buf);
                 break;

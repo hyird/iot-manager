@@ -590,7 +590,7 @@ private:
     /**
      * @brief 处理解析后的 Modbus 响应
      */
-    Task<void> processResponse(int linkId, const std::string& clientAddr, const ModbusResponse& response) {
+    Task<void> processResponse(int linkId, [[maybe_unused]] const std::string& clientAddr, const ModbusResponse& response) {
         // 查找对应的 PendingRequest
         std::string pendingKey = std::to_string(linkId) + ":"
             + std::to_string(response.slaveId) + ":"

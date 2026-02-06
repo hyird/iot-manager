@@ -30,12 +30,12 @@ enum class DataType {
     DOUBLE      // 4 registers
 };
 
-/** 字节序 */
+/** 字节序（避免使用 BIG_ENDIAN/LITTLE_ENDIAN，与 Linux <endian.h> 宏冲突） */
 enum class ByteOrder {
-    BIG_ENDIAN,               // AB CD（标准 Modbus）
-    LITTLE_ENDIAN,            // CD AB
-    BIG_ENDIAN_BYTE_SWAP,     // BA DC
-    LITTLE_ENDIAN_BYTE_SWAP   // DC BA
+    Big,          // AB CD（标准 Modbus）
+    Little,       // CD AB
+    BigSwap,      // BA DC
+    LittleSwap    // DC BA
 };
 
 /** Modbus 帧模式 */
@@ -147,19 +147,19 @@ inline DataType parseDataType(const std::string& str) {
 }
 
 inline ByteOrder parseByteOrder(const std::string& str) {
-    if (str == "BIG_ENDIAN") return ByteOrder::BIG_ENDIAN;
-    if (str == "LITTLE_ENDIAN") return ByteOrder::LITTLE_ENDIAN;
-    if (str == "BIG_ENDIAN_BYTE_SWAP") return ByteOrder::BIG_ENDIAN_BYTE_SWAP;
-    if (str == "LITTLE_ENDIAN_BYTE_SWAP") return ByteOrder::LITTLE_ENDIAN_BYTE_SWAP;
-    return ByteOrder::BIG_ENDIAN;  // 默认
+    if (str == "BIG_ENDIAN") return ByteOrder::Big;
+    if (str == "LITTLE_ENDIAN") return ByteOrder::Little;
+    if (str == "BIG_ENDIAN_BYTE_SWAP") return ByteOrder::BigSwap;
+    if (str == "LITTLE_ENDIAN_BYTE_SWAP") return ByteOrder::LittleSwap;
+    return ByteOrder::Big;  // 默认
 }
 
 inline const char* byteOrderToString(ByteOrder order) {
     switch (order) {
-        case ByteOrder::BIG_ENDIAN: return "BIG_ENDIAN";
-        case ByteOrder::LITTLE_ENDIAN: return "LITTLE_ENDIAN";
-        case ByteOrder::BIG_ENDIAN_BYTE_SWAP: return "BIG_ENDIAN_BYTE_SWAP";
-        case ByteOrder::LITTLE_ENDIAN_BYTE_SWAP: return "LITTLE_ENDIAN_BYTE_SWAP";
+        case ByteOrder::Big: return "BIG_ENDIAN";
+        case ByteOrder::Little: return "LITTLE_ENDIAN";
+        case ByteOrder::BigSwap: return "BIG_ENDIAN_BYTE_SWAP";
+        case ByteOrder::LittleSwap: return "LITTLE_ENDIAN_BYTE_SWAP";
     }
     return "UNKNOWN";
 }
