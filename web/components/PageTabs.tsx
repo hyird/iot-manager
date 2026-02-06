@@ -1,0 +1,182 @@
+import { HomeOutlined } from "@ant-design/icons";
+import type { MenuProps } from "antd";
+import { Dropdown, Tabs } from "antd";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { HOME_TAB, useAuthStore, useTabsStore } from "@/store/hooks";
+import type { Menu } from "@/types";
+import { buildMenuTree } from "@/utils";
+
+export default function PageTabs() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { user } = useAuthStore();
+  const { tabs, activeKey, addTab, removeTab, setActiveKey, clearTabs, setTabsState } =
+    useTabsStore();
+
+  const prevPathRef = useRef<string>(location.pathname);
+
+  const menuTree = useMemo<Menu.TreeItem[]>(() => {
+    const menus = user?.menus || [];
+    return buildMenuTree(menus);
+  }, [user?.menus]);
+
+  // Build path -> title map
+  const pathTitleMap = useMemo<Map<string, string>>(() => {
+    const map = new Map<string, string>();
+
+    const traverse = (items: Menu.TreeItem[]) => {
+      for (const item of items) {
+        if (item.full_path && item.type === "page") {
+          map.set(item.full_path, item.name);
+        }
+        if (item.children) {
+          traverse(item.children);
+        }
+      }
+    };
+
+    traverse(menuTree);
+    return map;
+  }, [menuTree]);
+
+  // Auto add tab when route changes (except home)
+  useEffect(() => {
+    const path = location.pathname;
+
+    // 只有路径真正变化时才处理
+    if (path === prevPathRef.current) {
+      return;
+    }
+    prevPathRef.current = path;
+
+    if (path === HOME_TAB.key) {
+      setActiveKey(HOME_TAB.key);
+      return;
+    }
+
+    const title = pathTitleMap.get(path);
+    if (title) {
+      // 检查标签是否已存在
+      const exists = tabs.some((t) => t.key === path);
+      if (!exists) {
+        addTab({ key: path, title });
+      } else {
+        // 标签已存在，只切换激活状态
+        setActiveKey(path);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    location.pathname,
+    pathTitleMap,
+    addTab, // 标签已存在，只切换激活状态
+    setActiveKey,
+    tabs,
+  ]);
+
+  const handleTabChange = (key: string) => {
+    setActiveKey(key);
+    navigate(key);
+  };
+
+  const handleTabEdit = useCallback(
+    (targetKey: React.MouseEvent | React.KeyboardEvent | string, action: "add" | "remove") => {
+      if (action === "remove" && typeof targetKey === "string") {
+        // Cannot close home tab
+        if (targetKey === HOME_TAB.key) return;
+
+        const newActiveKey = removeTab(targetKey);
+        if (newActiveKey) {
+          navigate(newActiveKey);
+        }
+      }
+    },
+    [removeTab, navigate]
+  );
+
+  const getContextMenu = useCallback(
+    (tabKey: string): MenuProps => {
+      const isHome = tabKey === HOME_TAB.key;
+      const currentIndex = tabs.findIndex((t) => t.key === tabKey);
+      const closableTabs = tabs.filter((t) => t.key !== HOME_TAB.key);
+
+      return {
+        items: [
+          {
+            key: "close",
+            label: "关闭",
+            disabled: isHome,
+          },
+          {
+            key: "closeOther",
+            label: "关闭其他",
+            disabled: closableTabs.length <= (isHome ? 0 : 1),
+          },
+          {
+            key: "closeRight",
+            label: "关闭右侧",
+            disabled: currentIndex >= tabs.length - 1,
+          },
+          {
+            key: "closeAll",
+            label: "关闭全部",
+            disabled: closableTabs.length === 0,
+          },
+        ],
+        onClick: ({ key }) => {
+          if (key === "close") {
+            if (!isHome) {
+              handleTabEdit(tabKey, "remove");
+            }
+          } else if (key === "closeOther") {
+            const currentTab = tabs.find((t) => t.key === tabKey);
+            const newTabs = isHome ? [HOME_TAB] : [HOME_TAB, currentTab!].filter(Boolean);
+            setTabsState(newTabs, tabKey);
+          } else if (key === "closeRight") {
+            const newTabs = tabs.slice(0, currentIndex + 1);
+            const newActiveKey = newTabs.some((t) => t.key === activeKey)
+              ? activeKey
+              : newTabs[newTabs.length - 1]?.key || HOME_TAB.key;
+            setTabsState(newTabs, newActiveKey);
+            if (newActiveKey !== activeKey) navigate(newActiveKey);
+          } else if (key === "closeAll") {
+            clearTabs();
+            navigate(HOME_TAB.key);
+          }
+        },
+      };
+    },
+    [tabs, activeKey, clearTabs, navigate, setTabsState, handleTabEdit]
+  );
+
+  const tabItems = useMemo(
+    () =>
+      tabs.map((tab) => ({
+        key: tab.key,
+        label: (
+          <Dropdown menu={getContextMenu(tab.key)} trigger={["contextMenu"]}>
+            <span className="inline-flex items-center gap-1">
+              {tab.key === HOME_TAB.key && <HomeOutlined />}
+              {tab.title}
+            </span>
+          </Dropdown>
+        ),
+        closable: tab.key !== HOME_TAB.key,
+      })),
+    [tabs, getContextMenu]
+  );
+
+  return (
+    <Tabs
+      type="editable-card"
+      hideAdd
+      activeKey={activeKey}
+      onChange={handleTabChange}
+      onEdit={handleTabEdit}
+      items={tabItems}
+      size="small"
+      className="page-tabs px-4 pt-2 pb-0 bg-white shrink-0"
+    />
+  );
+}

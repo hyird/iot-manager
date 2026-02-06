@@ -1,0 +1,99 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        build_type: [Debug, Release]
+
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }} - ${{ matrix.build_type }}
+
+    env:
+      VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 autoconf autoconf-archive automake libtool
+
+      # 恢复 vcpkg 已安装包缓存（Configure 前）
+      - name: Restore vcpkg cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLED_DIR }}
+          key: vcpkg-installed-${{ matrix.os }}-${{ runner.os == 'Linux' && 'x64-linux' || 'x64-windows-static-md' }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 66c0373dc7fca549e5803087b9487edfe3aca0a1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install
+
+      - name: Configure CMake
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
+          ${{ runner.os == 'Linux' && '-DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld' || '-DVCPKG_TARGET_TRIPLET=x64-windows-static-md -T ClangCL' }}
+
+      # 保存 vcpkg 缓存（Configure 后、Build 前，仅在缓存未命中时保存）
+      - name: Save vcpkg cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true' && matrix.build_type == 'Release'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLED_DIR }}
+          key: vcpkg-installed-${{ matrix.os }}-${{ runner.os == 'Linux' && 'x64-linux' || 'x64-windows-static-md' }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }}
+
+      # UPX 压缩 Release 二进制（最优压缩）
+      - name: Compress with UPX
+        if: matrix.build_type == 'Release'
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: latest
+          files: dist/release/iot-manager${{ runner.os == 'Windows' && '.exe' || '' }}
+          args: --best --lzma
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iot-manager-${{ matrix.os }}-${{ matrix.build_type }}
+          path: dist/${{ matrix.build_type == 'Release' && 'release' || 'debug' }}/
+
+  cleanup:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          retain_days: 0
+          keep_minimum_runs: 1
