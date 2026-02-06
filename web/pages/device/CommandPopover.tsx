@@ -67,7 +67,7 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
       {
         linkId: device.link_id!,
         payload: {
-          deviceCode: device.device_code,
+          deviceCode: device.device_code ?? "",
           deviceId: device.id,
           funcCode: func.funcCode,
           elements: toSend.map((el) => ({ elementId: el.elementId, value: el.value })),
@@ -93,7 +93,7 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
       commandMutation.mutate({
         linkId: device.link_id!,
         payload: {
-          deviceCode: device.device_code,
+          deviceCode: device.device_code ?? "",
           deviceId: device.id,
           funcCode: func.funcCode,
           elements: [{ elementId: el.elementId, value: optValue }],

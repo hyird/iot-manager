@@ -137,6 +137,7 @@ public:
 
         // 获取查询参数
         std::string code = req->getParameter("code");
+        int deviceId = ValidatorHelper::getIntParam(req, "deviceId", 0);
         std::string funcCode = req->getParameter("funcCode");
         std::string dataType = req->getParameter("dataType");
         std::string startTime = req->getParameter("startTime");
@@ -146,8 +147,8 @@ public:
         int page = ValidatorHelper::getIntParam(req, "page", 1);
         int pageSize = ValidatorHelper::getIntParam(req, "pageSize", 10);
 
-        if (code.empty()) {
-            co_return Response::badRequest("设备编码不能为空");
+        if (code.empty() && deviceId <= 0) {
+            co_return Response::badRequest("设备编码或设备ID不能为空");
         }
 
         // 验证时间范围必填，不允许查询全部数据
@@ -156,7 +157,8 @@ public:
         }
 
         // 参数化 ETag 检查
-        std::string params = code + ":" + funcCode + ":" + dataType + ":" +
+        std::string identifier = deviceId > 0 ? std::to_string(deviceId) : code;
+        std::string params = identifier + ":" + funcCode + ":" + dataType + ":" +
                              startTime + ":" + endTime + ":" +
                              std::to_string(page) + ":" + std::to_string(pageSize);
         if (auto notModified = ETagUtils::checkParamETag(req, "device", params)) {
@@ -164,7 +166,7 @@ public:
         }
 
         auto queryResult = co_await service_.queryHistory(
-            code, funcCode, dataType, startTime, endTime, page, pageSize
+            code, funcCode, dataType, startTime, endTime, page, pageSize, deviceId
         );
         auto [list, total] = queryResult;
 

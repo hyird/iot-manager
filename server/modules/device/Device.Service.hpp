@@ -390,19 +390,25 @@ public:
         const std::string& startTime,
         const std::string& endTime,
         int page,
-        int pageSize
+        int pageSize,
+        int deviceIdParam = 0
     ) {
-        // 1. 先获取 device_id（避免后续 JOIN，利用索引）
-        auto deviceResult = co_await dbService_.execSqlCoro(
-            "SELECT id FROM device WHERE protocol_params->>'device_code' = ? AND deleted_at IS NULL",
-            {code}
-        );
+        int deviceId = deviceIdParam;
 
-        if (deviceResult.empty()) {
-            co_return std::make_tuple(Json::Value(Json::arrayValue), 0);
+        if (deviceId <= 0) {
+            // 通过 device_code 查找 device_id（SL651 设备）
+            auto deviceResult = co_await dbService_.execSqlCoro(
+                "SELECT id FROM device WHERE protocol_params->>'device_code' = ? AND deleted_at IS NULL",
+                {code}
+            );
+
+            if (deviceResult.empty()) {
+                co_return std::make_tuple(Json::Value(Json::arrayValue), 0);
+            }
+
+            deviceId = FieldHelper::getInt(deviceResult[0]["id"]);
         }
 
-        int deviceId = FieldHelper::getInt(deviceResult[0]["id"]);
         std::string deviceIdStr = std::to_string(deviceId);
 
         // 判断是否需要查询归档数据（startTime 早于 365 天前）

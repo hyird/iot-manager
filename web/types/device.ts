@@ -33,8 +33,8 @@ export interface RegistrationConfig {
 export interface DeviceItem {
   id: number;
   name: string;
-  /** 设备编码（遥测站地址） */
-  device_code: string;
+  /** 设备编码（仅 SL651 设备有值） */
+  device_code?: string;
   /** 关联链路 ID */
   link_id: number;
   /** 关联协议配置 ID */
@@ -137,7 +137,8 @@ export interface DeviceStaticData {
   // 基本信息
   id: number;
   name: string;
-  device_code: string;
+  /** 设备编码（仅 SL651 设备返回） */
+  device_code?: string;
   link_id: number;
   protocol_config_id: number;
   status: DeviceStatus;
@@ -154,7 +155,6 @@ export interface DeviceStaticData {
   // 关联信息
   link_name?: string;
   link_mode?: string;
-  link_protocol?: string;
   protocol_name?: string;
   protocol_type?: string;
 
@@ -321,7 +321,10 @@ export interface HistoryDataQuery {
   page?: number;
   pageSize?: number;
   keyword?: string;
+  /** 设备编码（SL651 设备使用） */
   code?: string;
+  /** 设备 ID（Modbus 设备使用，与 code 二选一） */
+  deviceId?: number;
   funcCode?: string;
   dataType?: HistoryDataType;
   startTime?: Date;
