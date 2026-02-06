@@ -28,7 +28,7 @@ export function useDeviceStats(deviceList: Device.RealTimeData[]): DeviceStats {
       else offline++;
       if (d.status === "enabled") enabled++;
 
-      const protocolName = d.protocol_type || d.typeName || "未知";
+      const protocolName = d.protocol_type || d.protocol_name || "未知";
       if (!byProtocol[protocolName]) {
         byProtocol[protocolName] = { total: 0, online: 0, offline: 0, enabled: 0 };
       }

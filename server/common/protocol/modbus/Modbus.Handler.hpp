@@ -132,6 +132,142 @@ public:
         }
     }
 
+    // ==================== 写寄存器 ====================
+
+    /** 写寄存器结果 */
+    struct WriteResult {
+        bool sent = false;
+        std::string frameHex;
+    };
+
+    /** 指令应答回调 */
+    using CommandResponseCallback = std::function<void(
+        const std::string& deviceCode, const std::string& funcCode, bool success, int64_t responseId)>;
+
+    void setCommandResponseCallback(CommandResponseCallback cb) {
+        commandResponseCallback_ = std::move(cb);
+    }
+
+    /**
+     * @brief 写入 Modbus 寄存器（由 ProtocolDispatcher 调用）
+     * @param deviceId 设备 ID
+     * @param deviceCode 设备编码（用于应答回调匹配）
+     * @param elements 要素数据 [{ elementId: "reg-id", value: "123" }]
+     * @return 发送结果
+     */
+    WriteResult writeRegister(int deviceId, const std::string& deviceCode, const Json::Value& elements) {
+        DeviceContext ctx;
+        {
+            std::lock_guard<std::mutex> lock(contextMutex_);
+            auto it = deviceContexts_.find(deviceId);
+            if (it == deviceContexts_.end()) {
+                LOG_ERROR << "[Modbus] writeRegister: device not found, id=" << deviceId;
+                return {};
+            }
+            ctx = it->second;
+        }
+
+        WriteResult result;
+
+        for (const auto& elem : elements) {
+            std::string registerId = elem.get("elementId", "").asString();
+            std::string valueStr = elem.get("value", "").asString();
+
+            // 按 id 查找寄存器定义
+            const RegisterDef* regDef = nullptr;
+            for (const auto& reg : ctx.registers) {
+                if (reg.id == registerId) {
+                    regDef = &reg;
+                    break;
+                }
+            }
+            if (!regDef) {
+                LOG_WARN << "[Modbus] writeRegister: register not found, id=" << registerId;
+                continue;
+            }
+            if (!isWritable(regDef->registerType)) {
+                LOG_WARN << "[Modbus] writeRegister: register not writable, id=" << registerId;
+                continue;
+            }
+
+            double value = 0.0;
+            try { value = std::stod(valueStr); } catch (...) {
+                LOG_WARN << "[Modbus] writeRegister: invalid value: " << valueStr;
+                continue;
+            }
+
+            // 构建写请求
+            ModbusWriteRequest writeReq;
+            writeReq.slaveId = ctx.slaveId;
+            writeReq.address = regDef->address;
+            writeReq.transactionId = transactionCounter_.fetch_add(1, std::memory_order_relaxed);
+
+            if (regDef->registerType == RegisterType::COIL) {
+                writeReq.functionCode = FuncCodes::WRITE_SINGLE_COIL;
+                writeReq.data = {static_cast<uint8_t>(value != 0 ? 0xFF : 0x00), 0x00};
+            } else {
+                // HOLDING_REGISTER
+                writeReq.data = ModbusUtils::encodeValue(value, regDef->dataType, ctx.byteOrder);
+                writeReq.quantity = dataTypeToQuantity(regDef->dataType);
+                if (writeReq.quantity == 1) {
+                    writeReq.functionCode = FuncCodes::WRITE_SINGLE_REGISTER;
+                } else {
+                    writeReq.functionCode = FuncCodes::WRITE_MULTIPLE_REGISTERS;
+                }
+            }
+
+            auto frame = ModbusUtils::buildWriteRequest(ctx.frameMode, writeReq);
+
+            // 发送
+            bool sent = false;
+            if (ctx.linkMode == Constants::LINK_MODE_TCP_CLIENT) {
+                std::string data(frame.begin(), frame.end());
+                sent = TcpLinkManager::instance().sendData(ctx.linkId, data);
+            } else {
+                std::string connKey = "modbus_" + std::to_string(ctx.slaveId);
+                auto connOpt = DeviceConnectionCache::instance().getConnection(connKey);
+                if (connOpt) {
+                    std::string data(frame.begin(), frame.end());
+                    sent = TcpLinkManager::instance().sendToClient(connOpt->linkId, connOpt->clientAddr, data);
+                } else {
+                    LOG_WARN << "[Modbus] writeRegister: no connection for slave=" << static_cast<int>(ctx.slaveId);
+                }
+            }
+
+            if (sent) {
+                LOG_INFO << "[Modbus] Write TX: " << ctx.deviceName
+                         << " slave=" << static_cast<int>(ctx.slaveId)
+                         << " FC=" << static_cast<int>(writeReq.functionCode)
+                         << " addr=" << writeReq.address
+                         << " | " << ModbusUtils::toHexString(frame);
+
+                // 记录待应答写请求
+                std::string pendingKey = std::to_string(ctx.linkId) + ":"
+                    + std::to_string(ctx.slaveId) + ":"
+                    + std::to_string(writeReq.functionCode);
+
+                PendingWriteRequest pending;
+                pending.deviceId = ctx.deviceId;
+                pending.deviceCode = deviceCode;
+                pending.sentTime = std::chrono::steady_clock::now();
+                pending.transactionId = writeReq.transactionId;
+
+                {
+                    std::lock_guard<std::mutex> lock(pendingMutex_);
+                    pendingWriteRequests_[pendingKey].push_back(std::move(pending));
+                }
+
+                if (!result.frameHex.empty()) result.frameHex += " ";
+                result.frameHex += ModbusUtils::toHexString(frame);
+                result.sent = true;
+            } else {
+                LOG_ERROR << "[Modbus] writeRegister: send failed for " << ctx.deviceName;
+            }
+        }
+
+        return result;
+    }
+
     // ==================== 数据接收 ====================
 
     /**
@@ -150,6 +286,10 @@ public:
                 LOG_WARN << "[Modbus] Exception: slave=" << static_cast<int>(response.slaveId)
                          << " FC=" << static_cast<int>(response.functionCode)
                          << " code=" << static_cast<int>(response.exceptionCode);
+                // 写异常：通知失败
+                if (isWriteFunctionCode(response.functionCode)) {
+                    handleWriteResponse(linkId, response, false);
+                }
             } else {
                 co_await processResponse(linkId, clientAddr, response);
             }
@@ -178,6 +318,10 @@ public:
                 LOG_WARN << "[Modbus] Exception: slave=" << static_cast<int>(response.slaveId)
                          << " FC=" << static_cast<int>(response.functionCode)
                          << " code=" << static_cast<int>(response.exceptionCode);
+                // 写异常：通知失败
+                if (isWriteFunctionCode(response.functionCode)) {
+                    handleWriteResponse(linkId, response, false);
+                }
             } else {
                 auto result = processResponseSync(linkId, clientAddr, response);
                 if (result) {
@@ -197,6 +341,12 @@ private:
      */
     std::optional<ParsedFrameResult> processResponseSync(int linkId, const std::string& /*clientAddr*/,
                                                           const ModbusResponse& response) {
+        // 写回显：通知成功，不生成 ParsedFrameResult
+        if (isWriteFunctionCode(response.functionCode)) {
+            handleWriteResponse(linkId, response, true);
+            return std::nullopt;
+        }
+
         std::string pendingKey = std::to_string(linkId) + ":"
             + std::to_string(response.slaveId) + ":"
             + std::to_string(response.functionCode);
@@ -658,6 +808,12 @@ private:
      * @brief 处理解析后的 Modbus 响应
      */
     Task<void> processResponse(int linkId, [[maybe_unused]] const std::string& clientAddr, const ModbusResponse& response) {
+        // 写回显：通知成功，不保存数据
+        if (isWriteFunctionCode(response.functionCode)) {
+            handleWriteResponse(linkId, response, true);
+            co_return;
+        }
+
         // 查找对应的 PendingRequest（FIFO：取队列头部）
         std::string pendingKey = std::to_string(linkId) + ":"
             + std::to_string(response.slaveId) + ":"
@@ -925,9 +1081,59 @@ private:
         return FrameMode::TCP;  // 默认
     }
 
+    // ==================== 写响应处理 ====================
+
+    /** 判断是否为写功能码 */
+    static bool isWriteFunctionCode(uint8_t fc) {
+        return fc == FuncCodes::WRITE_SINGLE_COIL ||
+               fc == FuncCodes::WRITE_SINGLE_REGISTER ||
+               fc == FuncCodes::WRITE_MULTIPLE_REGISTERS;
+    }
+
+    /**
+     * @brief 处理写回显/写异常响应
+     * @param success true=写回显成功, false=写异常失败
+     */
+    void handleWriteResponse(int linkId, const ModbusResponse& response, bool success) {
+        std::string pendingKey = std::to_string(linkId) + ":"
+            + std::to_string(response.slaveId) + ":"
+            + std::to_string(response.functionCode);
+
+        PendingWriteRequest pending;
+        {
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            auto it = pendingWriteRequests_.find(pendingKey);
+            if (it == pendingWriteRequests_.end() || it->second.empty()) {
+                LOG_WARN << "[Modbus] No pending write for key=" << pendingKey;
+                return;
+            }
+            pending = std::move(it->second.front());
+            it->second.pop_front();
+            if (it->second.empty()) pendingWriteRequests_.erase(it);
+        }
+
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - pending.sentTime).count();
+
+        if (success) {
+            LOG_INFO << "[Modbus] Write echo OK: slave=" << static_cast<int>(response.slaveId)
+                     << " FC=" << static_cast<int>(response.functionCode)
+                     << " latency=" << elapsed << "ms";
+        } else {
+            LOG_WARN << "[Modbus] Write FAILED: slave=" << static_cast<int>(response.slaveId)
+                     << " FC=" << static_cast<int>(response.functionCode)
+                     << " exception=" << static_cast<int>(response.exceptionCode)
+                     << " latency=" << elapsed << "ms";
+        }
+
+        if (commandResponseCallback_) {
+            commandResponseCallback_(pending.deviceCode, "MODBUS_WRITE", success, 0);
+        }
+    }
+
     // ==================== 成员变量 ====================
 
-    /** 待应答请求 */
+    /** 待应答读请求 */
     struct PendingRequest {
         int deviceId;
         ReadGroup group;
@@ -951,10 +1157,24 @@ private:
     std::map<int, std::vector<uint8_t>> buffers_;
     std::mutex bufferMutex_;
 
-    // 待应答请求队列: "linkId:slaveId:fc" → FIFO queue
+    // 待应答读请求队列: "linkId:slaveId:fc" → FIFO queue
     // 同一 key 可能有多个请求（同从站同FC的多个 ReadGroup），按发送顺序匹配响应
     std::map<std::string, std::deque<PendingRequest>> pendingRequests_;
     std::mutex pendingMutex_;
+
+    /** 待应答写请求 */
+    struct PendingWriteRequest {
+        int deviceId;
+        std::string deviceCode;  // 用于回调匹配 ProtocolDispatcher 的 pendingCommands_ key
+        std::chrono::steady_clock::time_point sentTime;
+        uint16_t transactionId;
+    };
+
+    // 待应答写请求队列: "linkId:slaveId:fc" → FIFO queue（共用 pendingMutex_）
+    std::map<std::string, std::deque<PendingWriteRequest>> pendingWriteRequests_;
+
+    // 指令应答回调
+    CommandResponseCallback commandResponseCallback_;
 
     // Transaction ID 计数器
     std::atomic<uint16_t> transactionCounter_{0};

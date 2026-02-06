@@ -200,16 +200,9 @@ public:
     static Json::Value buildDeviceBaseInfo(const DeviceCache::CachedDevice& device) {
         Json::Value item;
 
-        // 兼容旧字段
-        item["code"] = device.deviceCode;
-        item["deviceName"] = device.name;
-        item["typeName"] = device.protocolName.empty() ? "未知协议" : device.protocolName;
-        item["linkId"] = device.linkId;
-
-        // 管理字段
+        // 通用字段
         item["id"] = device.id;
         item["name"] = device.name;
-        item["device_code"] = device.deviceCode;
         item["link_id"] = device.linkId;
         item["protocol_config_id"] = device.protocolConfigId;
         item["status"] = device.status;
@@ -221,6 +214,8 @@ public:
         item["link_mode"] = device.linkMode;
         item["protocol_name"] = device.protocolName;
         item["protocol_type"] = device.protocolType;
+
+        // 心跳包/注册包（通用）
         if (!device.heartbeatMode.empty() && device.heartbeatMode != "OFF") {
             Json::Value hb;
             hb["mode"] = device.heartbeatMode;
@@ -232,6 +227,22 @@ public:
             reg["mode"] = device.registrationMode;
             reg["content"] = device.registrationContent;
             item["registration"] = reg;
+        }
+
+        // SL651 特有字段
+        if (device.protocolType == Constants::PROTOCOL_SL651) {
+            item["device_code"] = device.deviceCode;
+            item["timezone"] = device.timezone;
+        }
+
+        // Modbus 特有字段
+        if (device.protocolType == Constants::PROTOCOL_MODBUS) {
+            if (!device.modbusMode.empty()) {
+                item["modbus_mode"] = device.modbusMode;
+            }
+            if (device.slaveId > 0) {
+                item["slave_id"] = static_cast<int>(device.slaveId);
+            }
         }
 
         return item;
@@ -327,6 +338,7 @@ public:
             }
         } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
             parseModbusRegisters(device, realtimeValues, outElements);
+            parseModbusDownFuncs(device, outDownFuncs);
         }
     }
 
@@ -341,8 +353,15 @@ public:
         outDownFuncs = Json::Value(Json::arrayValue);
         outImageFuncs = Json::Value(Json::arrayValue);
 
-        if (device.protocolConfig.isNull() || device.protocolType != Constants::PROTOCOL_SL651) {
-            return;  // Modbus 无 downFuncs/imageFuncs，直接返回
+        if (device.protocolConfig.isNull()) return;
+
+        if (device.protocolType == Constants::PROTOCOL_MODBUS) {
+            parseModbusDownFuncs(device, outDownFuncs);
+            return;
+        }
+
+        if (device.protocolType != Constants::PROTOCOL_SL651) {
+            return;
         }
 
         const auto& config = device.protocolConfig;
@@ -360,6 +379,59 @@ public:
             } else if (dir == "DOWN") {
                 outDownFuncs.append(parseDownFunc(func));
             }
+        }
+    }
+
+    /**
+     * @brief 从 Modbus 寄存器配置中构建下行功能（可写寄存器）
+     */
+    static void parseModbusDownFuncs(
+        const DeviceCache::CachedDevice& device,
+        Json::Value& outDownFuncs
+    ) {
+        const auto& config = device.protocolConfig;
+        if (!config.isMember("registers") || !config["registers"].isArray()) return;
+
+        Json::Value funcElements(Json::arrayValue);
+
+        for (const auto& reg : config["registers"]) {
+            std::string regType = reg.get("registerType", "").asString();
+            // 仅 COIL 和 HOLDING_REGISTER 可写
+            if (regType != "COIL" && regType != "HOLDING_REGISTER") continue;
+
+            Json::Value funcEl;
+            funcEl["elementId"] = reg.get("id", "").asString();
+            funcEl["name"] = reg.get("name", "").asString();
+            funcEl["value"] = "";
+            funcEl["registerType"] = regType;
+            funcEl["dataType"] = reg.get("dataType", "UINT16").asString();
+
+            std::string unit = reg.get("unit", "").asString();
+            if (!unit.empty()) funcEl["unit"] = unit;
+
+            // COIL 类型添加预设值选项
+            if (regType == "COIL") {
+                Json::Value options(Json::arrayValue);
+                Json::Value optOn;
+                optOn["label"] = "ON";
+                optOn["value"] = "1";
+                options.append(optOn);
+                Json::Value optOff;
+                optOff["label"] = "OFF";
+                optOff["value"] = "0";
+                options.append(optOff);
+                funcEl["options"] = options;
+            }
+
+            funcElements.append(funcEl);
+        }
+
+        if (!funcElements.empty()) {
+            Json::Value downFunc;
+            downFunc["funcCode"] = "MODBUS_WRITE";
+            downFunc["name"] = "写寄存器";
+            downFunc["elements"] = funcElements;
+            outDownFuncs.append(downFunc);
         }
     }
 };

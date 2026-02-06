@@ -146,6 +146,8 @@ export interface DeviceStaticData {
   modbus_mode?: ModbusMode;
   slave_id?: number;
   timezone?: string;
+  heartbeat?: HeartbeatConfig;
+  registration?: RegistrationConfig;
   remark?: string;
   created_at?: string;
 
@@ -156,13 +158,7 @@ export interface DeviceStaticData {
   protocol_name?: string;
   protocol_type?: string;
 
-  // 兼容字段
-  code: string;
-  deviceName: string;
-  typeName: string;
-  linkId?: number;
-
-  // 协议配置（静态）
+  // 协议配置（按协议类型有条件返回）
   downFuncs?: DownFunc[];
   imageFuncs?: ImageFunc[];
 }
@@ -214,12 +210,16 @@ export interface DownFuncElementOption {
 
 /** 下行功能码要素 */
 export interface DownFuncElement {
-  elementId: number;
+  elementId: string;
   name: string;
   value: string;
   unit?: string;
   /** 预设值选项（从协议配置继承） */
   options?: DownFuncElementOption[];
+  /** Modbus 寄存器类型 */
+  registerType?: string;
+  /** Modbus 数据类型 */
+  dataType?: string;
 }
 
 /** 下行功能码 */
@@ -260,8 +260,9 @@ export interface DeviceRealTimeData extends DeviceStaticData {
 /** 指令下发参数 */
 export interface CommandPayload {
   deviceCode: string;
+  deviceId?: number;
   funcCode: string;
-  elements: Array<{ elementId: number; value: string }>;
+  elements: Array<{ elementId: string; value: string }>;
 }
 
 // ========== 历史数据相关类型 ==========

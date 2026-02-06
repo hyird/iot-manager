@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Events.hpp"
+#include "modules/device/domain/Events.hpp"
 #include "common/domain/EventBus.hpp"
 #include "common/network/TcpLinkManager.hpp"
 #include "common/utils/Constants.hpp"
@@ -60,6 +61,21 @@ public:
             } catch (const std::exception& e) {
                 LOG_ERROR << "LinkEventHandler: Failed to stop link #"
                           << event.aggregateId << ": " << e.what();
+            }
+            co_return;
+        });
+
+        // 设备注册包/心跳包变更 → 断开链路所有连接，强制设备重新注册
+        bus.subscribe<DeviceUpdated>([](const DeviceUpdated& event) -> Task<void> {
+            if (!event.registrationChanged || event.linkId <= 0) co_return;
+
+            try {
+                TcpLinkManager::instance().disconnectServerClients(event.linkId);
+                LOG_INFO << "LinkEventHandler: Disconnected all clients on link #" << event.linkId
+                         << " due to registration/heartbeat change on device #" << event.aggregateId;
+            } catch (const std::exception& e) {
+                LOG_ERROR << "LinkEventHandler: Failed to disconnect clients on link #"
+                          << event.linkId << ": " << e.what();
             }
             co_return;
         });

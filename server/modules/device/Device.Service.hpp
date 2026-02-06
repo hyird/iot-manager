@@ -217,8 +217,14 @@ public:
             );
 
             item["elements"] = elements;
-            item["downFuncs"] = downFuncs;
-            item["imageFuncs"] = imageFuncs;
+
+            // 按协议类型返回各自的配置字段
+            if (device.protocolType == Constants::PROTOCOL_SL651) {
+                item["downFuncs"] = downFuncs;
+                item["imageFuncs"] = imageFuncs;
+            } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
+                item["downFuncs"] = downFuncs;
+            }
 
             items.append(item);
         }
@@ -242,12 +248,16 @@ public:
         for (const auto& device : cachedDevices) {
             Json::Value item = DeviceDataTransformer::buildDeviceBaseInfo(device);
 
-            // 使用 Transformer 解析静态协议配置
+            // 按协议类型返回各自的配置字段
             Json::Value downFuncs, imageFuncs;
             DeviceDataTransformer::parseProtocolFuncsStatic(device, downFuncs, imageFuncs);
 
-            item["downFuncs"] = downFuncs;
-            item["imageFuncs"] = imageFuncs;
+            if (device.protocolType == Constants::PROTOCOL_SL651) {
+                item["downFuncs"] = downFuncs;
+                item["imageFuncs"] = imageFuncs;
+            } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
+                item["downFuncs"] = downFuncs;  // Modbus 也有下行功能码（写寄存器）
+            }
 
             items.append(item);
         }
@@ -541,11 +551,21 @@ public:
                 std::string errs;
                 Json::CharReaderBuilder readerBuilder;
                 if (Json::parseFromStream(readerBuilder, configStream, &config, &errs)) {
-                    // 解析功能码列表，找到当前功能码的要素定义
+                    // Modbus：从 registers[] 中按 "registerType_address" 构建 dictConfig 映射
+                    if (config.isMember("registers") && config["registers"].isArray()) {
+                        for (const auto& reg : config["registers"]) {
+                            if (reg.isMember("dictConfig") && reg["dictConfig"].isObject()) {
+                                std::string regType = reg.get("registerType", "").asString();
+                                int addr = reg.get("address", 0).asInt();
+                                std::string fullKey = regType + "_" + std::to_string(addr);
+                                elementDictConfigs[fullKey] = reg["dictConfig"];
+                            }
+                        }
+                    }
+                    // SL651：从 funcs[] 中按功能码匹配提取 dictConfig
                     if (config.isMember("funcs") && config["funcs"].isArray()) {
                         for (const auto& func : config["funcs"]) {
                             if (func.get("funcCode", "").asString() == funcCode) {
-                                // 找到对应的功能码，提取要素的 dictConfig
                                 if (func.isMember("elements") && func["elements"].isArray()) {
                                     for (const auto& elem : func["elements"]) {
                                         std::string guideHex = elem.get("guideHex", "").asString();
@@ -554,7 +574,6 @@ public:
                                         }
                                     }
                                 }
-                                // 也检查 responseElements（下行功能码的应答要素）
                                 if (func.isMember("responseElements") && func["responseElements"].isArray()) {
                                     for (const auto& elem : func["responseElements"]) {
                                         std::string guideHex = elem.get("guideHex", "").asString();
@@ -729,14 +748,17 @@ public:
                                     el["unit"] = elemData["unit"];
                                 }
 
-                                // 从 key（funcCode_guideHex）中提取 guideHex，附加 dictConfig
-                                size_t underscorePos = key.find('_');
-                                if (underscorePos != std::string::npos) {
-                                    std::string guideHex = key.substr(underscorePos + 1);
-                                    auto dictIt = elementDictConfigs.find(guideHex);
-                                    if (dictIt != elementDictConfigs.end()) {
-                                        el["dictConfig"] = dictIt->second;
+                                // 附加 dictConfig：先尝试完整 key（Modbus: HOLDING_REGISTER_100）
+                                auto dictIt = elementDictConfigs.find(key);
+                                if (dictIt == elementDictConfigs.end()) {
+                                    // 回退：从 key（SL651: funcCode_guideHex）中提取 guideHex
+                                    size_t underscorePos = key.find('_');
+                                    if (underscorePos != std::string::npos) {
+                                        dictIt = elementDictConfigs.find(key.substr(underscorePos + 1));
                                     }
+                                }
+                                if (dictIt != elementDictConfigs.end()) {
+                                    el["dictConfig"] = dictIt->second;
                                 }
 
                                 elements.append(el);
@@ -764,9 +786,10 @@ public:
      * @return 设备应答成功返回 true
      */
     Task<bool> sendCommand(int linkId, const std::string& deviceCode,
-                           const std::string& funcCode, const Json::Value& elements, int userId) {
+                           const std::string& funcCode, const Json::Value& elements,
+                           int userId, int deviceId = 0) {
         bool success = co_await ProtocolDispatcher::instance().sendCommand(
-            linkId, deviceCode, funcCode, elements, userId
+            linkId, deviceCode, funcCode, elements, userId, deviceId
         );
 
         // 无论成功或失败，都已保存记录到数据库，需要更新版本号以刷新 ETag 缓存

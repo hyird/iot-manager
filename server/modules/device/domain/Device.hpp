@@ -238,6 +238,11 @@ public:
                                   "modbus_mode", "slave_id", "timezone",
                                   "heartbeat", "registration"}) {
             if (data.isMember(key)) {
+                // 检测注册包/心跳包变更
+                if ((std::string(key) == "registration" || std::string(key) == "heartbeat") &&
+                    protocolParams_[key] != data[key]) {
+                    registrationChanged_ = true;
+                }
                 protocolParams_[key] = data[key];
                 markDirty();
             }
@@ -343,6 +348,7 @@ private:
     std::string remark_;
     std::string createdAt_;
     std::string updatedAt_;
+    bool registrationChanged_ = false;  // 注册包/心跳包是否变更（用于断开连接重新注册）
 
     // 关联数据（只读）
     std::string linkName_;
@@ -450,7 +456,7 @@ private:
             status_, ppJson, remark_, TimestampHelper::now(), std::to_string(id())
         });
 
-        raiseEvent<DeviceUpdated>(id());
+        raiseEvent<DeviceUpdated>(id(), linkId_, registrationChanged_);
     }
 
     Task<void> persistDelete(TransactionGuard& tx) {

@@ -92,9 +92,9 @@ const DevicePage = () => {
     const lowerKeyword = keyword.toLowerCase();
     return deviceList.filter(
       (d) =>
-        d.deviceName?.toLowerCase().includes(lowerKeyword) ||
-        d.code?.toLowerCase().includes(lowerKeyword) ||
-        d.typeName?.toLowerCase().includes(lowerKeyword)
+        d.name?.toLowerCase().includes(lowerKeyword) ||
+        d.device_code?.toLowerCase().includes(lowerKeyword) ||
+        d.protocol_name?.toLowerCase().includes(lowerKeyword)
     );
   }, [deviceList, keyword]);
 
@@ -128,6 +128,8 @@ const DevicePage = () => {
       modbus_mode: device.modbus_mode,
       slave_id: device.slave_id,
       timezone: device.timezone,
+      heartbeat: device.heartbeat,
+      registration: device.registration,
       remark: device.remark,
     });
     setFormModalVisible(true);
@@ -135,7 +137,7 @@ const DevicePage = () => {
 
   const onDeleteDevice = (device: Device.RealTimeData) => {
     modal.confirm({
-      title: `确认删除设备「${device.deviceName}」吗？`,
+      title: `确认删除设备「${device.name}」吗？`,
       onOk: () => deleteMutation.mutate(device.id),
     });
   };
@@ -360,16 +362,16 @@ const DevicePage = () => {
                 key: f.funcCode,
                 label: f.name,
               }));
-              const isThisCardPopoverOpen =
-                commandPopoverOpen && commandDevice?.code === device.code;
+              const isThisCardPopoverOpen = commandPopoverOpen && commandDevice?.id === device.id;
 
               return (
-                <div key={device.code} className="flex flex-col">
+                <div key={device.id} className="flex flex-col">
                   <DeviceCard
                     title={
                       <Flex justify="space-between" className="w-full">
                         <span>
-                          {device.deviceName}:{device.code}
+                          {device.name}
+                          {device.device_code ? `:${device.device_code}` : ""}
                         </span>
                         {online ? <Tag color="success">在线</Tag> : <Tag color="error">离线</Tag>}
                       </Flex>
@@ -380,7 +382,7 @@ const DevicePage = () => {
                           <Tag color="blue" className="!mr-1">
                             {device.link_name || "未绑定链路"}
                           </Tag>
-                          <Tag color="purple">{device.protocol_name || device.typeName}</Tag>
+                          <Tag color="purple">{device.protocol_name}</Tag>
                         </span>
                         <span className="text-gray-400 text-xs">
                           上报：{formatReportTime(device.reportTime)}

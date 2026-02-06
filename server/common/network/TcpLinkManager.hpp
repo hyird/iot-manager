@@ -491,6 +491,32 @@ public:
         return false;
     }
 
+    /**
+     * @brief 断开链路的所有 Server 连接（用于注册包变更后强制设备重新注册）
+     */
+    void disconnectServerClients(int linkId) {
+        std::shared_ptr<LinkRuntime> runtime;
+        {
+            std::shared_lock lock(mutex_);
+            auto it = runtimes_.find(linkId);
+            if (it == runtimes_.end()) return;
+            runtime = it->second;
+        }
+
+        std::lock_guard<std::mutex> connLock(runtime->connMutex);
+        int count = 0;
+        for (const auto& conn : runtime->serverConns) {
+            if (conn->connected()) {
+                conn->shutdown();
+                ++count;
+            }
+        }
+        if (count > 0) {
+            LOG_INFO << "[Link " << linkId << "] Disconnected " << count
+                     << " server clients for re-registration";
+        }
+    }
+
     EventLoop* getLinkLoop(int linkId) const {
         std::shared_lock lock(mutex_);
         auto it = runtimes_.find(linkId);

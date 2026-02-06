@@ -91,6 +91,11 @@ public:
 
         // 创建 Modbus 处理器并初始化
         modbusHandler_ = std::make_unique<modbus::ModbusHandler>();
+        modbusHandler_->setCommandResponseCallback(
+            [this](const std::string& deviceCode, const std::string& funcCode, bool success, int64_t responseId) {
+                notifyCommandResponse(deviceCode, funcCode, success, responseId);
+            }
+        );
         auto* modbusLoop = getNextDrogonLoop();
         modbusLoop->queueInLoop([this]() {
             drogon::async_run([this]() -> Task<> {
@@ -574,91 +579,112 @@ public:
      * @return 设备应答成功返回 true，超时或应答失败返回 false
      */
     Task<bool> sendCommand(int linkId, const std::string& deviceCode, const std::string& funcCode,
-                           const Json::Value& elements, int userId, int timeoutMs = 10000) {
+                           const Json::Value& elements, int userId, int deviceId = 0,
+                           int timeoutMs = 10000) {
         int64_t downCommandId = 0;
         try {
-            // 获取设备配置（从缓存同步读取）
-            auto configOpt = buildDeviceConfigFromCache(linkId, deviceCode);
-            if (!configOpt) {
-                LOG_ERROR << "[ProtocolDispatcher] 设备未找到: linkId=" << linkId << ", code=" << deviceCode;
-                co_return false;
-            }
-
             // 获取协议类型（从缓存同步读取）
             std::string protocol = DeviceCache::instance().getProtocolByLinkIdSync(linkId);
             if (protocol.empty()) {
                 LOG_ERROR << "[ProtocolDispatcher] 链路未关联协议: linkId=" << linkId;
-                // 保存失败记录（无报文数据）
-                downCommandId = co_await saveDownCommand(linkId, *configOpt, funcCode,
-                    elements, "", userId, "SEND_FAILED", "链路未关联协议");
                 co_return false;
             }
 
-            // 根据协议类型构建报文
-            std::string data;
             if (protocol == Constants::PROTOCOL_SL651) {
-                // 构建 SL651 下行报文
-                data = sl651Parser_->buildCommand(deviceCode, funcCode, elements, *configOpt);
+                // ===== SL651 协议 =====
+                auto configOpt = buildDeviceConfigFromCache(linkId, deviceCode);
+                if (!configOpt) {
+                    LOG_ERROR << "[ProtocolDispatcher] SL651 设备未找到: code=" << deviceCode;
+                    co_return false;
+                }
+
+                // 构建下行报文
+                std::string data = sl651Parser_->buildCommand(deviceCode, funcCode, elements, *configOpt);
                 if (data.empty()) {
-                    LOG_ERROR << "[ProtocolDispatcher] 构建 SL651 报文失败";
-                    // 保存失败记录（无报文数据）
                     downCommandId = co_await saveDownCommand(linkId, *configOpt, funcCode,
                         elements, "", userId, "SEND_FAILED", "构建报文失败");
                     co_return false;
                 }
+
+                // 定向发送
+                auto connOpt = DeviceConnectionCache::instance().getConnection(deviceCode);
+                if (!connOpt) {
+                    downCommandId = co_await saveDownCommand(linkId, *configOpt, funcCode,
+                        elements, data, userId, "SEND_FAILED", "未找到设备连接映射");
+                    co_return false;
+                }
+
+                bool sent = TcpLinkManager::instance().sendToClient(connOpt->linkId, connOpt->clientAddr, data);
+                if (!sent) {
+                    downCommandId = co_await saveDownCommand(linkId, *configOpt, funcCode,
+                        elements, data, userId, "SEND_FAILED", "TCP发送失败");
+                    co_return false;
+                }
+
+                LOG_DEBUG << "[ProtocolDispatcher] SL651 定向发送到 " << connOpt->clientAddr;
+                downCommandId = co_await saveDownCommand(linkId, *configOpt, funcCode, elements, data, userId, "PENDING");
+
+            } else if (protocol == Constants::PROTOCOL_MODBUS) {
+                // ===== Modbus 协议 =====
+                // 优先用 deviceId 定位，fallback 到 deviceCode 匹配
+                if (deviceId == 0) {
+                    auto devices = DeviceCache::instance().getDevicesByLinkIdSync(linkId);
+                    for (const auto* dev : devices) {
+                        if (!deviceCode.empty() && dev->deviceCode == deviceCode) {
+                            deviceId = dev->id;
+                            break;
+                        }
+                    }
+                }
+                if (deviceId == 0) {
+                    LOG_ERROR << "[ProtocolDispatcher] Modbus 设备未找到: id=" << deviceId << " code=" << deviceCode;
+                    co_return false;
+                }
+
+                // 用 deviceCode 或 deviceId 字符串作为 pendingCommands_ 的 key
+                std::string pendingKey = deviceCode.empty() ? ("modbus:" + std::to_string(deviceId)) : deviceCode;
+
+                // 构建并发送写帧
+                auto writeResult = modbusHandler_->writeRegister(deviceId, pendingKey, elements);
+                if (!writeResult.sent) {
+                    downCommandId = co_await saveModbusDownCommand(deviceId, linkId, funcCode,
+                        elements, "", userId, "SEND_FAILED", "写帧发送失败");
+                    co_return false;
+                }
+
+                downCommandId = co_await saveModbusDownCommand(deviceId, linkId, funcCode,
+                    elements, writeResult.frameHex, userId, "PENDING");
+
             } else {
                 LOG_ERROR << "[ProtocolDispatcher] 协议不支持下发指令: " << protocol;
-                downCommandId = co_await saveDownCommand(linkId, *configOpt, funcCode,
-                    elements, "", userId, "SEND_FAILED", "协议不支持下发指令");
                 co_return false;
             }
 
-            // 获取设备连接映射，定向发送
-            auto connOpt = DeviceConnectionCache::instance().getConnection(deviceCode);
-            if (!connOpt) {
-                LOG_ERROR << "[ProtocolDispatcher] 未找到设备连接映射，无法下发指令: device=" << deviceCode;
-                // 保存失败记录（已有报文数据）
-                downCommandId = co_await saveDownCommand(linkId, *configOpt, funcCode,
-                    elements, data, userId, "SEND_FAILED", "未找到设备连接映射");
-                co_return false;
+            // 确定 pendingCommands_ 的 key（SL651 用 deviceCode，Modbus 用 pendingKey）
+            std::string cmdKey = deviceCode;
+            if (protocol == Constants::PROTOCOL_MODBUS) {
+                cmdKey = deviceCode.empty() ? ("modbus:" + std::to_string(deviceId)) : deviceCode;
             }
 
-            // 定向发送到设备对应的客户端连接
-            bool sent = TcpLinkManager::instance().sendToClient(connOpt->linkId, connOpt->clientAddr, data);
-            if (!sent) {
-                LOG_ERROR << "[ProtocolDispatcher] 定向发送失败: linkId=" << linkId << ", client=" << connOpt->clientAddr;
-                // 保存失败记录（已有报文数据）
-                downCommandId = co_await saveDownCommand(linkId, *configOpt, funcCode,
-                    elements, data, userId, "SEND_FAILED", "TCP发送失败");
-                co_return false;
-            }
-
-            LOG_DEBUG << "[ProtocolDispatcher] 定向发送到 " << connOpt->clientAddr;
-
-            // 保存下行指令到数据库，获取记录 ID（状态为 PENDING）
-            downCommandId = co_await saveDownCommand(linkId, *configOpt, funcCode, elements, data, userId, "PENDING");
-
-            // 创建待应答记录（以 deviceCode 为 key，每个设备同时只能有一个待应答指令）
+            // 创建待应答记录
             std::promise<bool> responsePromise;
             std::future<bool> responseFuture = responsePromise.get_future();
 
             {
                 std::lock_guard<std::mutex> lock(pendingMutex_);
-                // 移除旧的同设备记录（如果有）
-                pendingCommands_.erase(deviceCode);
-                // 添加新记录
+                pendingCommands_.erase(cmdKey);
                 PendingCommand cmd;
-                cmd.deviceCode = deviceCode;
+                cmd.deviceCode = cmdKey;
                 cmd.funcCode = funcCode;
                 cmd.promise = std::move(responsePromise);
                 cmd.expireTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
                 cmd.downCommandId = downCommandId;
                 cmd.userId = userId;
-                pendingCommands_.emplace(deviceCode, std::move(cmd));
+                pendingCommands_.emplace(cmdKey, std::move(cmd));
             }
 
             LOG_INFO << "[ProtocolDispatcher] 指令已发送，等待应答: linkId=" << linkId
-                     << ", device=" << deviceCode << ", func=" << funcCode;
+                     << ", device=" << cmdKey << ", func=" << funcCode;
 
             // 等待应答（使用协程轮询方式，每 100ms 检查一次）
             constexpr int pollIntervalMs = 100;
@@ -684,16 +710,14 @@ public:
             // 清理（如果超时，promise 未被消费）
             {
                 std::lock_guard<std::mutex> lock(pendingMutex_);
-                pendingCommands_.erase(deviceCode);
+                pendingCommands_.erase(cmdKey);
             }
 
             if (success) {
-                LOG_INFO << "[ProtocolDispatcher] 设备应答成功: device=" << deviceCode << ", func=" << funcCode;
-                // 更新状态为成功
+                LOG_INFO << "[ProtocolDispatcher] 设备应答成功: device=" << cmdKey << ", func=" << funcCode;
                 co_await updateDownCommandStatus(downCommandId, "SUCCESS");
             } else {
-                LOG_WARN << "[ProtocolDispatcher] 设备应答超时或失败: device=" << deviceCode << ", func=" << funcCode;
-                // 更新状态为超时
+                LOG_WARN << "[ProtocolDispatcher] 设备应答超时或失败: device=" << cmdKey << ", func=" << funcCode;
                 co_await updateDownCommandStatus(downCommandId, "TIMEOUT", "设备应答超时");
             }
 
@@ -847,6 +871,61 @@ private:
         // 委托给 CommandRepository 执行数据库操作
         co_return co_await CommandRepository::save(
             config.deviceId, linkId, Constants::PROTOCOL_SL651, data, timeOss.str()
+        );
+    }
+
+    /**
+     * @brief 保存 Modbus 下行指令到数据库
+     */
+    Task<int64_t> saveModbusDownCommand(int deviceId, int linkId, const std::string& funcCode,
+                                         const Json::Value& elements, const std::string& rawHex, int userId,
+                                         const std::string& status = "PENDING", const std::string& failReason = "") {
+        Json::Value data;
+        data["funcCode"] = funcCode;
+        data["funcName"] = "写寄存器";
+        data["direction"] = "DOWN";
+        data["userId"] = userId;
+        data["status"] = status;
+        if (!failReason.empty()) {
+            data["failReason"] = failReason;
+        }
+
+        // 原始报文
+        Json::Value rawArr(Json::arrayValue);
+        rawArr.append(rawHex);
+        data["raw"] = rawArr;
+
+        // 下发的要素数据
+        Json::Value dataObj(Json::objectValue);
+        if (elements.isArray()) {
+            for (const auto& elem : elements) {
+                std::string elementId = elem.get("elementId", "").asString();
+                std::string value = elem.get("value", "").asString();
+                Json::Value e;
+                e["name"] = elementId;
+                e["value"] = value;
+                dataObj[elementId] = e;
+            }
+        }
+        data["data"] = dataObj;
+
+        // UTC 时间
+        auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        auto dp = std::chrono::floor<std::chrono::days>(now);
+        std::chrono::year_month_day ymd{dp};
+        std::chrono::hh_mm_ss hms{now - dp};
+
+        std::ostringstream timeOss;
+        timeOss << std::setfill('0')
+                << std::setw(4) << static_cast<int>(ymd.year()) << "-"
+                << std::setw(2) << static_cast<unsigned>(ymd.month()) << "-"
+                << std::setw(2) << static_cast<unsigned>(ymd.day()) << "T"
+                << std::setw(2) << hms.hours().count() << ":"
+                << std::setw(2) << hms.minutes().count() << ":"
+                << std::setw(2) << hms.seconds().count() << "Z";
+
+        co_return co_await CommandRepository::save(
+            deviceId, linkId, Constants::PROTOCOL_MODBUS, data, timeOss.str()
         );
     }
 

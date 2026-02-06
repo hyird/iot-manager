@@ -51,6 +51,9 @@ struct FuncCodes {
     static constexpr uint8_t READ_DISCRETE_INPUTS = 0x02;
     static constexpr uint8_t READ_HOLDING_REGISTERS = 0x03;
     static constexpr uint8_t READ_INPUT_REGISTERS = 0x04;
+    static constexpr uint8_t WRITE_SINGLE_COIL = 0x05;
+    static constexpr uint8_t WRITE_SINGLE_REGISTER = 0x06;
+    static constexpr uint8_t WRITE_MULTIPLE_REGISTERS = 0x10;
 };
 
 // ==================== 帧结构 ====================
@@ -62,6 +65,16 @@ struct ModbusRequest {
     uint16_t startAddress;
     uint16_t quantity;
     uint16_t transactionId = 0;  // 仅 TCP 模式
+};
+
+/** Modbus 写请求参数 */
+struct ModbusWriteRequest {
+    uint8_t slaveId;
+    uint8_t functionCode;     // FC05/FC06/FC10
+    uint16_t address;
+    std::vector<uint8_t> data;  // 编码后的值
+    uint16_t quantity = 1;      // 寄存器数量（FC10 使用）
+    uint16_t transactionId = 0; // 仅 TCP 模式
 };
 
 /** 解析后的 Modbus 响应 */
@@ -218,6 +231,11 @@ inline size_t dataTypeToByteSize(DataType type) {
 /** 是否为位类型寄存器（线圈/离散输入） */
 inline bool isBitRegister(RegisterType type) {
     return type == RegisterType::COIL || type == RegisterType::DISCRETE_INPUT;
+}
+
+/** 寄存器类型是否可写 */
+inline bool isWritable(RegisterType type) {
+    return type == RegisterType::COIL || type == RegisterType::HOLDING_REGISTER;
 }
 
 }  // namespace modbus

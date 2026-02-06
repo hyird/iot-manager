@@ -190,16 +190,17 @@ public:
         if (!json) co_return Response::badRequest("请求体格式错误");
 
         std::string deviceCode = (*json).get("deviceCode", "").asString();
+        int deviceId = (*json).get("deviceId", 0).asInt();
         std::string funcCode = (*json).get("funcCode", "").asString();
 
-        if (deviceCode.empty()) co_return Response::badRequest("设备编码不能为空");
+        if (deviceCode.empty() && deviceId == 0) co_return Response::badRequest("设备标识不能为空");
         if (funcCode.empty()) co_return Response::badRequest("功能码不能为空");
 
         // 获取 elements 数组
         Json::Value elements = (*json).get("elements", Json::arrayValue);
 
         // 通过 Service 层下发指令
-        bool success = co_await service_.sendCommand(linkId, deviceCode, funcCode, elements, userId);
+        bool success = co_await service_.sendCommand(linkId, deviceCode, funcCode, elements, userId, deviceId);
 
         if (success) {
             co_return Response::ok(Json::nullValue, "指令下发成功，设备已应答");

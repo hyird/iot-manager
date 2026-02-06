@@ -3,9 +3,25 @@
  */
 
 import { Form, Input, InputNumber, Modal, Select, Switch } from "antd";
+import type { RuleObject } from "antd/es/form";
 
 import { useProtocolConfigOptions } from "@/services/protocol";
 import type { Device, Link, Protocol } from "@/types";
+
+/** HEX 内容校验规则 */
+const hexContentRules: RuleObject[] = [
+  { required: true, message: "请输入十六进制内容" },
+  { pattern: /^[0-9A-Fa-f\s]+$/, message: "只能包含十六进制字符 (0-9, A-F)" },
+  {
+    validator: (_, value: string) => {
+      if (!value) return Promise.resolve();
+      const stripped = value.replace(/\s/g, "");
+      if (stripped.length === 0) return Promise.reject("内容不能为空");
+      if (stripped.length % 2 !== 0) return Promise.reject("十六进制长度必须为偶数（完整字节）");
+      return Promise.resolve();
+    },
+  },
+];
 
 interface DeviceFormValues {
   id?: number;
@@ -111,6 +127,13 @@ const DeviceFormModal = ({
         form={form}
         layout="vertical"
         onFinish={(values) => {
+          // HEX 内容去除空格
+          if (values.heartbeat?.mode === "HEX" && values.heartbeat?.content) {
+            values.heartbeat.content = values.heartbeat.content.replace(/\s/g, "");
+          }
+          if (values.registration?.mode === "HEX" && values.registration?.content) {
+            values.registration.content = values.registration.content.replace(/\s/g, "");
+          }
           onFinish(values);
           form.resetFields();
         }}
@@ -246,10 +269,18 @@ const DeviceFormModal = ({
               <Form.Item
                 label="心跳包内容"
                 name={["heartbeat", "content"]}
-                rules={[{ required: true, message: "请输入心跳包内容" }]}
-                extra={hbMode === "HEX" ? "十六进制字符串，如: AABBCCDD" : "ASCII 字符串，支持 \\r \\n 转义"}
+                rules={
+                  hbMode === "HEX"
+                    ? hexContentRules
+                    : [{ required: true, message: "请输入心跳包内容" }]
+                }
+                extra={
+                  hbMode === "HEX"
+                    ? "十六进制字符串，如: AA BB CC DD（空格会自动去除）"
+                    : "ASCII 字符串，支持 \\r \\n 转义"
+                }
               >
-                <Input placeholder={hbMode === "HEX" ? "AABBCCDD" : "HELLO\\r\\n"} />
+                <Input placeholder={hbMode === "HEX" ? "AA BB CC DD" : "HELLO\\r\\n"} />
               </Form.Item>
             );
           }}
@@ -269,10 +300,18 @@ const DeviceFormModal = ({
               <Form.Item
                 label="注册包内容"
                 name={["registration", "content"]}
-                rules={[{ required: true, message: "请输入注册包内容" }]}
-                extra={regMode === "HEX" ? "十六进制字符串，如: AABBCCDD" : "ASCII 字符串，支持 \\r \\n 转义"}
+                rules={
+                  regMode === "HEX"
+                    ? hexContentRules
+                    : [{ required: true, message: "请输入注册包内容" }]
+                }
+                extra={
+                  regMode === "HEX"
+                    ? "十六进制字符串，如: AA BB CC DD（空格会自动去除）"
+                    : "ASCII 字符串，支持 \\r \\n 转义"
+                }
               >
-                <Input placeholder={regMode === "HEX" ? "AABBCCDD" : "HELLO\\r\\n"} />
+                <Input placeholder={regMode === "HEX" ? "AA BB CC DD" : "HELLO\\r\\n"} />
               </Form.Item>
             );
           }}

@@ -13,8 +13,13 @@ struct DeviceCreated : DomainEvent {
 };
 
 struct DeviceUpdated : DomainEvent {
-    DeviceUpdated(int deviceId)
-        : DomainEvent("DeviceUpdated", deviceId, "Device") {}
+    int linkId = 0;
+    bool registrationChanged = false;
+
+    DeviceUpdated(int deviceId, int linkId, bool regChanged = false)
+        : DomainEvent("DeviceUpdated", deviceId, "Device")
+        , linkId(linkId)
+        , registrationChanged(regChanged) {}
 };
 
 struct DeviceDeleted : DomainEvent {

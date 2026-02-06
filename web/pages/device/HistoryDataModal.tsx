@@ -81,11 +81,15 @@ const renderElementValue = (el: Device.Element | undefined) => {
 
 // ========== 组件 ==========
 
+const MODBUS_FUNC_CODE = "MODBUS_READ";
+
 const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
   const [historyForm] = Form.useForm();
   const [funcMap, setFuncMap] = useState<Record<string, FuncState>>({});
   const [expandedFuncKeys, setExpandedFuncKeys] = useState<React.Key[]>([]);
   const [recordMap, setRecordMap] = useState<Record<string, RecordState>>({});
+
+  const isModbus = device?.protocol_type === "Modbus";
 
   const getTimeRangeParams = useCallback(() => {
     const values = historyForm.getFieldsValue();
@@ -228,6 +232,20 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
     [getTimeRangeParams, fetchFuncRecords]
   );
 
+  /** Modbus 直接查询历史记录（跳过功能码层级） */
+  const fetchModbusRecords = useCallback(
+    (code: string, pageArg?: number, pageSizeArg?: number) => {
+      fetchFuncRecords({
+        code,
+        funcCode: MODBUS_FUNC_CODE,
+        dataType: "ELEMENT",
+        pageArg,
+        pageSizeArg,
+      });
+    },
+    [fetchFuncRecords]
+  );
+
   // 打开弹窗时初始化
   const handleAfterOpen = useCallback(
     (isOpen: boolean) => {
@@ -236,10 +254,14 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
         setRecordMap({});
         setExpandedFuncKeys([]);
         historyForm.setFieldsValue({ timeRange: getDefaultTimeRange() });
-        fetchFuncList(device.code, undefined, undefined, true);
+        if (isModbus) {
+          fetchModbusRecords(device.device_code);
+        } else {
+          fetchFuncList(device.device_code, undefined, undefined, true);
+        }
       }
     },
-    [device, historyForm, fetchFuncList]
+    [device, isModbus, historyForm, fetchFuncList, fetchModbusRecords]
   );
 
   // ========== 表格渲染 ==========
@@ -424,15 +446,73 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
     );
   };
 
+  /** Modbus 扁平历史表格（无功能码层级） */
+  const renderModbusHistoryTable = () => {
+    if (!device) return null;
+    const key = makeRecordKey(device.device_code, MODBUS_FUNC_CODE, "ELEMENT");
+    const rs = recordMap[key];
+    const records = (rs?.list as Device.HistoryElement[]) || [];
+
+    const elementNameSet = new Set<string>();
+    for (const r of records) {
+      for (const e of r.elements) {
+        elementNameSet.add(e.name);
+      }
+    }
+    const elementNames = Array.from(elementNameSet);
+
+    const dataSource: ElementRowType[] = records.map((r, idx) => ({
+      key: `${idx}_${new Date(r.reportTime).getTime()}`,
+      reportTime: new Date(r.reportTime).toLocaleString(),
+      elements: r.elements,
+    }));
+
+    const cols: ColumnsType<ElementRowType> = [
+      { title: "时间", dataIndex: "reportTime", key: "reportTime", fixed: "left", width: 180 },
+      ...elementNames.map((name) => ({
+        title: name,
+        dataIndex: "elements",
+        key: name,
+        width: 150,
+        ellipsis: true,
+        render: (els: ElementRowType["elements"]) => {
+          const el = els.find((e) => e.name === name);
+          return renderElementValue(el);
+        },
+      })),
+    ];
+
+    const tableWidth = Math.max(180 + elementNames.length * 150, 600);
+
+    return (
+      <Table<ElementRowType>
+        size="small"
+        bordered
+        loading={rs?.loading}
+        columns={cols}
+        dataSource={dataSource}
+        scroll={{ x: tableWidth }}
+        pagination={{
+          current: rs?.page ?? 1,
+          pageSize: rs?.pageSize ?? 10,
+          total: rs?.total ?? 0,
+          showSizeChanger: true,
+          showTotal: (t) => `共 ${t} 条`,
+          onChange: (p, ps) => fetchModbusRecords(device.device_code, p, ps),
+        }}
+      />
+    );
+  };
+
   const renderHistoryFuncTable = () => {
     if (!device) return null;
-    const state = funcMap[device.code];
+    const state = funcMap[device.device_code];
     const funcs = state?.list ?? [];
 
     const dataSource: HistoryFuncRow[] = funcs.map((f) => ({
       ...f,
-      deviceCode: device.code,
-      key: `${device.code}_${f.funcCode}_${f.dataType}`,
+      deviceCode: device.device_code,
+      key: `${device.device_code}_${f.funcCode}_${f.dataType}`,
     }));
 
     const cols: ColumnsType<HistoryFuncRow> = [
@@ -462,7 +542,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
           total: state?.total ?? 0,
           showSizeChanger: true,
           showTotal: (t) => `共 ${t} 个功能码`,
-          onChange: (p, ps) => fetchFuncList(device.code, p, ps),
+          onChange: (p, ps) => fetchFuncList(device.device_code, p, ps),
         }}
         expandable={{
           expandedRowRender: (record) =>
@@ -487,7 +567,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
   return (
     <Modal
       open={open}
-      title={`历史数据 - ${device?.deviceName || ""}`}
+      title={`历史数据 - ${device?.name || ""}`}
       onCancel={onClose}
       footer={null}
       width="80%"
@@ -501,7 +581,11 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
         form={historyForm}
         layout="inline"
         className="mb-4 shrink-0"
-        onFinish={() => device && fetchFuncList(device.code, 1)}
+        onFinish={() => {
+          if (!device) return;
+          if (isModbus) fetchModbusRecords(device.device_code);
+          else fetchFuncList(device.device_code, 1);
+        }}
       >
         <Form.Item
           label="时间范围"
@@ -518,7 +602,9 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
             <Button
               onClick={() => {
                 historyForm.setFieldsValue({ timeRange: getDefaultTimeRange() });
-                if (device) fetchFuncList(device.code, 1);
+                if (!device) return;
+                if (isModbus) fetchModbusRecords(device.device_code);
+                else fetchFuncList(device.device_code, 1);
               }}
             >
               重置
@@ -526,7 +612,9 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
           </Space>
         </Form.Item>
       </Form>
-      <div className="flex-1 overflow-auto">{renderHistoryFuncTable()}</div>
+      <div className="flex-1 overflow-auto">
+        {isModbus ? renderModbusHistoryTable() : renderHistoryFuncTable()}
+      </div>
     </Modal>
   );
 };

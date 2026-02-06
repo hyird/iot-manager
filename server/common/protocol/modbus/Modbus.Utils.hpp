@@ -134,13 +134,25 @@ public:
             return totalLen;
         }
 
-        // 正常响应: buffer[8] = ByteCount, buffer[9..] = Data
+        out.isException = false;
+
+        // 写响应（FC05/06/10）：固定结构，无 ByteCount
+        if (out.functionCode == FuncCodes::WRITE_SINGLE_COIL ||
+            out.functionCode == FuncCodes::WRITE_SINGLE_REGISTER ||
+            out.functionCode == FuncCodes::WRITE_MULTIPLE_REGISTERS) {
+            // 写回显数据 = Addr(2) + Value/Qty(2)
+            if (totalLen >= 12) {
+                out.data.assign(buffer.begin() + 8, buffer.begin() + 12);
+            }
+            return totalLen;
+        }
+
+        // 读响应（FC01-04）：buffer[8] = ByteCount, buffer[9..] = Data
         if (totalLen < 9) return totalLen;  // 无数据
 
         uint8_t byteCount = buffer[8];
         if (totalLen < static_cast<size_t>(9 + byteCount)) return 0;
 
-        out.isException = false;
         out.data.assign(buffer.begin() + 9, buffer.begin() + 9 + byteCount);
         return totalLen;
     }
@@ -176,7 +188,27 @@ public:
             return frameLen;
         }
 
-        // 正常响应: 需要 ByteCount 字段
+        // 写响应（FC05/06/10）：固定 8 字节帧（SlaveAddr + FC + Addr(2) + Value/Qty(2) + CRC(2)）
+        if (fc == FuncCodes::WRITE_SINGLE_COIL ||
+            fc == FuncCodes::WRITE_SINGLE_REGISTER ||
+            fc == FuncCodes::WRITE_MULTIPLE_REGISTERS) {
+            size_t frameLen = 8;
+            if (buffer.size() < frameLen) return 0;
+
+            uint16_t crcRecv = static_cast<uint16_t>(buffer[frameLen - 2])
+                             | (static_cast<uint16_t>(buffer[frameLen - 1]) << 8);
+            uint16_t crcCalc = crc16(buffer.data(), frameLen - 2);
+            if (crcRecv != crcCalc) return FRAME_CORRUPT;
+
+            out.mode = FrameMode::RTU;
+            out.slaveId = buffer[0];
+            out.functionCode = fc;
+            out.isException = false;
+            out.data.assign(buffer.begin() + 2, buffer.begin() + 6);  // Addr(2) + Value/Qty(2)
+            return frameLen;
+        }
+
+        // 读响应（FC01-04）：需要 ByteCount 字段
         if (buffer.size() < 3) return 0;
 
         uint8_t byteCount = buffer[2];
@@ -347,6 +379,145 @@ public:
         return result;
     }
 
+    // ==================== 写请求帧构建 ====================
+
+    /**
+     * @brief 将数值编码为 Modbus 寄存器字节（extractValue 的逆操作）
+     */
+    static std::vector<uint8_t> encodeValue(double value, DataType dataType, ByteOrder byteOrder) {
+        size_t byteSize = dataTypeToByteSize(dataType);
+        std::vector<uint8_t> buf(byteSize, 0);
+
+        switch (dataType) {
+            case DataType::BOOL: {
+                buf[0] = value != 0.0 ? 1 : 0;
+                return buf;  // BOOL 不需要字节序处理
+            }
+            case DataType::INT16: { int16_t v = static_cast<int16_t>(value); std::memcpy(buf.data(), &v, 2); break; }
+            case DataType::UINT16: { uint16_t v = static_cast<uint16_t>(value); std::memcpy(buf.data(), &v, 2); break; }
+            case DataType::INT32: { int32_t v = static_cast<int32_t>(value); std::memcpy(buf.data(), &v, 4); break; }
+            case DataType::UINT32: { uint32_t v = static_cast<uint32_t>(value); std::memcpy(buf.data(), &v, 4); break; }
+            case DataType::FLOAT32: { float v = static_cast<float>(value); std::memcpy(buf.data(), &v, 4); break; }
+            case DataType::INT64: { int64_t v = static_cast<int64_t>(value); std::memcpy(buf.data(), &v, 8); break; }
+            case DataType::UINT64: { uint64_t v = static_cast<uint64_t>(value); std::memcpy(buf.data(), &v, 8); break; }
+            case DataType::DOUBLE: { std::memcpy(buf.data(), &value, 8); break; }
+        }
+
+        // native → big endian
+        if constexpr (std::endian::native == std::endian::little) {
+            std::reverse(buf.begin(), buf.end());
+        }
+        // big endian → 目标字节序
+        switch (byteOrder) {
+            case ByteOrder::Big: break;
+            case ByteOrder::Little: std::reverse(buf.begin(), buf.end()); break;
+            case ByteOrder::BigSwap: swapBytesInWords(buf); break;
+            case ByteOrder::LittleSwap: reverseWords(buf); break;
+        }
+
+        return buf;
+    }
+
+    /**
+     * @brief 构建 Modbus TCP 写请求帧
+     * FC05: [MBAP(7)][FC(1)][Addr(2)][Value(2)]
+     * FC06: [MBAP(7)][FC(1)][Addr(2)][Value(2)]
+     * FC10: [MBAP(7)][FC(1)][Addr(2)][Qty(2)][ByteCount(1)][Data...]
+     */
+    static std::vector<uint8_t> buildWriteTcpRequest(const ModbusWriteRequest& req) {
+        std::vector<uint8_t> frame;
+
+        if (req.functionCode == FuncCodes::WRITE_MULTIPLE_REGISTERS) {
+            // FC10: MBAP(7) + FC(1) + Addr(2) + Qty(2) + ByteCount(1) + Data
+            uint8_t byteCount = static_cast<uint8_t>(req.data.size());
+            uint16_t length = 7 + byteCount;  // UnitID + FC + Addr(2) + Qty(2) + ByteCount + Data
+            frame.resize(7 + 6 + byteCount);
+            // MBAP Header
+            frame[0] = static_cast<uint8_t>(req.transactionId >> 8);
+            frame[1] = static_cast<uint8_t>(req.transactionId & 0xFF);
+            frame[2] = 0; frame[3] = 0;  // Protocol ID
+            frame[4] = static_cast<uint8_t>(length >> 8);
+            frame[5] = static_cast<uint8_t>(length & 0xFF);
+            frame[6] = req.slaveId;
+            // PDU
+            frame[7] = req.functionCode;
+            frame[8] = static_cast<uint8_t>(req.address >> 8);
+            frame[9] = static_cast<uint8_t>(req.address & 0xFF);
+            frame[10] = static_cast<uint8_t>(req.quantity >> 8);
+            frame[11] = static_cast<uint8_t>(req.quantity & 0xFF);
+            frame[12] = byteCount;
+            std::copy(req.data.begin(), req.data.end(), frame.begin() + 13);
+        } else {
+            // FC05/FC06: MBAP(7) + FC(1) + Addr(2) + Value(2)
+            frame.resize(12);
+            frame[0] = static_cast<uint8_t>(req.transactionId >> 8);
+            frame[1] = static_cast<uint8_t>(req.transactionId & 0xFF);
+            frame[2] = 0; frame[3] = 0;
+            frame[4] = 0; frame[5] = 6;  // Length = 6
+            frame[6] = req.slaveId;
+            frame[7] = req.functionCode;
+            frame[8] = static_cast<uint8_t>(req.address >> 8);
+            frame[9] = static_cast<uint8_t>(req.address & 0xFF);
+            // FC05: 0xFF00 = ON, 0x0000 = OFF; FC06: 直接值
+            if (req.functionCode == FuncCodes::WRITE_SINGLE_COIL) {
+                frame[10] = (req.data.size() > 0 && req.data[0]) ? 0xFF : 0x00;
+                frame[11] = 0x00;
+            } else {
+                frame[10] = req.data.size() > 0 ? req.data[0] : 0;
+                frame[11] = req.data.size() > 1 ? req.data[1] : 0;
+            }
+        }
+        return frame;
+    }
+
+    /**
+     * @brief 构建 Modbus RTU 写请求帧
+     */
+    static std::vector<uint8_t> buildWriteRtuRequest(const ModbusWriteRequest& req) {
+        std::vector<uint8_t> frame;
+
+        if (req.functionCode == FuncCodes::WRITE_MULTIPLE_REGISTERS) {
+            // FC10: SlaveAddr(1) + FC(1) + Addr(2) + Qty(2) + ByteCount(1) + Data + CRC(2)
+            uint8_t byteCount = static_cast<uint8_t>(req.data.size());
+            size_t pduLen = 7 + byteCount;  // 不含 CRC
+            frame.resize(pduLen + 2);
+            frame[0] = req.slaveId;
+            frame[1] = req.functionCode;
+            frame[2] = static_cast<uint8_t>(req.address >> 8);
+            frame[3] = static_cast<uint8_t>(req.address & 0xFF);
+            frame[4] = static_cast<uint8_t>(req.quantity >> 8);
+            frame[5] = static_cast<uint8_t>(req.quantity & 0xFF);
+            frame[6] = byteCount;
+            std::copy(req.data.begin(), req.data.end(), frame.begin() + 7);
+            uint16_t crc = crc16(frame.data(), pduLen);
+            frame[pduLen] = static_cast<uint8_t>(crc & 0xFF);
+            frame[pduLen + 1] = static_cast<uint8_t>((crc >> 8) & 0xFF);
+        } else {
+            // FC05/FC06: SlaveAddr(1) + FC(1) + Addr(2) + Value(2) + CRC(2)
+            frame.resize(8);
+            frame[0] = req.slaveId;
+            frame[1] = req.functionCode;
+            frame[2] = static_cast<uint8_t>(req.address >> 8);
+            frame[3] = static_cast<uint8_t>(req.address & 0xFF);
+            if (req.functionCode == FuncCodes::WRITE_SINGLE_COIL) {
+                frame[4] = (req.data.size() > 0 && req.data[0]) ? 0xFF : 0x00;
+                frame[5] = 0x00;
+            } else {
+                frame[4] = req.data.size() > 0 ? req.data[0] : 0;
+                frame[5] = req.data.size() > 1 ? req.data[1] : 0;
+            }
+            uint16_t crc = crc16(frame.data(), 6);
+            frame[6] = static_cast<uint8_t>(crc & 0xFF);
+            frame[7] = static_cast<uint8_t>((crc >> 8) & 0xFF);
+        }
+        return frame;
+    }
+
+    /** 根据 FrameMode 选择写请求构建方式 */
+    static std::vector<uint8_t> buildWriteRequest(FrameMode mode, const ModbusWriteRequest& req) {
+        return mode == FrameMode::RTU ? buildWriteRtuRequest(req) : buildWriteTcpRequest(req);
+    }
+
     // ==================== 工具函数 ====================
 
     /**
@@ -356,7 +527,7 @@ public:
     static bool couldBeRtuFrameStart(uint8_t addr, uint8_t fc) {
         if (addr == 0 || addr > 247) return false;
         uint8_t rawFc = fc & 0x7F;
-        return rawFc >= 1 && rawFc <= 4;
+        return (rawFc >= 1 && rawFc <= 6) || rawFc == 0x10;
     }
 
     /**
@@ -381,7 +552,8 @@ public:
         uint16_t protoId = (static_cast<uint16_t>(data[2]) << 8) | data[3];
         uint16_t length  = (static_cast<uint16_t>(data[4]) << 8) | data[5];
         uint8_t rawFc = data[7] & 0x7F;
-        return protoId == 0 && length >= 2 && length <= 254 && rawFc >= 1 && rawFc <= 4;
+        return protoId == 0 && length >= 2 && length <= 254 &&
+               ((rawFc >= 1 && rawFc <= 6) || rawFc == 0x10);
     }
 
     /**

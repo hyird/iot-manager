@@ -10,7 +10,7 @@ import { isOnline } from "./utils";
 
 interface CommandElement {
   _key: string;
-  elementId: number;
+  elementId: string;
   name: string;
   value: string;
   unit?: string;
@@ -48,12 +48,12 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
   }, [device.lastHeartbeatTime, device.reportTime, device.online_timeout, message]);
 
   const checkLinkId = useCallback(() => {
-    if (!device.linkId) {
+    if (!device.link_id) {
       message.error("缺少链路ID");
       return false;
     }
     return true;
-  }, [device.linkId, message]);
+  }, [device.link_id, message]);
 
   const handleSend = useCallback(() => {
     const toSend = elements.filter((el) => selectedKeys.includes(el._key));
@@ -65,9 +65,10 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
 
     commandMutation.mutate(
       {
-        linkId: device.linkId!,
+        linkId: device.link_id!,
         payload: {
-          deviceCode: device.code,
+          deviceCode: device.device_code,
+          deviceId: device.id,
           funcCode: func.funcCode,
           elements: toSend.map((el) => ({ elementId: el.elementId, value: el.value })),
         },
@@ -90,9 +91,10 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
     (el: CommandElement, optValue: string) => {
       if (!checkLinkId() || !checkOnline()) return;
       commandMutation.mutate({
-        linkId: device.linkId!,
+        linkId: device.link_id!,
         payload: {
-          deviceCode: device.code,
+          deviceCode: device.device_code,
+          deviceId: device.id,
           funcCode: func.funcCode,
           elements: [{ elementId: el.elementId, value: optValue }],
         },
@@ -107,7 +109,7 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
     <div className="max-w-[360px]">
       <div className="mb-2">
         <div>
-          设备：{device.deviceName}（{device.code}）
+          设备：{device.name}（{device.device_code}）
         </div>
         <div className="text-xs text-gray-400">
           指令：{func.name}（{func.funcCode}）
