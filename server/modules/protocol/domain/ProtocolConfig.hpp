@@ -26,8 +26,9 @@
  *     .update(data)
  *     .save();
  *
- * // 删除配置
+ * // 删除配置（校验无关联设备）
  * co_await ProtocolConfig::of(id)
+ *     .require(ProtocolConfig::noDevices)
  *     .remove()
  *     .save();
  * @endcode
@@ -150,6 +151,20 @@ public:
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
             throw ValidationException("同协议下配置名称已存在");
+        }
+    }
+
+    /**
+     * @brief 约束：配置下无关联设备（删除前校验）
+     */
+    static Task<void> noDevices(const ProtocolConfig& config) {
+        DatabaseService db;
+        auto result = co_await db.execSqlCoro(
+            "SELECT 1 FROM device WHERE protocol_config_id = ? AND deleted_at IS NULL LIMIT 1",
+            {std::to_string(config.id())}
+        );
+        if (!result.empty()) {
+            throw ValidationException("该协议配置下存在关联设备，无法删除");
         }
     }
 

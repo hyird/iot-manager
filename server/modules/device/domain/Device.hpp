@@ -216,14 +216,7 @@ public:
             name_ = data["name"].asString();
             markDirty();
         }
-        if (data.isMember("link_id")) {
-            linkId_ = data["link_id"].asInt();
-            markDirty();
-        }
-        if (data.isMember("protocol_config_id")) {
-            protocolConfigId_ = data["protocol_config_id"].asInt();
-            markDirty();
-        }
+        // link_id 和 protocol_config_id 创建后不可修改（避免历史数据不一致）
         if (data.isMember("status")) {
             status_ = data["status"].asString();
             markDirty();

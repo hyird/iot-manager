@@ -324,7 +324,7 @@ const LinkPage = () => {
           </Form.Item>
 
           <Form.Item label="模式" name="mode" rules={[{ required: true, message: "请选择模式" }]}>
-            <Select onChange={handleModeChange}>
+            <Select onChange={handleModeChange} disabled={!!editing}>
               {linkEnums?.modes.map((mode) => (
                 <Select.Option key={mode} value={mode}>
                   {mode}
@@ -348,7 +348,7 @@ const LinkPage = () => {
                       : undefined
                   }
                 >
-                  <Select>
+                  <Select disabled={!!editing}>
                     {protocols.map((protocol) => (
                       <Select.Option key={protocol} value={protocol}>
                         {protocol}

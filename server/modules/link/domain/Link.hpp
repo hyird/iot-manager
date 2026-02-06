@@ -27,8 +27,9 @@
  *     .update(data)
  *     .save();
  *
- * // 删除链路（事件处理器自动停止 TCP 连接）
+ * // 删除链路（校验无关联设备，事件处理器自动停止 TCP 连接）
  * co_await Link::of(id)
+ *     .require(Link::noDevices)
  *     .remove()
  *     .save();
  * @endcode
@@ -175,6 +176,20 @@ public:
         }
     }
 
+    /**
+     * @brief 约束：链路下无关联设备（删除前校验）
+     */
+    static Task<void> noDevices(const Link& link) {
+        DatabaseService db;
+        auto result = co_await db.execSqlCoro(
+            "SELECT 1 FROM device WHERE link_id = ? AND deleted_at IS NULL LIMIT 1",
+            {std::to_string(link.id())}
+        );
+        if (!result.empty()) {
+            throw ValidationException("该链路下存在关联设备，无法删除");
+        }
+    }
+
     // ==================== 业务操作（流式 API）====================
 
     /**
@@ -185,15 +200,7 @@ public:
             name_ = data["name"].asString();
             markDirty();
         }
-        if (data.isMember("mode")) {
-            mode_ = data["mode"].asString();
-            markDirty();
-            needReload_ = true;
-        }
-        if (data.isMember("protocol")) {
-            protocol_ = data["protocol"].asString();
-            markDirty();
-        }
+        // mode 和 protocol 创建后不可修改（设备锁定了 link_id，换模式/协议会导致不一致）
         if (data.isMember("ip")) {
             ip_ = data["ip"].asString();
             markDirty();

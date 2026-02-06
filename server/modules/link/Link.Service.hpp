@@ -88,7 +88,8 @@ public:
      */
     Task<void> remove(int id) {
         auto link = co_await Link::of(id);
-        co_await link.remove()
+        co_await link.require(Link::noDevices)
+            .remove()
             .save();
     }
 

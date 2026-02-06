@@ -80,7 +80,8 @@ public:
      */
     Task<void> remove(int id) {
         auto config = co_await ProtocolConfig::of(id);
-        co_await config.remove()
+        co_await config.require(ProtocolConfig::noDevices)
+            .remove()
             .save();
     }
 };
