@@ -146,7 +146,7 @@ public:
     void clearLatestTime(int deviceId) {
         // Redis 操作必须在 Drogon IO 线程执行（可能从 TcpIoPool 线程调用）
         drogon::app().getIOLoop(0)->queueInLoop([this, deviceId]() {
-            drogon::async_run([this, deviceId]() -> Task<void> {
+            drogon::async_run([deviceId]() -> Task<void> {
                 try {
                     RedisService redis;
                     auto client = redis.getClient();
