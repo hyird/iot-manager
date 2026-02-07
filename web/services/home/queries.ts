@@ -5,7 +5,7 @@
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import * as api from "./api";
 import { homeKeys } from "./keys";
-import type { HomeStats, SystemInfo } from "./types";
+import type { HomeStats, MonitorData, SystemInfo } from "./types";
 
 /**
  * 获取统计数据
@@ -14,7 +14,9 @@ export function useHomeStats(options?: Omit<UseQueryOptions<HomeStats>, "queryKe
   return useQuery({
     queryKey: homeKeys.stats(),
     queryFn: api.getStats,
-    staleTime: 30 * 1000, // 30秒缓存
+    staleTime: 15 * 1000,
+    refetchInterval: 30 * 1000,
+    refetchIntervalInBackground: false,
     ...options,
   });
 }
@@ -26,7 +28,23 @@ export function useSystemInfo(options?: Omit<UseQueryOptions<SystemInfo>, "query
   return useQuery({
     queryKey: homeKeys.systemInfo(),
     queryFn: api.getSystemInfo,
-    staleTime: 60 * 1000, // 1分钟缓存
+    staleTime: 60 * 1000,
+    ...options,
+  });
+}
+
+/**
+ * 获取监控数据（30秒自动刷新）
+ */
+export function useMonitorData(
+  options?: Omit<UseQueryOptions<MonitorData>, "queryKey" | "queryFn">
+) {
+  return useQuery({
+    queryKey: homeKeys.monitor(),
+    queryFn: api.getMonitor,
+    staleTime: 15 * 1000,
+    refetchInterval: 30 * 1000,
+    refetchIntervalInBackground: false,
     ...options,
   });
 }

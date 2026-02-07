@@ -48,6 +48,13 @@ private:
     // 数据库服务
     DatabaseService dbService_;
 
+    // 统计计数器（原子操作，无锁）
+    std::atomic<int64_t> totalFramesParsed_{0};
+    std::atomic<int64_t> totalCrcErrors_{0};
+    std::atomic<int64_t> totalMultiPacketCompleted_{0};
+    std::atomic<int64_t> totalMultiPacketExpired_{0};
+    std::atomic<int64_t> totalParseErrors_{0};
+
 public:
     SL651Parser(DeviceConfigGetter getDeviceConfig, ElementsGetter getElements)
         : getDeviceConfig_(std::move(getDeviceConfig))
@@ -58,6 +65,25 @@ public:
      */
     void setCommandResponseCallback(CommandResponseCallback callback) {
         onCommandResponse_ = std::move(callback);
+    }
+
+    /** SL651 统计数据 */
+    struct Sl651Stats {
+        int64_t framesParsed;
+        int64_t crcErrors;
+        int64_t multiPacketCompleted;
+        int64_t multiPacketExpired;
+        int64_t parseErrors;
+    };
+
+    Sl651Stats getSl651Stats() const {
+        return {
+            totalFramesParsed_.load(std::memory_order_relaxed),
+            totalCrcErrors_.load(std::memory_order_relaxed),
+            totalMultiPacketCompleted_.load(std::memory_order_relaxed),
+            totalMultiPacketExpired_.load(std::memory_order_relaxed),
+            totalParseErrors_.load(std::memory_order_relaxed)
+        };
     }
 
     /**
@@ -135,6 +161,7 @@ public:
             }
 
         } catch (const std::exception& e) {
+            totalParseErrors_.fetch_add(1, std::memory_order_relaxed);
             LOG_ERROR << "[SL651] handleData error: " << e.what();
         }
     }
@@ -278,6 +305,7 @@ public:
             }
 
         } catch (const std::exception& e) {
+            totalParseErrors_.fetch_add(1, std::memory_order_relaxed);
             LOG_ERROR << "[SL651] parseDataSync error: " << e.what();
         }
         return results;
@@ -369,6 +397,10 @@ private:
                      << " | CRC:" << (parsed.crcValid ? "OK" : "FAIL")
                      << (isMultiPacket ? " | 多包" + std::to_string(parsed.seqPk) + "/" + std::to_string(parsed.totalPk) : "");
 
+            if (!parsed.crcValid) {
+                totalCrcErrors_.fetch_add(1, std::memory_order_relaxed);
+            }
+
             if (!isMultiPacket) {
                 auto configOpt = getConfigSync(linkId, parsed.remoteCode);
                 auto parsedBody = parseBodySync(parsed, configOpt);
@@ -377,6 +409,7 @@ private:
                 }
                 auto result = buildFrameResult(linkId, parsed, parsedBody, configOpt);
                 if (result) {
+                    totalFramesParsed_.fetch_add(1, std::memory_order_relaxed);
                     results.push_back(std::move(*result));
                 }
             } else {
@@ -387,6 +420,7 @@ private:
             }
 
         } catch (const std::exception& e) {
+            totalParseErrors_.fetch_add(1, std::memory_order_relaxed);
             LOG_ERROR << "[SL651] parseFrameSync error: " << e.what();
         }
         return results;
@@ -568,9 +602,11 @@ private:
         }
 
         if (complete) {
+            totalMultiPacketCompleted_.fetch_add(1, std::memory_order_relaxed);
             LOG_DEBUG << "[SL651] 多包完成: " << sessionKey << " (" << completedSession.totalPk << "包)";
             auto result = mergeAndBuildMultiPacketResult(linkId, completedSession, frame, getConfigSync);
             if (result) {
+                totalFramesParsed_.fetch_add(1, std::memory_order_relaxed);
                 return {std::move(*result)};
             }
         }
@@ -776,14 +812,20 @@ private:
                      << " | CRC:" << (parsed.crcValid ? "OK" : "FAIL")
                      << (isMultiPacket ? " | 多包" + std::to_string(parsed.seqPk) + "/" + std::to_string(parsed.totalPk) : "");
 
+            if (!parsed.crcValid) {
+                totalCrcErrors_.fetch_add(1, std::memory_order_relaxed);
+            }
+
             // 处理帧数据
             if (!isMultiPacket) {
+                totalFramesParsed_.fetch_add(1, std::memory_order_relaxed);
                 co_await onSingleFrameParsed(linkId, parsed);
             } else {
                 co_await handleMultiPacket(linkId, parsed);
             }
 
         } catch (const std::exception& e) {
+            totalParseErrors_.fetch_add(1, std::memory_order_relaxed);
             LOG_ERROR << "[SL651] parseFrame error: " << e.what();
         }
     }
@@ -849,6 +891,8 @@ private:
         }
 
         if (complete) {
+            totalMultiPacketCompleted_.fetch_add(1, std::memory_order_relaxed);
+            totalFramesParsed_.fetch_add(1, std::memory_order_relaxed);
             LOG_DEBUG << "[SL651] 多包完成: " << sessionKey << " (" << completedSession.totalPk << "包)";
             co_await mergeAndParseMultiPacket(linkId, completedSession, frame);
         }
@@ -1238,6 +1282,7 @@ private:
         for (auto it = multiPacketSessions_.begin(); it != multiPacketSessions_.end(); ) {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.startTime).count();
             if (elapsed > SESSION_TIMEOUT_MS) {
+                totalMultiPacketExpired_.fetch_add(1, std::memory_order_relaxed);
                 it = multiPacketSessions_.erase(it);
             } else {
                 ++it;

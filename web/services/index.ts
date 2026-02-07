@@ -10,6 +10,8 @@
  * - index.ts:     模块导出
  */
 
+// Alert
+export * from "./alert";
 // Auth
 export * from "./auth";
 // Department

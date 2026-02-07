@@ -346,6 +346,7 @@ public:
             }
 
             if (response.isException) {
+                totalExceptions_.fetch_add(1, std::memory_order_relaxed);
                 LOG_WARN << "[Modbus] Exception: slave=" << static_cast<int>(response.slaveId)
                          << " FC=" << static_cast<int>(response.functionCode)
                          << " code=" << static_cast<int>(response.exceptionCode);
@@ -378,6 +379,7 @@ public:
             }
 
             if (response.isException) {
+                totalExceptions_.fetch_add(1, std::memory_order_relaxed);
                 LOG_WARN << "[Modbus] Exception: slave=" << static_cast<int>(response.slaveId)
                          << " FC=" << static_cast<int>(response.functionCode)
                          << " code=" << static_cast<int>(response.exceptionCode);
@@ -394,6 +396,27 @@ public:
         }
 
         return results;
+    }
+
+    /** Modbus 性能统计 */
+    struct ModbusStats {
+        int64_t totalResponses;
+        double avgLatencyMs;
+        int64_t timeouts;
+        int64_t crcErrors;
+        int64_t exceptions;
+    };
+
+    ModbusStats getModbusStats() const {
+        auto responses = totalResponses_.load(std::memory_order_relaxed);
+        auto latency = totalLatencyMs_.load(std::memory_order_relaxed);
+        return {
+            responses,
+            responses > 0 ? static_cast<double>(latency) / static_cast<double>(responses) : 0.0,
+            totalTimeouts_.load(std::memory_order_relaxed),
+            totalCrcErrors_.load(std::memory_order_relaxed),
+            totalExceptions_.load(std::memory_order_relaxed)
+        };
     }
 
 private:
@@ -438,6 +461,8 @@ private:
 
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - pending.sentTime).count();
+        totalResponses_.fetch_add(1, std::memory_order_relaxed);
+        totalLatencyMs_.fetch_add(elapsed, std::memory_order_relaxed);
 
         auto registerValues = extractRegisterValues(ctx, pending.group, response.data);
 
@@ -545,6 +570,7 @@ private:
 
             if (consumed == ModbusUtils::FRAME_CORRUPT) {
                 // 帧校验失败（CRC 不匹配或帧格式异常），跳过 1 字节重新对齐
+                totalCrcErrors_.fetch_add(1, std::memory_order_relaxed);
                 LOG_WARN << "[Modbus] Corrupt frame on link " << linkId
                          << ", skip 1B for resync | head="
                          << ModbusUtils::toHexString({linkBuffer.begin(),
@@ -856,6 +882,7 @@ private:
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now - queue.front().sentTime).count();
                 if (elapsed < RESPONSE_TIMEOUT_MS) break;
+                totalTimeouts_.fetch_add(1, std::memory_order_relaxed);
                 LOG_WARN << "[Modbus] Read request timed out (" << elapsed << "ms): key=" << it->first;
                 queue.pop_front();
             }
@@ -869,6 +896,7 @@ private:
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now - queue.front().sentTime).count();
                 if (elapsed < RESPONSE_TIMEOUT_MS) break;
+                totalTimeouts_.fetch_add(1, std::memory_order_relaxed);
                 LOG_WARN << "[Modbus] Write request timed out (" << elapsed << "ms): key=" << it->first;
                 if (commandResponseCallback_) {
                     commandResponseCallback_(queue.front().deviceCode, "MODBUS_WRITE", false, 0);
@@ -992,6 +1020,8 @@ private:
 
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - pending.sentTime).count();
+        totalResponses_.fetch_add(1, std::memory_order_relaxed);
+        totalLatencyMs_.fetch_add(elapsed, std::memory_order_relaxed);
 
         auto registerValues = extractRegisterValues(ctx, pending.group, response.data);
 
@@ -1542,6 +1572,13 @@ private:
 
     // Transaction ID 计数器
     std::atomic<uint16_t> transactionCounter_{0};
+
+    // 性能统计计数器（原子操作，无锁）
+    std::atomic<int64_t> totalResponses_{0};
+    std::atomic<int64_t> totalLatencyMs_{0};
+    std::atomic<int64_t> totalTimeouts_{0};
+    std::atomic<int64_t> totalCrcErrors_{0};
+    std::atomic<int64_t> totalExceptions_{0};
 };
 
 }  // namespace modbus

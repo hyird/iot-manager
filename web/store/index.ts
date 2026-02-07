@@ -25,7 +25,7 @@ const tabsTransform = createTransform(
     const hasHome = tabs.some((t) => t.key === HOME_TAB.key);
     return hasHome ? tabs : [HOME_TAB, ...tabs];
   },
-  { whitelist: ["tabs"] },
+  { whitelist: ["tabs"] }
 );
 
 // Auth 持久化配置

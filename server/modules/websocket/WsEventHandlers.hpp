@@ -6,6 +6,7 @@
 #include "modules/link/domain/Events.hpp"
 #include "modules/protocol/domain/Events.hpp"
 #include "modules/system/domain/Events.hpp"
+#include "modules/alert/domain/Events.hpp"
 
 /**
  * @brief WebSocket 事件广播处理器
@@ -173,6 +174,38 @@ public:
             Json::Value data;
             data["id"] = e.aggregateId;
             WebSocketManager::instance().broadcast("system:department", data);
+            co_return;
+        });
+
+        // ==================== Alert 事件 ====================
+        bus.subscribe<AlertTriggered>([](const AlertTriggered& e) -> Task<void> {
+            Json::Value data;
+            data["id"] = static_cast<Json::Int64>(e.recordId);
+            data["deviceId"] = e.deviceId;
+            data["ruleId"] = e.ruleId;
+            data["severity"] = e.severity;
+            data["message"] = e.message;
+            data["deviceName"] = e.deviceName;
+            WebSocketManager::instance().broadcast("alert:triggered", data);
+            co_return;
+        });
+
+        bus.subscribe<AlertRuleCreated>([](const AlertRuleCreated& e) -> Task<void> {
+            Json::Value data;
+            data["id"] = e.aggregateId;
+            WebSocketManager::instance().broadcast("alert:rule:created", data);
+            co_return;
+        });
+        bus.subscribe<AlertRuleUpdated>([](const AlertRuleUpdated& e) -> Task<void> {
+            Json::Value data;
+            data["id"] = e.aggregateId;
+            WebSocketManager::instance().broadcast("alert:rule:updated", data);
+            co_return;
+        });
+        bus.subscribe<AlertRuleDeleted>([](const AlertRuleDeleted& e) -> Task<void> {
+            Json::Value data;
+            data["id"] = e.aggregateId;
+            WebSocketManager::instance().broadcast("alert:rule:deleted", data);
             co_return;
         });
 

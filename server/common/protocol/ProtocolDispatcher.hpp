@@ -14,6 +14,7 @@
 #include "modules/device/domain/Events.hpp"
 #include "modules/device/DeviceDataTransformer.hpp"
 #include "modules/protocol/domain/Events.hpp"
+#include "modules/alert/domain/AlertEngine.hpp"
 #include "sl651/SL651.hpp"
 #include "modbus/Modbus.hpp"
 
@@ -331,6 +332,7 @@ private:
 
         // === 解析完成，投递到批量写入线程攒批 ===
         if (!results.empty()) {
+            totalFramesProcessed_.fetch_add(static_cast<int64_t>(results.size()), std::memory_order_relaxed);
             batchLoop_->queueInLoop([this, results = std::move(results)]() mutable {
                 enqueueBatchResults(std::move(results));
             });
@@ -386,6 +388,8 @@ private:
     void flushBatch() {
         if (pendingBatch_.empty()) return;
 
+        totalBatchFlushes_.fetch_add(1, std::memory_order_relaxed);
+
         std::vector<ParsedFrameResult> batch;
         batch.swap(pendingBatch_);
 
@@ -429,7 +433,12 @@ private:
                 }
             }
 
-            // 4. 资源版本号：整批只递增一次
+            // 4. 告警规则检查
+            for (const auto& r : batch) {
+                co_await AlertEngine::instance().checkData(r.deviceId, r.data);
+            }
+
+            // 5. 资源版本号：整批只递增一次
             ResourceVersion::instance().incrementVersion("device");
 
             LOG_TRACE << "[ProtocolDispatcher] Batch saved: " << batch.size() << " records";
@@ -437,6 +446,7 @@ private:
             LOG_ERROR << "[ProtocolDispatcher] saveBatchResults failed: " << e.what()
                       << ", falling back to individual saves";
             batchFailed = true;
+            totalBatchFallbacks_.fetch_add(1, std::memory_order_relaxed);
         }
         // 回退到逐条写入（catch 外执行，避免 MSVC co_await in catch 限制）
         if (batchFailed) {
@@ -780,6 +790,45 @@ private:
     }
 
 public:
+    /** 获取待应答指令数 */
+    size_t pendingCommandCount() const {
+        std::lock_guard<std::mutex> lock(pendingMutex_);
+        return pendingCommands_.size();
+    }
+
+    /** 协议处理统计 */
+    struct ProtocolStats {
+        int64_t framesProcessed;
+        int64_t batchFlushes;
+        int64_t batchFallbacks;
+        size_t pendingCommands;
+    };
+
+    ProtocolStats getProtocolStats() const {
+        return {
+            totalFramesProcessed_.load(std::memory_order_relaxed),
+            totalBatchFlushes_.load(std::memory_order_relaxed),
+            totalBatchFallbacks_.load(std::memory_order_relaxed),
+            pendingCommandCount()
+        };
+    }
+
+    /** 是否有 Modbus Handler */
+    bool hasModbusHandler() const { return modbusHandler_ != nullptr; }
+
+    /** 获取 Modbus 统计（需先检查 hasModbusHandler） */
+    modbus::ModbusHandler::ModbusStats getModbusStats() const {
+        return modbusHandler_->getModbusStats();
+    }
+
+    /** 是否有 SL651 Parser */
+    bool hasSl651Parser() const { return sl651Parser_ != nullptr; }
+
+    /** 获取 SL651 统计（需先检查 hasSl651Parser） */
+    sl651::SL651Parser::Sl651Stats getSl651Stats() const {
+        return sl651Parser_->getSl651Stats();
+    }
+
     /**
      * @brief 重新加载 Modbus 设备配置（设备/协议变更时调用）
      */
@@ -1037,7 +1086,12 @@ private:
 
     // 待应答指令
     std::map<std::string, PendingCommand> pendingCommands_;
-    std::mutex pendingMutex_;
+    mutable std::mutex pendingMutex_;
+
+    // 处理统计计数器（原子操作，无锁）
+    std::atomic<int64_t> totalFramesProcessed_{0};
+    std::atomic<int64_t> totalBatchFlushes_{0};
+    std::atomic<int64_t> totalBatchFallbacks_{0};
 
     /**
      * @brief 保存下行指令到数据库

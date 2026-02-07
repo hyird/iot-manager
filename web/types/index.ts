@@ -2,6 +2,8 @@
  * 类型定义统一导出
  */
 
+// 告警管理模块类型
+export * from "./alert";
 // 通用类型
 export * from "./common";
 // UI 常量

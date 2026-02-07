@@ -42,6 +42,10 @@
 // Controllers - Device Module
 #include "modules/device/Device.Controller.hpp"
 
+// Controllers - Alert Module
+#include "modules/alert/Alert.Controller.hpp"
+#include "modules/alert/domain/AlertEngine.hpp"
+
 // WebSocket Module
 #include "modules/websocket/WebSocket.Controller.hpp"
 #include "modules/websocket/WsEventHandlers.hpp"
@@ -88,11 +92,15 @@ void onServerStarted() {
 
         // 3. 加载资源版本号（从 Redis），然后重置以强制客户端重新获取数据
         co_await ResourceVersion::instance().loadFromRedis({
-            "device", "user", "role", "menu", "department", "link", "protocol"
+            "device", "user", "role", "menu", "department", "link", "protocol", "alert"
         });
         ResourceVersion::instance().resetAll();
 
-        // 4. 启动所有已启用的链路
+        // 4. 初始化告警引擎（加载启用的规则到内存）
+        co_await AlertEngine::instance().initialize();
+        AlertEngine::instance().startOfflineChecker(app().getLoop());
+
+        // 5. 启动所有已启用的链路
         LinkService linkService;
         co_await linkService.startAllEnabled();
     });

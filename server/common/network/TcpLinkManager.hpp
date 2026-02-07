@@ -176,6 +176,9 @@ public:
             std::string clientAddr = conn->peerAddr().toIpPort();
             LOG_TRACE << "[Link " << linkId << "] Recv " << data.size() << "B from " << clientAddr;
 
+            totalBytesRx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
+            totalPacketsRx_.fetch_add(1, std::memory_order_relaxed);
+
             {
                 std::lock_guard<std::mutex> lock(rt->connMutex);
                 rt->info.lastActivity = getCurrentTime();
@@ -266,6 +269,9 @@ public:
 
                 std::string serverAddr = conn->peerAddr().toIpPort();
                 LOG_TRACE << "[Link " << linkId << "] Recv " << data.size() << "B from " << serverAddr;
+
+                totalBytesRx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
+                totalPacketsRx_.fetch_add(1, std::memory_order_relaxed);
 
                 {
                     std::lock_guard<std::mutex> lock(rt->connMutex);
@@ -460,16 +466,22 @@ public:
 
         if (runtime->clientConn && runtime->clientConn->connected()) {
             runtime->clientConn->send(data);
+            totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
+            totalPacketsTx_.fetch_add(1, std::memory_order_relaxed);
             LOG_TRACE << "[Link " << linkId << "] Sent " << data.size() << "B";
             return true;
         }
 
         if (runtime->server && !runtime->serverConns.empty()) {
+            int sentCount = 0;
             for (const auto& conn : runtime->serverConns) {
                 if (conn->connected()) {
                     conn->send(data);
+                    ++sentCount;
                 }
             }
+            totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()) * sentCount, std::memory_order_relaxed);
+            totalPacketsTx_.fetch_add(sentCount, std::memory_order_relaxed);
             LOG_DEBUG << "[Link " << linkId << "] Broadcast " << data.size() << " bytes to "
                      << runtime->serverConns.size() << " clients";
             return true;
@@ -491,6 +503,8 @@ public:
         for (const auto& conn : runtime->serverConns) {
             if (conn->connected() && conn->peerAddr().toIpPort() == clientAddr) {
                 conn->send(data);
+                totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
+                totalPacketsTx_.fetch_add(1, std::memory_order_relaxed);
                 LOG_TRACE << "[Link " << linkId << "] Sent " << data.size() << "B to " << clientAddr;
                 return true;
             }
@@ -522,6 +536,23 @@ public:
             LOG_INFO << "[Link " << linkId << "] Disconnected " << count
                      << " server clients for re-registration";
         }
+    }
+
+    /** 吞吐量统计 */
+    struct TcpStats {
+        int64_t bytesRx;
+        int64_t bytesTx;
+        int64_t packetsRx;
+        int64_t packetsTx;
+    };
+
+    TcpStats getTcpStats() const {
+        return {
+            totalBytesRx_.load(std::memory_order_relaxed),
+            totalBytesTx_.load(std::memory_order_relaxed),
+            totalPacketsRx_.load(std::memory_order_relaxed),
+            totalPacketsTx_.load(std::memory_order_relaxed)
+        };
     }
 
     EventLoop* getLinkLoop(int linkId) const {
@@ -615,4 +646,10 @@ private:
 
     std::unique_ptr<EventLoopThreadPool> ioLoopPool_;
     std::atomic<bool> initialized_{false};
+
+    // 吞吐量计数器（原子操作，无锁）
+    std::atomic<int64_t> totalBytesRx_{0};
+    std::atomic<int64_t> totalBytesTx_{0};
+    std::atomic<int64_t> totalPacketsRx_{0};
+    std::atomic<int64_t> totalPacketsTx_{0};
 };

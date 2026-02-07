@@ -87,6 +87,12 @@ public:
         return allConns_.size();
     }
 
+    /** 获取在线用户数（去重） */
+    size_t onlineUserCount() const {
+        std::shared_lock lock(mutex_);
+        return userConns_.size();
+    }
+
     /** 构建 JSON 消息字符串 */
     static std::string buildMessage(const std::string& type, const Json::Value& data) {
         Json::Value msg;

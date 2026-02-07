@@ -158,5 +158,12 @@ private:
 
             LOG_DEBUG << "EventBus: Invalidated device cache for ProtocolConfig#" << aggId;
         }
+
+        // ========== AlertRule 事件 ==========
+        else if (aggType == "AlertRule") {
+            ResourceVersion::instance().incrementVersion("alert");
+
+            LOG_DEBUG << "EventBus: Updated version for AlertRule#" << aggId;
+        }
     }
 };

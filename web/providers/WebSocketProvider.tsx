@@ -9,6 +9,7 @@
  */
 
 import { useQueryClient } from "@tanstack/react-query";
+import { App } from "antd";
 import {
   createContext,
   type ReactNode,
@@ -49,6 +50,9 @@ const EVENT_QUERY_MAP: Record<string, string[][]> = {
   "system:role": [["roles"]],
   "system:menu": [["menus"]],
   "system:department": [["departments"]],
+  "alert:rule:created": [["alert"]],
+  "alert:rule:updated": [["alert"]],
+  "alert:rule:deleted": [["alert"]],
 };
 
 /** 重连延迟（指数退避，最大 30 秒） */
@@ -71,6 +75,7 @@ interface RealtimeUpdate {
 export function WebSocketProvider({ children }: { children: ReactNode }) {
   const token = useAppSelector((s) => s.auth.token);
   const queryClient = useQueryClient();
+  const { notification } = App.useApp();
   const [connected, setConnected] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -133,7 +138,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
       queryClient.setQueryData(queryKey, { list: mergedList });
     },
-    [queryClient],
+    [queryClient]
   );
 
   const connect = useCallback(() => {
@@ -172,6 +177,22 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         // 错误消息
         if (msg.type === "error") return;
 
+        // alert:triggered → 弹出通知 + 刷新告警缓存
+        if (msg.type === "alert:triggered") {
+          const p = msg.data as {
+            severity: string;
+            message: string;
+            deviceName: string;
+          };
+          notification[p.severity === "critical" ? "error" : "warning"]({
+            message: p.severity === "critical" ? "严重告警" : "告警通知",
+            description: `${p.deviceName}: ${p.message}`,
+            duration: p.severity === "critical" ? 0 : 5,
+          });
+          queryClient.invalidateQueries({ queryKey: ["alert"] });
+          return;
+        }
+
         // device:realtime → 直接更新缓存，零 HTTP 请求
         if (msg.type === "device:realtime") {
           const payload = msg.data as { updates?: RealtimeUpdate[] } | undefined;
@@ -209,7 +230,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     ws.onerror = () => {
       // onclose 会紧随 onerror 触发，重连逻辑在 onclose 中处理
     };
-  }, [token, queryClient, mergeRealtimeUpdates]);
+  }, [token, queryClient, notification, mergeRealtimeUpdates]);
 
   useEffect(() => {
     if (token) {

@@ -287,6 +287,48 @@ private:
         // 3. 设备+功能码+时间复合索引：DISTINCT ON 查询优化
         co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_device_data_history ON device_data (device_id, (data->>'funcCode'), report_time DESC))");
 
+        // ==================== 告警规则表 ====================
+        co_await db->execSqlCoro(R"(
+            CREATE TABLE IF NOT EXISTS alert_rule (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                device_id INT NOT NULL,
+                severity VARCHAR(20) NOT NULL DEFAULT 'warning',
+                conditions JSONB NOT NULL DEFAULT '[]',
+                logic VARCHAR(5) NOT NULL DEFAULT 'and',
+                silence_duration INT NOT NULL DEFAULT 300,
+                status status_enum DEFAULT 'enabled',
+                remark TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TIMESTAMPTZ NULL
+            )
+        )");
+        co_await db->execSqlCoro(R"(CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_rule_name ON alert_rule (name) WHERE deleted_at IS NULL)");
+        co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_alert_rule_device ON alert_rule (device_id) WHERE deleted_at IS NULL)");
+        co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_alert_rule_status ON alert_rule (status) WHERE deleted_at IS NULL)");
+
+        // ==================== 告警记录表 ====================
+        co_await db->execSqlCoro(R"(
+            CREATE TABLE IF NOT EXISTS alert_record (
+                id BIGSERIAL PRIMARY KEY,
+                rule_id INT NOT NULL,
+                device_id INT NOT NULL,
+                severity VARCHAR(20) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'active',
+                message TEXT NOT NULL,
+                detail JSONB NOT NULL DEFAULT '{}',
+                triggered_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                acknowledged_at TIMESTAMPTZ NULL,
+                acknowledged_by INT NULL,
+                resolved_at TIMESTAMPTZ NULL,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        )");
+        co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_alert_record_device_time ON alert_record (device_id, triggered_at DESC))");
+        co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_alert_record_status ON alert_record (status, triggered_at DESC))");
+        co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_alert_record_cooldown ON alert_record (rule_id, device_id, triggered_at DESC))");
+
         // 初始化 TimescaleDB 超表（如果扩展已安装）
         co_await initializeTimescaleDB(db);
 
@@ -661,6 +703,13 @@ private:
             EXCEPTION WHEN duplicate_object THEN null; END $$
         )");
 
+        co_await db->execSqlCoro(R"(
+            DO $$ BEGIN
+                CREATE TRIGGER update_alert_rule_updated_at BEFORE UPDATE ON alert_rule
+                    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+            EXCEPTION WHEN duplicate_object THEN null; END $$
+        )");
+
         LOG_INFO << "Database triggers created/verified";
     }
 
@@ -780,6 +829,16 @@ private:
         co_await insertButton(db, "新增设备", deviceId, "iot:device:add", 2);
         co_await insertButton(db, "编辑设备", deviceId, "iot:device:edit", 3);
         co_await insertButton(db, "删除设备", deviceId, "iot:device:delete", 4);
+
+        // ==================== 告警管理 ====================
+        int alertId = co_await insertMenu(db, "告警管理", 0, Constants::MENU_TYPE_MENU, "/alert", "", "", "AlertOutlined", false, 4);
+
+        int alertPageId = co_await insertMenu(db, "告警管理", alertId, Constants::MENU_TYPE_PAGE, "/alert", "Alert", "", "AlertOutlined", false, 1);
+        co_await insertButton(db, "查询", alertPageId, "iot:alert:query", 1);
+        co_await insertButton(db, "新增规则", alertPageId, "iot:alert:add", 2);
+        co_await insertButton(db, "编辑规则", alertPageId, "iot:alert:edit", 3);
+        co_await insertButton(db, "删除规则", alertPageId, "iot:alert:delete", 4);
+        co_await insertButton(db, "确认告警", alertPageId, "iot:alert:ack", 5);
 
         // ==================== 系统管理 ====================
         int systemId = co_await insertMenu(db, "系统管理", 0, Constants::MENU_TYPE_MENU, "/system", "", "", "SettingOutlined", false, 999);

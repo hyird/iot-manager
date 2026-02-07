@@ -146,3 +146,19 @@ registerPage({
     { code: "iot:device:delete", name: "删除设备", action: "delete" },
   ],
 });
+
+// 告警管理
+registerPage({
+  component: "Alert",
+  name: "告警管理",
+  module: "告警管理",
+  description: "告警规则的配置和告警记录管理",
+  loader: () => import("./alert/Alert"),
+  permissions: [
+    { code: "iot:alert:query", name: "查询", action: "query" },
+    { code: "iot:alert:add", name: "新增规则", action: "add" },
+    { code: "iot:alert:edit", name: "编辑规则", action: "edit" },
+    { code: "iot:alert:delete", name: "删除规则", action: "delete" },
+    { code: "iot:alert:ack", name: "确认告警", action: "ack" },
+  ],
+});

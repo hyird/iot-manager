@@ -10,6 +10,6 @@ export { homeKeys } from "./keys";
 export { useClearCache } from "./mutations";
 
 // Queries
-export { useHomeStats, useSystemInfo } from "./queries";
+export { useHomeStats, useMonitorData, useSystemInfo } from "./queries";
 // Types
-export type { HomeStats, SystemInfo } from "./types";
+export type { HomeStats, MonitorData, SystemInfo } from "./types";
