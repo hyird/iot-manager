@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/utils/JsonHelper.hpp"
+
 /**
  * @brief Redis 配置（由 main.cpp 初始化）
  */
@@ -93,10 +95,7 @@ public:
      * @brief 设置 JSON 对象
      */
     Task<bool> setJson(const std::string& key, const Json::Value& value, int ttl = 0) {
-        Json::StreamWriterBuilder builder;
-        builder["indentation"] = "";
-        std::string jsonStr = Json::writeString(builder, value);
-        co_return co_await set(key, jsonStr, ttl);
+        co_return co_await set(key, JsonHelper::serialize(value), ttl);
     }
 
     /**

@@ -138,26 +138,30 @@ public:
 
         // 设置连接回调
         server->setConnectionCallback([this, linkId, runtimeWeak = std::weak_ptr(runtime)](const TcpConnectionPtr& conn) {
-            auto rt = runtimeWeak.lock();
-            if (!rt) return;
+            try {
+                auto rt = runtimeWeak.lock();
+                if (!rt) return;
 
-            std::string clientAddr = conn->peerAddr().toIpPort();
-            bool isConnected = conn->connected();
-            {
-                std::lock_guard<std::mutex> lock(rt->connMutex);
-                if (isConnected) {
-                    LOG_INFO << "[Link " << linkId << "] Client connected: " << clientAddr;
-                    rt->serverConns.insert(conn);
-                } else {
-                    LOG_INFO << "[Link " << linkId << "] Client disconnected: " << clientAddr;
-                    rt->serverConns.erase(conn);
+                std::string clientAddr = conn->peerAddr().toIpPort();
+                bool isConnected = conn->connected();
+                {
+                    std::lock_guard<std::mutex> lock(rt->connMutex);
+                    if (isConnected) {
+                        LOG_INFO << "[Link " << linkId << "] Client connected: " << clientAddr;
+                        rt->serverConns.insert(conn);
+                    } else {
+                        LOG_INFO << "[Link " << linkId << "] Client disconnected: " << clientAddr;
+                        rt->serverConns.erase(conn);
+                    }
+                    updateRuntimeClientsLocked(rt);
+                    rt->info.lastActivity = getCurrentTime();
                 }
-                updateRuntimeClientsLocked(rt);
-                rt->info.lastActivity = getCurrentTime();
-            }
 
-            if (connectionCallback_) {
-                connectionCallback_(linkId, clientAddr, isConnected);
+                if (connectionCallback_) {
+                    connectionCallback_(linkId, clientAddr, isConnected);
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[Link " << linkId << "] Server connection callback error: " << e.what();
             }
         });
 
@@ -220,31 +224,35 @@ public:
 
             // 连接回调
             client->setConnectionCallback([this, linkId, runtimeWeak = std::weak_ptr(runtime)](const TcpConnectionPtr& conn) {
-                auto rt = runtimeWeak.lock();
-                if (!rt) return;
+                try {
+                    auto rt = runtimeWeak.lock();
+                    if (!rt) return;
 
-                std::string serverAddr = conn->peerAddr().toIpPort();
-                bool isConnected = conn->connected();
-                {
-                    std::lock_guard<std::mutex> lock(rt->connMutex);
-                    if (isConnected) {
-                        LOG_INFO << "[Link " << linkId << "] Connected to server: " << serverAddr;
-                        rt->clientConn = conn;
-                        rt->fsm.onConnected();
-                    } else {
-                        LOG_INFO << "[Link " << linkId << "] Disconnected from server";
-                        rt->clientConn.reset();
-                        rt->fsm.onDisconnected();
+                    std::string serverAddr = conn->peerAddr().toIpPort();
+                    bool isConnected = conn->connected();
+                    {
+                        std::lock_guard<std::mutex> lock(rt->connMutex);
+                        if (isConnected) {
+                            LOG_INFO << "[Link " << linkId << "] Connected to server: " << serverAddr;
+                            rt->clientConn = conn;
+                            rt->fsm.onConnected();
+                        } else {
+                            LOG_INFO << "[Link " << linkId << "] Disconnected from server";
+                            rt->clientConn.reset();
+                            rt->fsm.onDisconnected();
+                        }
+                        rt->info.lastActivity = getCurrentTime();
                     }
-                    rt->info.lastActivity = getCurrentTime();
-                }
 
-                if (connectionCallback_) {
-                    connectionCallback_(linkId, serverAddr, isConnected);
-                }
+                    if (connectionCallback_) {
+                        connectionCallback_(linkId, serverAddr, isConnected);
+                    }
 
-                if (!isConnected) {
-                    scheduleReconnect(linkId, runtimeWeak);
+                    if (!isConnected) {
+                        scheduleReconnect(linkId, runtimeWeak);
+                    }
+                } catch (const std::exception& e) {
+                    LOG_ERROR << "[Link " << linkId << "] Client connection callback error: " << e.what();
                 }
             });
 

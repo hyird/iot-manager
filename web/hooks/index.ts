@@ -4,3 +4,4 @@ export { useDynamicRoutes } from "./useDynamicRoutes";
 export { useInitAuth } from "./useInitAuth";
 export { usePermission } from "./usePermission";
 export { useProtocolImportExport } from "./useProtocolImportExport";
+export { useResponsive } from "./useResponsive";

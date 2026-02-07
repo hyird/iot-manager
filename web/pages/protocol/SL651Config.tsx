@@ -10,7 +10,6 @@ import {
   Card,
   Empty,
   Flex,
-  Layout,
   Popconfirm,
   Result,
   Skeleton,
@@ -23,7 +22,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { useMemo, useRef, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
-import { usePermission, useProtocolImportExport } from "@/hooks";
+import { usePermission, useProtocolImportExport, useResponsive } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { SL651 } from "@/types";
 import {
@@ -41,8 +40,6 @@ import {
   type ResponseElementsModalRef,
 } from "./sl651";
 
-const { Sider, Content } = Layout;
-
 /** 带要素的功能码 */
 interface FuncWithElements extends SL651.Func {
   elements: SL651.Element[];
@@ -50,6 +47,8 @@ interface FuncWithElements extends SL651.Func {
 }
 
 const SL651ConfigPage = () => {
+  const { isMobile } = useResponsive();
+
   // 权限检查
   const canQuery = usePermission("iot:protocol:query");
   const canAdd = usePermission("iot:protocol:add");
@@ -157,8 +156,8 @@ const SL651ConfigPage = () => {
   // ========== 功能码表格列 ==========
 
   const funcColumns: ColumnsType<FuncWithElements> = [
-    { title: "功能码", dataIndex: "funcCode" },
-    { title: "名称", dataIndex: "name" },
+    { title: "功能码", dataIndex: "funcCode", ellipsis: true },
+    { title: "名称", dataIndex: "name", ellipsis: true },
     {
       title: "方向",
       render: (_, r) => (
@@ -183,6 +182,7 @@ const SL651ConfigPage = () => {
     {
       title: "备注",
       dataIndex: "remark",
+      ellipsis: true,
     },
     {
       title: "操作",
@@ -232,7 +232,7 @@ const SL651ConfigPage = () => {
   // ========== 要素表格列 ==========
 
   const elementColumns = (funcId: string, funcDir: SL651.Direction): ColumnsType<SL651.Element> => [
-    { title: "要素名称", dataIndex: "name" },
+    { title: "要素名称", dataIndex: "name", ellipsis: true },
     { title: "引导符", dataIndex: "guideHex" },
     { title: "编码", dataIndex: "encode" },
     { title: "长度", dataIndex: "length" },
@@ -257,7 +257,7 @@ const SL651ConfigPage = () => {
         return `${typeLabel}映射(${dictConfig.items.length}个)`;
       },
     },
-    { title: "备注", dataIndex: "remark" },
+    { title: "备注", dataIndex: "remark", ellipsis: true },
     {
       title: "操作",
       width: funcDir === "DOWN" ? 300 : 240,
@@ -314,9 +314,9 @@ const SL651ConfigPage = () => {
 
   return (
     <PageContainer title="SL651配置">
-      <Layout className="h-full bg-transparent">
+      <div className={`h-full ${isMobile ? "flex flex-col gap-3" : "flex"}`}>
         {/* 左侧：设备类型列表 */}
-        <Sider width={360} className="bg-transparent h-full pr-3">
+        <div className={isMobile ? "shrink-0 max-h-[40%]" : "w-[360px] shrink-0 pr-3 h-full"}>
           <Card
             title="设备类型"
             className="h-full flex flex-col"
@@ -382,6 +382,8 @@ const SL651ConfigPage = () => {
           >
             {loadingTypes ? (
               <Skeleton active paragraph={{ rows: 6 }} />
+            ) : types.length === 0 ? (
+              <Empty description="暂无设备类型" />
             ) : (
               <Tree
                 blockNode
@@ -413,10 +415,10 @@ const SL651ConfigPage = () => {
               />
             )}
           </Card>
-        </Sider>
+        </div>
 
         {/* 右侧：功能码配置 */}
-        <Content className="h-full">
+        <div className={isMobile ? "flex-1 min-h-0" : "flex-1 min-w-0 h-full"}>
           <Card
             title={activeTypeId ? "功能码配置" : "请选择设备类型"}
             className="h-full flex flex-col"
@@ -461,8 +463,8 @@ const SL651ConfigPage = () => {
               </div>
             )}
           </Card>
-        </Content>
-      </Layout>
+        </div>
+      </div>
 
       {/* 设备类型 Modal */}
       <DeviceTypeModal

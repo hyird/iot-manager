@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/database/DatabaseService.hpp"
+#include "common/utils/JsonHelper.hpp"
 
 /**
  * @brief 设备指令数据访问
@@ -27,10 +28,7 @@ public:
         try {
             DatabaseService dbService;
 
-            Json::StreamWriterBuilder writer;
-            writer["indentation"] = "";
-            writer["emitUTF8"] = true;
-            std::string jsonStr = Json::writeString(writer, data);
+            std::string jsonStr = JsonHelper::serialize(data);
 
             auto result = co_await dbService.execSqlCoro(R"(
                 INSERT INTO device_data (device_id, link_id, protocol, data, report_time)
@@ -88,10 +86,7 @@ public:
                 updateFields["failReason"] = failReason;
             }
 
-            Json::StreamWriterBuilder writer;
-            writer["indentation"] = "";
-            writer["emitUTF8"] = true;
-            std::string updateJson = Json::writeString(writer, updateFields);
+            std::string updateJson = JsonHelper::serialize(updateFields);
 
             co_await dbService.execSqlCoro(R"(
                 UPDATE device_data

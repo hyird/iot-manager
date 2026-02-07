@@ -17,6 +17,7 @@ import {
   Button,
   Card,
   Dropdown,
+  Empty,
   Flex,
   Input,
   Popover,
@@ -138,6 +139,9 @@ const DevicePage = () => {
   const onDeleteDevice = (device: Device.RealTimeData) => {
     modal.confirm({
       title: `确认删除设备「${device.name}」吗？`,
+      content: "删除后设备将停止数据采集，历史数据仍会保留。此操作不可撤销。",
+      okText: "确定删除",
+      okButtonProps: { danger: true },
       onOk: () => deleteMutation.mutate(device.id),
     });
   };
@@ -255,14 +259,14 @@ const DevicePage = () => {
   return (
     <PageContainer
       header={
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <h3 className="text-base font-medium m-0">设备管理</h3>
-          <Space>
+          <Space wrap>
             <Search
               allowClear
               placeholder="设备名称 / 编码 / 类型"
               onChange={(e) => debouncedSearch(e.target.value)}
-              className="w-60"
+              className="w-full sm:w-60"
             />
             <Tooltip title="刷新">
               <Button icon={<ReloadOutlined />} onClick={() => refetch()} loading={isLoading} />
@@ -277,11 +281,15 @@ const DevicePage = () => {
       }
     >
       {/* 概况统计 */}
-      <Flex gap={12} className="mb-4" wrap="nowrap">
-        <Card size="small" className="flex-1" styles={{ body: { padding: "12px 16px" } }}>
+      <Flex gap={12} className="mb-4" wrap="wrap">
+        <Card
+          size="small"
+          className="flex-1 min-w-[140px]"
+          styles={{ body: { padding: "12px 16px" } }}
+        >
           <Flex justify="space-between" align="center" className="mb-2.5">
             <span className="text-gray-500 text-[13px]">设备总数</span>
-            <span className="text-lg font-semibold text-[#1890ff]">{stats.total}</span>
+            <span className="text-lg font-semibold text-[#1677ff]">{stats.total}</span>
           </Flex>
           <Flex gap={6} wrap="wrap">
             {Object.entries(stats.byProtocol).map(([protocol, data]) => (
@@ -291,7 +299,11 @@ const DevicePage = () => {
             ))}
           </Flex>
         </Card>
-        <Card size="small" className="flex-1" styles={{ body: { padding: "12px 16px" } }}>
+        <Card
+          size="small"
+          className="flex-1 min-w-[140px]"
+          styles={{ body: { padding: "12px 16px" } }}
+        >
           <Flex justify="space-between" align="center" className="mb-2.5">
             <span className="text-gray-500 text-[13px]">在线设备</span>
             <span className="text-lg font-semibold text-[#52c41a]">
@@ -307,7 +319,11 @@ const DevicePage = () => {
             ))}
           </Flex>
         </Card>
-        <Card size="small" className="flex-1" styles={{ body: { padding: "12px 16px" } }}>
+        <Card
+          size="small"
+          className="flex-1 min-w-[140px]"
+          styles={{ body: { padding: "12px 16px" } }}
+        >
           <Flex justify="space-between" align="center" className="mb-2.5">
             <span className="text-gray-500 text-[13px]">离线设备</span>
             <span className="text-lg font-semibold text-[#ff4d4f]">
@@ -323,7 +339,11 @@ const DevicePage = () => {
             ))}
           </Flex>
         </Card>
-        <Card size="small" className="flex-1" styles={{ body: { padding: "12px 16px" } }}>
+        <Card
+          size="small"
+          className="flex-1 min-w-[140px]"
+          styles={{ body: { padding: "12px 16px" } }}
+        >
           <Flex justify="space-between" align="center" className="mb-2.5">
             <span className="text-gray-500 text-[13px]">已启用</span>
             <span className="text-lg font-semibold text-[#722ed1]">
@@ -342,175 +362,181 @@ const DevicePage = () => {
       </Flex>
 
       <div className="grid gap-3" style={gridCols}>
-        {isLoading && filteredDeviceList.length === 0
-          ? renderSkeletons()
-          : filteredDeviceList.map((device) => {
-              const online = isOnline(
-                device.lastHeartbeatTime,
-                device.reportTime,
-                device.online_timeout
-              );
-              const canRemoteControl = device.remote_control !== false;
-              const downFuncs = device.downFuncs || [];
-              const imageFuncs = device.imageFuncs || [];
-              const hasImageData = imageFuncs.some((f) => f.latestImage?.data);
-              const downMenuItems: MenuProps["items"] = downFuncs.map((f) => ({
-                key: f.funcCode,
-                label: f.name,
-              }));
-              const imageMenuItems: MenuProps["items"] = imageFuncs.map((f) => ({
-                key: f.funcCode,
-                label: f.name,
-              }));
-              const isThisCardPopoverOpen = commandPopoverOpen && commandDevice?.id === device.id;
+        {isLoading && filteredDeviceList.length === 0 ? (
+          renderSkeletons()
+        ) : filteredDeviceList.length === 0 ? (
+          <div className="col-span-full py-12">
+            <Empty description={keyword ? "搜索无结果，请尝试调整关键词" : "暂无设备数据"} />
+          </div>
+        ) : (
+          filteredDeviceList.map((device) => {
+            const online = isOnline(
+              device.lastHeartbeatTime,
+              device.reportTime,
+              device.online_timeout
+            );
+            const canRemoteControl = device.remote_control !== false;
+            const downFuncs = device.downFuncs || [];
+            const imageFuncs = device.imageFuncs || [];
+            const hasImageData = imageFuncs.some((f) => f.latestImage?.data);
+            const downMenuItems: MenuProps["items"] = downFuncs.map((f) => ({
+              key: f.funcCode,
+              label: f.name,
+            }));
+            const imageMenuItems: MenuProps["items"] = imageFuncs.map((f) => ({
+              key: f.funcCode,
+              label: f.name,
+            }));
+            const isThisCardPopoverOpen = commandPopoverOpen && commandDevice?.id === device.id;
 
-              return (
-                <div key={device.id} className="flex flex-col">
-                  <DeviceCard
-                    title={
-                      <Flex justify="space-between" className="w-full">
-                        <span>
-                          {device.name}
-                          {device.device_code ? `:${device.device_code}` : ""}
-                        </span>
-                        {online ? <Tag color="success">在线</Tag> : <Tag color="error">离线</Tag>}
-                      </Flex>
-                    }
-                    subtitle={
-                      <Flex justify="space-between" className="w-full">
-                        <span>
-                          <Tag color="blue" className="!mr-1">
-                            {device.link_name || "未绑定链路"}
-                          </Tag>
-                          <Tag color="purple">{device.protocol_name}</Tag>
-                        </span>
-                        <span className="text-gray-400 text-xs">
-                          上报：{formatReportTime(device.reportTime)}
-                        </span>
-                      </Flex>
-                    }
-                    items={convertElements(device.elements)}
-                    column={2}
-                    length={20}
-                    extra={
-                      <Flex align="center" justify="space-around" className="w-full">
-                        {/* 图片查看 */}
-                        <Dropdown
-                          disabled={!hasImageData}
-                          menu={{
-                            items: imageMenuItems,
-                            onClick: ({ key }) => {
-                              const func = imageFuncs.find((f) => f.funcCode === key);
-                              if (func) handleImageClick(func);
-                            },
-                          }}
-                        >
-                          <Tooltip title={hasImageData ? "查看图片" : "暂无图片数据"}>
-                            <Button
-                              type="text"
-                              size="small"
-                              icon={<PictureOutlined />}
-                              disabled={!hasImageData}
-                            />
-                          </Tooltip>
-                        </Dropdown>
-
-                        <span className={separatorClass} />
-
-                        {/* 指令下发 */}
-                        <Popover
-                          open={isThisCardPopoverOpen}
-                          trigger="click"
-                          placement="bottomRight"
-                          content={
-                            isThisCardPopoverOpen && commandFunc ? (
-                              <CommandPopover
-                                device={device}
-                                func={commandFunc}
-                                onClose={() => setCommandPopoverOpen(false)}
-                              />
-                            ) : null
-                          }
-                          onOpenChange={(open) => {
-                            if (!open) setCommandPopoverOpen(false);
-                          }}
-                        >
-                          <Dropdown
-                            disabled={!downFuncs.length || !canRemoteControl}
-                            menu={{
-                              items: downMenuItems,
-                              onClick: ({ key }) => {
-                                const func = downFuncs.find((f) => f.funcCode === key);
-                                if (func) openCommandPopover(device, func);
-                              },
-                            }}
-                          >
-                            <Tooltip
-                              title={
-                                !canRemoteControl
-                                  ? "该设备已禁止远控"
-                                  : !online
-                                    ? "设备离线（点击后将提示）"
-                                    : "下发指令"
-                              }
-                            >
-                              <Button
-                                type="text"
-                                size="small"
-                                icon={<SendOutlined />}
-                                disabled={!downFuncs.length || !canRemoteControl}
-                              />
-                            </Tooltip>
-                          </Dropdown>
-                        </Popover>
-
-                        <span className={separatorClass} />
-
-                        {/* 历史数据 */}
-                        <Tooltip title="历史数据">
+            return (
+              <div key={device.id} className="flex flex-col">
+                <DeviceCard
+                  title={
+                    <Flex justify="space-between" className="w-full">
+                      <span>
+                        {device.name}
+                        {device.device_code ? `:${device.device_code}` : ""}
+                      </span>
+                      {online ? <Tag color="success">在线</Tag> : <Tag color="error">离线</Tag>}
+                    </Flex>
+                  }
+                  subtitle={
+                    <Flex justify="space-between" className="w-full">
+                      <span>
+                        <Tag color="blue" className="!mr-1">
+                          {device.link_name || "未绑定链路"}
+                        </Tag>
+                        <Tag color="purple">{device.protocol_name}</Tag>
+                      </span>
+                      <span className="text-gray-400 text-xs">
+                        上报：{formatReportTime(device.reportTime)}
+                      </span>
+                    </Flex>
+                  }
+                  items={convertElements(device.elements)}
+                  column={2}
+                  length={20}
+                  extra={
+                    <Flex align="center" justify="space-around" className="w-full">
+                      {/* 图片查看 */}
+                      <Dropdown
+                        disabled={!hasImageData}
+                        menu={{
+                          items: imageMenuItems,
+                          onClick: ({ key }) => {
+                            const func = imageFuncs.find((f) => f.funcCode === key);
+                            if (func) handleImageClick(func);
+                          },
+                        }}
+                      >
+                        <Tooltip title={hasImageData ? "查看图片" : "暂无图片数据"}>
                           <Button
                             type="text"
                             size="small"
-                            icon={<HistoryOutlined />}
-                            onClick={() => openHistoryModal(device)}
+                            icon={<PictureOutlined />}
+                            disabled={!hasImageData}
                           />
                         </Tooltip>
+                      </Dropdown>
 
-                        <span className={separatorClass} />
+                      <span className={separatorClass} />
 
-                        {/* 编辑 */}
-                        {canEdit && (
-                          <Tooltip title="编辑设备">
+                      {/* 指令下发 */}
+                      <Popover
+                        open={isThisCardPopoverOpen}
+                        trigger="click"
+                        placement="bottomRight"
+                        content={
+                          isThisCardPopoverOpen && commandFunc ? (
+                            <CommandPopover
+                              device={device}
+                              func={commandFunc}
+                              onClose={() => setCommandPopoverOpen(false)}
+                            />
+                          ) : null
+                        }
+                        onOpenChange={(open) => {
+                          if (!open) setCommandPopoverOpen(false);
+                        }}
+                      >
+                        <Dropdown
+                          disabled={!downFuncs.length || !canRemoteControl}
+                          menu={{
+                            items: downMenuItems,
+                            onClick: ({ key }) => {
+                              const func = downFuncs.find((f) => f.funcCode === key);
+                              if (func) openCommandPopover(device, func);
+                            },
+                          }}
+                        >
+                          <Tooltip
+                            title={
+                              !canRemoteControl
+                                ? "该设备已禁止远控"
+                                : !online
+                                  ? "设备离线（点击后将提示）"
+                                  : "下发指令"
+                            }
+                          >
                             <Button
                               type="text"
                               size="small"
-                              icon={<EditOutlined />}
-                              onClick={() => openEditModal(device)}
+                              icon={<SendOutlined />}
+                              disabled={!downFuncs.length || !canRemoteControl}
                             />
                           </Tooltip>
-                        )}
+                        </Dropdown>
+                      </Popover>
 
-                        {/* 删除 */}
-                        {canDelete && (
-                          <>
-                            <span className={separatorClass} />
-                            <Tooltip title="删除设备">
-                              <Button
-                                type="text"
-                                size="small"
-                                danger
-                                icon={<DeleteOutlined />}
-                                onClick={() => onDeleteDevice(device)}
-                              />
-                            </Tooltip>
-                          </>
-                        )}
-                      </Flex>
-                    }
-                  />
-                </div>
-              );
-            })}
+                      <span className={separatorClass} />
+
+                      {/* 历史数据 */}
+                      <Tooltip title="历史数据">
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<HistoryOutlined />}
+                          onClick={() => openHistoryModal(device)}
+                        />
+                      </Tooltip>
+
+                      <span className={separatorClass} />
+
+                      {/* 编辑 */}
+                      {canEdit && (
+                        <Tooltip title="编辑设备">
+                          <Button
+                            type="text"
+                            size="small"
+                            icon={<EditOutlined />}
+                            onClick={() => openEditModal(device)}
+                          />
+                        </Tooltip>
+                      )}
+
+                      {/* 删除 */}
+                      {canDelete && (
+                        <>
+                          <span className={separatorClass} />
+                          <Tooltip title="删除设备">
+                            <Button
+                              type="text"
+                              size="small"
+                              danger
+                              icon={<DeleteOutlined />}
+                              onClick={() => onDeleteDevice(device)}
+                            />
+                          </Tooltip>
+                        </>
+                      )}
+                    </Flex>
+                  }
+                />
+              </div>
+            );
+          })
+        )}
       </div>
 
       {/* 图片预览 */}

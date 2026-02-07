@@ -6,6 +6,7 @@
 #include "common/utils/PasswordUtils.hpp"
 #include "common/utils/FieldHelper.hpp"
 #include "common/utils/TimestampHelper.hpp"
+#include "common/utils/SqlHelper.hpp"
 #include "common/utils/Pagination.hpp"
 
 /**
@@ -396,18 +397,14 @@ private:
             result[uid] = Json::Value(Json::arrayValue);
         }
 
-        std::ostringstream oss;
-        for (size_t i = 0; i < userIds.size(); ++i) {
-            if (i > 0) oss << ",";
-            oss << userIds[i];
-        }
+        std::string idList = SqlHelper::buildInClause(userIds);
 
         DatabaseService db;
         auto rows = co_await db.execSqlCoro(R"(
             SELECT ur.user_id, r.id, r.name, r.code
             FROM sys_role r
             INNER JOIN sys_user_role ur ON r.id = ur.role_id
-            WHERE ur.user_id IN ()" + oss.str() + R"()
+            WHERE ur.user_id IN ()" + idList + R"()
               AND r.deleted_at IS NULL
             ORDER BY ur.user_id, r.id
         )");
@@ -479,18 +476,9 @@ private:
 
         // 插入新角色
         if (!pendingRoleIds_.empty()) {
-            std::string sql = "INSERT INTO sys_user_role (user_id, role_id) VALUES ";
-            std::vector<std::string> params;
-            params.reserve(pendingRoleIds_.size() * 2);
-
-            for (size_t i = 0; i < pendingRoleIds_.size(); ++i) {
-                if (i > 0) sql += ", ";
-                sql += "(?, ?)";
-                params.push_back(std::to_string(id()));
-                params.push_back(std::to_string(pendingRoleIds_[i]));
-            }
-
-            co_await tx.execSqlCoro(sql, params);
+            auto [valuesSql, params] = SqlHelper::buildBatchInsertValues(id(), pendingRoleIds_);
+            co_await tx.execSqlCoro(
+                "INSERT INTO sys_user_role (user_id, role_id) VALUES " + valuesSql, params);
         }
 
         raiseEvent<UserRolesChanged>(id(), pendingRoleIds_);

@@ -16,6 +16,70 @@
   }
 }
 
+/* Sider Search - 暗色侧边栏搜索框 */
+@layer components {
+  .sider-search {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.85);
+    transition: background 0.2s;
+
+    &:hover,
+    &:focus-within {
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    input {
+      color: rgba(255, 255, 255, 0.85);
+
+      &::placeholder {
+        color: rgba(255, 255, 255, 0.3);
+      }
+    }
+
+    /* clear 按钮 */
+    .ant-input-clear-icon {
+      color: rgba(255, 255, 255, 0.3);
+
+      &:hover {
+        color: rgba(255, 255, 255, 0.6);
+      }
+    }
+  }
+}
+
+/* Mobile Responsive - 全局移动端适配 */
+@layer components {
+  /* Modal 宽度在小屏幕上不超过屏幕宽度 */
+  @media (max-width: 576px) {
+    .ant-modal {
+      max-width: calc(100vw - 32px) !important;
+      margin: 16px auto;
+    }
+
+    /* 表单 inline 布局在移动端改为垂直 */
+    .ant-form-inline {
+      flex-direction: column;
+      gap: 0;
+
+      .ant-form-item {
+        width: 100%;
+        margin-right: 0;
+      }
+
+      .ant-picker-range {
+        width: 100% !important;
+      }
+    }
+
+    /* PageContainer header 自动换行 */
+    .page-header-bar {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+  }
+}
+
 /* Page Tabs Styles - Chrome-like tabs */
 @layer components {
   .page-tabs {
@@ -112,6 +176,23 @@
 
     .ant-tabs-ink-bar {
       display: none;
+    }
+
+    /* 移动端紧凑样式 */
+    @media (max-width: 768px) {
+      padding-left: 8px;
+      padding-right: 8px;
+
+      .ant-tabs-tab {
+        padding: 6px 10px;
+        margin-right: 2px;
+        font-size: 12px;
+      }
+
+      .ant-tabs-tab-remove {
+        margin-left: 2px;
+        margin-right: -4px;
+      }
     }
   }
 }

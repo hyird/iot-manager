@@ -74,7 +74,7 @@ const canvasStyle = {
 };
 
 const cardStyle = {
-  width: 360,
+  width: "min(360px, calc(100vw - 32px))",
   boxShadow: "0 4px 24px rgba(0, 0, 0, 0.1)",
   position: "relative" as const,
   zIndex: 1,

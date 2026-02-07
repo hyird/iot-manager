@@ -2,7 +2,7 @@
  * 指令下发 Popover 内容组件
  */
 
-import { App, Button, Checkbox, Flex, Input } from "antd";
+import { Alert, App, Button, Checkbox, Flex, Input } from "antd";
 import { useCallback, useState } from "react";
 import { useDeviceCommand } from "@/services";
 import type { Device } from "@/types";
@@ -24,7 +24,7 @@ interface CommandPopoverProps {
 }
 
 const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const commandMutation = useDeviceCommand();
 
   const [elements, setElements] = useState<CommandElement[]>(() =>
@@ -38,14 +38,29 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
     (func.elements || []).map((el) => String(el.elementId ?? el.name))
   );
 
-  const checkOnline = useCallback(() => {
+  const checkOnline = useCallback((): Promise<boolean> => {
     const online = isOnline(device.lastHeartbeatTime, device.reportTime, device.online_timeout);
     if (!online) {
-      message.error("设备离线，无法下发指令");
-      return false;
+      return new Promise((resolve) => {
+        modal.confirm({
+          title: "设备当前离线",
+          content: (
+            <Alert
+              message="指令将进入队列，待设备重新上线后自动执行"
+              type="warning"
+              showIcon
+              className="!mt-2"
+            />
+          ),
+          okText: "继续下发",
+          cancelText: "取消",
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
+        });
+      });
     }
-    return true;
-  }, [device.lastHeartbeatTime, device.reportTime, device.online_timeout, message]);
+    return Promise.resolve(true);
+  }, [device.lastHeartbeatTime, device.reportTime, device.online_timeout, modal]);
 
   const checkLinkId = useCallback(() => {
     if (!device.link_id) {
@@ -55,13 +70,13 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
     return true;
   }, [device.link_id, message]);
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     const toSend = elements.filter((el) => selectedKeys.includes(el._key));
     if (!toSend.length) {
       message.warning("请至少选择一个要素");
       return;
     }
-    if (!checkLinkId() || !checkOnline()) return;
+    if (!checkLinkId() || !(await checkOnline())) return;
 
     commandMutation.mutate(
       {
@@ -88,8 +103,8 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
   ]);
 
   const handlePresetClick = useCallback(
-    (el: CommandElement, optValue: string) => {
-      if (!checkLinkId() || !checkOnline()) return;
+    async (el: CommandElement, optValue: string) => {
+      if (!checkLinkId() || !(await checkOnline())) return;
       commandMutation.mutate({
         linkId: device.link_id!,
         payload: {

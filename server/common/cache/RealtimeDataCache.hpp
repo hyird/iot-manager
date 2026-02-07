@@ -4,6 +4,10 @@
 #include "common/database/RedisService.hpp"
 #include "common/utils/FieldHelper.hpp"
 #include "common/utils/Constants.hpp"
+#include "common/utils/JsonHelper.hpp"
+#include "common/utils/SqlHelper.hpp"
+
+#include <mutex>
 
 /**
  * @brief 实时数据缓存服务（纯 Redis 版本）
@@ -80,15 +84,21 @@ public:
      * @brief 从数据库初始化缓存（首次访问时调用）
      */
     Task<void> initializeFromDb(const std::vector<int>& deviceIds) {
-        if (deviceIds.empty()) co_return;
+        // 双重检查锁：确保只初始化一次
+        if (initialized_.load()) co_return;
+        {
+            static std::mutex initMutex;
+            std::unique_lock lock(initMutex);
+            if (initialized_.load()) co_return;
+        }
+
+        if (deviceIds.empty()) {
+            initialized_ = true;
+            co_return;
+        }
 
         // 构建 ID 列表
-        std::ostringstream idListBuilder;
-        for (size_t i = 0; i < deviceIds.size(); ++i) {
-            if (i > 0) idListBuilder << ",";
-            idListBuilder << deviceIds[i];
-        }
-        std::string idList = idListBuilder.str();
+        std::string idList = SqlHelper::buildInClause(deviceIds);
 
         // 查询每个设备每个功能码的最新数据
         DatabaseService dbService;
@@ -204,9 +214,7 @@ private:
         cacheData["data"] = data;
         cacheData["reportTime"] = reportTime;
 
-        Json::StreamWriterBuilder builder;
-        builder["indentation"] = "";
-        std::string jsonStr = Json::writeString(builder, cacheData);
+        std::string jsonStr = JsonHelper::serialize(cacheData);
 
         // 使用 HSET 存储
         std::string key = std::string(REDIS_KEY_PREFIX) + std::to_string(deviceId);
@@ -232,9 +240,6 @@ private:
             throw std::runtime_error("Redis client not available");
         }
 
-        Json::StreamWriterBuilder builder;
-        builder["indentation"] = "";
-
         // 使用 Pipeline：先发送所有命令，最后一起获取结果
         // Drogon Redis 客户端会自动批量发送多个命令
 
@@ -246,7 +251,7 @@ private:
                 Json::Value cacheData;
                 cacheData["data"] = funcData.data;
                 cacheData["reportTime"] = funcData.reportTime;
-                std::string jsonStr = Json::writeString(builder, cacheData);
+                std::string jsonStr = JsonHelper::serialize(cacheData);
 
                 co_await client->execCommandCoro("HSET %s %s %s",
                     key.c_str(), funcCode.c_str(), jsonStr.c_str());

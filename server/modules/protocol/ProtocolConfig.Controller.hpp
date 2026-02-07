@@ -52,23 +52,16 @@ public:
         auto page = Pagination::fromRequest(req);
         std::string protocol = req->getParameter("protocol");
 
-        // 参数化 ETag：参数哈希 + 资源版本号
-        std::string paramStr = protocol + ":" + std::to_string(page.page) + ":" + std::to_string(page.pageSize);
-        size_t paramHash = std::hash<std::string>{}(paramStr);
-        std::string version = ResourceVersion::instance().getVersion("protocol");
-        std::string etag = "\"" + std::to_string(paramHash) + "-" + version + "\"";
-
-        std::string ifNoneMatch = req->getHeader("If-None-Match");
-        if (!ifNoneMatch.empty() && ifNoneMatch == etag) {
-            auto resp = drogon::HttpResponse::newHttpResponse();
-            resp->setStatusCode(drogon::k304NotModified);
-            co_return resp;
+        // 参数化 ETag 检查
+        std::string params = protocol + ":" + std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "protocol", params)) {
+            co_return notModified;
         }
 
         auto result = co_await service_.list(page, protocol);
         auto [items, total] = result;
         auto resp = Pagination::buildResponse(items, total, page.page, page.pageSize);
-        resp->addHeader("ETag", etag);
+        ETagUtils::addParamETag(resp, "protocol", params);
         co_return resp;
     }
 
@@ -76,6 +69,7 @@ public:
      * @brief 获取配置详情
      */
     Task<HttpResponsePtr> detail(HttpRequestPtr req, int id) {
+        if (id <= 0) co_return Response::badRequest("无效的资源ID");
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:protocol:query"});
         co_return Response::ok(co_await service_.detail(id));
     }
@@ -102,6 +96,7 @@ public:
      * @brief 更新配置
      */
     Task<HttpResponsePtr> update(HttpRequestPtr req, int id) {
+        if (id <= 0) co_return Response::badRequest("无效的资源ID");
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:protocol:edit"});
 
         auto json = req->getJsonObject();
@@ -118,6 +113,7 @@ public:
      * @brief 删除配置
      */
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
+        if (id <= 0) co_return Response::badRequest("无效的资源ID");
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:protocol:delete"});
         co_await service_.remove(id);
         co_return Response::deleted("删除成功");

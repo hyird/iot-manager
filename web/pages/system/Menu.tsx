@@ -502,15 +502,15 @@ const SystemMenuPage = () => {
   return (
     <PageContainer
       header={
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <h3 className="text-base font-medium m-0">菜单管理</h3>
-          <Space>
+          <Space wrap>
             <Search
               allowClear
               placeholder="按名称 / 路由搜索（树状过滤）"
               onChange={(e) => debouncedSearch(e.target.value)}
               onSearch={doSearch}
-              className="w-[280px]"
+              className="w-full sm:w-[280px]"
             />
             <Switch
               checked={!hideButtons}

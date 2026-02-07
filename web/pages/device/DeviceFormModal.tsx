@@ -2,7 +2,7 @@
  * 设备表单弹窗组件
  */
 
-import { Form, Input, InputNumber, Modal, Select, Switch } from "antd";
+import { Collapse, Form, Input, InputNumber, Modal, Select, Switch } from "antd";
 import type { RuleObject } from "antd/es/form";
 
 import { useProtocolConfigOptions } from "@/services/protocol";
@@ -145,6 +145,8 @@ const DeviceFormModal = ({
         <Form.Item name="id" hidden>
           <Input />
         </Form.Item>
+
+        {/* 基本信息 */}
         <Form.Item
           label="设备名称"
           name="name"
@@ -185,7 +187,6 @@ const DeviceFormModal = ({
           {({ getFieldValue }) => {
             const currentLinkId = getFieldValue("link_id");
             const currentLink = linkOptions.find((opt) => opt.id === currentLinkId);
-            // TCP Server 固定 RTU（串口透传），TCP Client 可选 TCP/RTU
             const showModbusMode =
               currentLink?.mode === "TCP Client" && currentLink?.protocol === "Modbus";
             if (!showModbusMode) return null;
@@ -227,115 +228,135 @@ const DeviceFormModal = ({
             <Input placeholder="如: 12345678" />
           </Form.Item>
         )}
-        {protocolType === "SL651" && (
-          <Form.Item
-            label="在线超时时间"
-            name="online_timeout"
-            extra="设备无心跳或数据上报超过此时间视为离线，单位：秒"
-          >
-            <InputNumber placeholder="默认 300 秒（5分钟）" min={1} className="!w-full" />
-          </Form.Item>
-        )}
-        {protocolType === "SL651" && (
-          <Form.Item
-            label="允许远控"
-            name="remote_control"
-            valuePropName="checked"
-            extra="关闭后将禁止对该设备下发指令"
-          >
-            <Switch checkedChildren="是" unCheckedChildren="否" />
-          </Form.Item>
-        )}
-        {protocolType === "SL651" && (
-          <Form.Item
-            label="设备时区"
-            name="timezone"
-            extra="设备上报时间所属时区，用于正确存储时间戳"
-          >
-            <Select>
-              <Select.Option value="+08:00">UTC+8（中国标准时间）</Select.Option>
-              <Select.Option value="+09:00">UTC+9（日本/韩国）</Select.Option>
-              <Select.Option value="+07:00">UTC+7（东南亚）</Select.Option>
-              <Select.Option value="+05:30">UTC+5:30（印度）</Select.Option>
-              <Select.Option value="+00:00">UTC+0（格林威治）</Select.Option>
-            </Select>
-          </Form.Item>
-        )}
-        {isModbusRtu && (
-          <>
-            <Form.Item label="心跳包模式" name={["heartbeat", "mode"]}>
-              <Select>
-                <Select.Option value="OFF">关闭</Select.Option>
-                <Select.Option value="HEX">HEX</Select.Option>
-                <Select.Option value="ASCII">ASCII</Select.Option>
-              </Select>
-            </Form.Item>
-            <Form.Item noStyle dependencies={[["heartbeat", "mode"]]}>
-              {({ getFieldValue }) => {
-                const hbMode = getFieldValue(["heartbeat", "mode"]);
-                if (hbMode === "OFF" || !hbMode) return null;
-                return (
-                  <Form.Item
-                    label="心跳包内容"
-                    name={["heartbeat", "content"]}
-                    rules={
-                      hbMode === "HEX"
-                        ? hexContentRules
-                        : [{ required: true, message: "请输入心跳包内容" }]
-                    }
-                    extra={
-                      hbMode === "HEX"
-                        ? "十六进制字符串，如: AA BB CC DD（空格会自动去除）"
-                        : "ASCII 字符串，支持 \\r \\n 转义"
-                    }
-                  >
-                    <Input placeholder={hbMode === "HEX" ? "AA BB CC DD" : "HELLO\\r\\n"} />
-                  </Form.Item>
-                );
-              }}
-            </Form.Item>
-            <Form.Item label="注册包模式" name={["registration", "mode"]}>
-              <Select>
-                <Select.Option value="OFF">关闭</Select.Option>
-                <Select.Option value="HEX">HEX</Select.Option>
-                <Select.Option value="ASCII">ASCII</Select.Option>
-              </Select>
-            </Form.Item>
-            <Form.Item noStyle dependencies={[["registration", "mode"]]}>
-              {({ getFieldValue }) => {
-                const regMode = getFieldValue(["registration", "mode"]);
-                if (regMode === "OFF" || !regMode) return null;
-                return (
-                  <Form.Item
-                    label="注册包内容"
-                    name={["registration", "content"]}
-                    rules={
-                      regMode === "HEX"
-                        ? hexContentRules
-                        : [{ required: true, message: "请输入注册包内容" }]
-                    }
-                    extra={
-                      regMode === "HEX"
-                        ? "十六进制字符串，如: AA BB CC DD（空格会自动去除）"
-                        : "ASCII 字符串，支持 \\r \\n 转义"
-                    }
-                  >
-                    <Input placeholder={regMode === "HEX" ? "AA BB CC DD" : "HELLO\\r\\n"} />
-                  </Form.Item>
-                );
-              }}
-            </Form.Item>
-          </>
-        )}
         <Form.Item label="状态" name="status" rules={[{ required: true }]}>
           <Select>
             <Select.Option value="enabled">启用</Select.Option>
             <Select.Option value="disabled">禁用</Select.Option>
           </Select>
         </Form.Item>
-        <Form.Item label="备注" name="remark">
-          <Input.TextArea rows={3} placeholder="备注信息" />
-        </Form.Item>
+
+        {/* 高级配置 */}
+        <Collapse
+          ghost
+          className="!-mx-6 !mb-0"
+          items={[
+            {
+              key: "advanced",
+              label: "高级配置",
+              children: (
+                <>
+                  {protocolType === "SL651" && (
+                    <Form.Item
+                      label="在线超时时间"
+                      name="online_timeout"
+                      extra="设备无心跳或数据上报超过此时间视为离线，单位：秒"
+                    >
+                      <InputNumber placeholder="默认 300 秒（5分钟）" min={1} className="!w-full" />
+                    </Form.Item>
+                  )}
+                  {protocolType === "SL651" && (
+                    <Form.Item
+                      label="允许远控"
+                      name="remote_control"
+                      valuePropName="checked"
+                      extra="关闭后将禁止对该设备下发指令"
+                    >
+                      <Switch checkedChildren="是" unCheckedChildren="否" />
+                    </Form.Item>
+                  )}
+                  {protocolType === "SL651" && (
+                    <Form.Item
+                      label="设备时区"
+                      name="timezone"
+                      extra="设备上报时间所属时区，用于正确存储时间戳"
+                    >
+                      <Select>
+                        <Select.Option value="+08:00">UTC+8（中国标准时间）</Select.Option>
+                        <Select.Option value="+09:00">UTC+9（日本/韩国）</Select.Option>
+                        <Select.Option value="+07:00">UTC+7（东南亚）</Select.Option>
+                        <Select.Option value="+05:30">UTC+5:30（印度）</Select.Option>
+                        <Select.Option value="+00:00">UTC+0（格林威治）</Select.Option>
+                      </Select>
+                    </Form.Item>
+                  )}
+                  {isModbusRtu && (
+                    <>
+                      <Form.Item label="心跳包模式" name={["heartbeat", "mode"]}>
+                        <Select>
+                          <Select.Option value="OFF">关闭</Select.Option>
+                          <Select.Option value="HEX">HEX</Select.Option>
+                          <Select.Option value="ASCII">ASCII</Select.Option>
+                        </Select>
+                      </Form.Item>
+                      <Form.Item noStyle dependencies={[["heartbeat", "mode"]]}>
+                        {({ getFieldValue }) => {
+                          const hbMode = getFieldValue(["heartbeat", "mode"]);
+                          if (hbMode === "OFF" || !hbMode) return null;
+                          return (
+                            <Form.Item
+                              label="心跳包内容"
+                              name={["heartbeat", "content"]}
+                              rules={
+                                hbMode === "HEX"
+                                  ? hexContentRules
+                                  : [{ required: true, message: "请输入心跳包内容" }]
+                              }
+                              extra={
+                                hbMode === "HEX"
+                                  ? "十六进制字符串，如: AA BB CC DD（空格会自动去除）"
+                                  : "ASCII 字符串，支持 \\r \\n 转义"
+                              }
+                            >
+                              <Input
+                                placeholder={hbMode === "HEX" ? "AA BB CC DD" : "HELLO\\r\\n"}
+                              />
+                            </Form.Item>
+                          );
+                        }}
+                      </Form.Item>
+                      <Form.Item label="注册包模式" name={["registration", "mode"]}>
+                        <Select>
+                          <Select.Option value="OFF">关闭</Select.Option>
+                          <Select.Option value="HEX">HEX</Select.Option>
+                          <Select.Option value="ASCII">ASCII</Select.Option>
+                        </Select>
+                      </Form.Item>
+                      <Form.Item noStyle dependencies={[["registration", "mode"]]}>
+                        {({ getFieldValue }) => {
+                          const regMode = getFieldValue(["registration", "mode"]);
+                          if (regMode === "OFF" || !regMode) return null;
+                          return (
+                            <Form.Item
+                              label="注册包内容"
+                              name={["registration", "content"]}
+                              rules={
+                                regMode === "HEX"
+                                  ? hexContentRules
+                                  : [{ required: true, message: "请输入注册包内容" }]
+                              }
+                              extra={
+                                regMode === "HEX"
+                                  ? "十六进制字符串，如: AA BB CC DD（空格会自动去除）"
+                                  : "ASCII 字符串，支持 \\r \\n 转义"
+                              }
+                            >
+                              <Input
+                                placeholder={regMode === "HEX" ? "AA BB CC DD" : "HELLO\\r\\n"}
+                              />
+                            </Form.Item>
+                          );
+                        }}
+                      </Form.Item>
+                    </>
+                  )}
+                  <Form.Item label="备注" name="remark">
+                    <Input.TextArea rows={3} placeholder="备注信息" />
+                  </Form.Item>
+                </>
+              ),
+            },
+          ]}
+        />
       </Form>
     </Modal>
   );

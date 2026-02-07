@@ -3,6 +3,7 @@
  * 从原 api/request.ts 迁移，作为 Service 层的底层依赖
  */
 
+import { notification } from "antd";
 import axios, {
   type AxiosError,
   type AxiosInstance,
@@ -105,7 +106,22 @@ request.interceptors.response.use(
       }
     }
 
-    const message = error.response?.data?.message || error.message || "网络错误";
+    // 无响应：网络错误 / 超时
+    if (!error.response) {
+      if (error.code === "ECONNABORTED") {
+        notification.error({ message: "请求超时", description: "网络连接较慢，请稍后重试" });
+      } else {
+        notification.error({ message: "网络连接失败", description: "请检查网络连接是否正常" });
+      }
+      return Promise.reject(error);
+    }
+
+    // 服务器错误 (5xx)
+    if (error.response.status >= 500) {
+      notification.error({ message: "服务器错误", description: "服务器遇到问题，请稍后重试" });
+    }
+
+    const message = error.response?.data?.message || error.message || "请求失败";
     return Promise.reject(new Error(message));
   }
 );

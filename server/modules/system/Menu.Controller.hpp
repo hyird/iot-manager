@@ -59,6 +59,7 @@ public:
     }
 
     Task<HttpResponsePtr> detail(HttpRequestPtr req, int id) {
+        if (id <= 0) co_return Response::badRequest("无效的资源ID");
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:menu:query"});
         co_return Response::ok(co_await service_.detail(id));
     }
@@ -76,6 +77,7 @@ public:
     }
 
     Task<HttpResponsePtr> update(HttpRequestPtr req, int id) {
+        if (id <= 0) co_return Response::badRequest("无效的资源ID");
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:menu:edit"});
 
         auto json = req->getJsonObject();
@@ -86,6 +88,7 @@ public:
     }
 
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
+        if (id <= 0) co_return Response::badRequest("无效的资源ID");
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:menu:delete"});
         co_await service_.remove(id);
         co_return Response::deleted("删除成功");

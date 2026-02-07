@@ -143,6 +143,9 @@ const LinkPage = () => {
   const onDelete = (record: Link.Item) => {
     modal.confirm({
       title: `确认删除链路「${record.name}」吗？`,
+      content: "删除后该链路下的所有设备将无法通信。此操作不可撤销。",
+      okText: "确定删除",
+      okButtonProps: { danger: true },
       onOk: () => deleteMutation.mutate(record.id),
     });
   };
@@ -256,18 +259,18 @@ const LinkPage = () => {
   return (
     <PageContainer
       header={
-        <div className="flex items-center justify-between">
-          <Space>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <Space wrap>
             <h3 className="text-base font-medium m-0">链路管理</h3>
             {publicIpData?.ip && <Tag color="blue">公网IP: {publicIpData.ip}</Tag>}
           </Space>
-          <Space>
+          <Space wrap>
             <Search
               allowClear
               placeholder="链路名称 / IP地址"
               onChange={(e) => debouncedSearch(e.target.value)}
               onSearch={doSearch}
-              className="w-60"
+              className="w-full sm:w-60"
             />
             {canAdd && (
               <Button type="primary" onClick={openCreateModal}>
@@ -288,7 +291,7 @@ const LinkPage = () => {
           pageSize: pagination.pageSize,
           total: linkPage?.total || 0,
           showSizeChanger: true,
-          showTotal: (total) => `共 ${total} 条`,
+          showTotal: (total, range) => `${range[0]}-${range[1]} / 共 ${total} 条`,
         }}
         onChange={handleTableChange}
         size="middle"

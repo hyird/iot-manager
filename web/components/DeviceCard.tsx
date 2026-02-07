@@ -2,6 +2,7 @@
  * 设备卡片组件 - 用于展示设备实时数据
  */
 
+import { Tooltip } from "antd";
 import React, { useMemo } from "react";
 import { calcWeightedLength } from "@/utils";
 
@@ -87,7 +88,13 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
             {r.map((it) => (
               <div key={it.key} className="flex text-sm" style={{ gridColumn: `span ${it.span!}` }}>
                 <span className="font-medium mr-1 whitespace-nowrap">{it.label}：</span>
-                <span className="flex-1 break-all">{it.children}</span>
+                <span className="flex-1 truncate">
+                  {typeof it.children === "string" || typeof it.children === "number" ? (
+                    <Tooltip title={it.children}>{String(it.children)}</Tooltip>
+                  ) : (
+                    it.children
+                  )}
+                </span>
               </div>
             ))}
           </div>

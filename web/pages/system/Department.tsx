@@ -294,15 +294,15 @@ const SystemDepartmentPage = () => {
   return (
     <PageContainer
       header={
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <h3 className="text-base font-medium m-0">部门管理</h3>
-          <Space>
+          <Space wrap>
             <Search
               allowClear
               placeholder="部门名称 / 编码"
               onChange={(e) => debouncedSearch(e.target.value)}
               onSearch={doSearch}
-              className="w-60"
+              className="w-full sm:w-60"
             />
             {canAdd && (
               <Button type="primary" onClick={openCreateModal}>

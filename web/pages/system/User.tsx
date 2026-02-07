@@ -115,6 +115,9 @@ const SystemUserPage = () => {
   const onDelete = (record: User.Item) => {
     modal.confirm({
       title: `确认删除用户「${record.username}」吗？`,
+      content: "删除后该用户将无法登录系统。此操作不可撤销。",
+      okText: "确定删除",
+      okButtonProps: { danger: true },
       onOk: () => deleteMutation.mutate(record.id),
     });
   };
@@ -148,10 +151,10 @@ const SystemUserPage = () => {
   }
 
   const columns: ColumnsType<User.Item> = [
-    { title: "用户名", dataIndex: "username" },
-    { title: "昵称", dataIndex: "nickname" },
+    { title: "用户名", dataIndex: "username", ellipsis: true },
+    { title: "昵称", dataIndex: "nickname", ellipsis: true },
     { title: "手机号", dataIndex: "phone" },
-    { title: "邮箱", dataIndex: "email" },
+    { title: "邮箱", dataIndex: "email", ellipsis: true },
     {
       title: "部门",
       dataIndex: "department_id",
@@ -200,15 +203,15 @@ const SystemUserPage = () => {
   return (
     <PageContainer
       header={
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <h3 className="text-base font-medium m-0">用户管理</h3>
-          <Space>
+          <Space wrap>
             <Search
               allowClear
               placeholder="用户名 / 昵称 / 手机 / 邮箱"
               onChange={(e) => debouncedSearch(e.target.value)}
               onSearch={doSearch}
-              className="w-[280px]"
+              className="w-full sm:w-[280px]"
             />
             {canAdd && (
               <Button type="primary" onClick={openCreateModal}>
@@ -229,7 +232,7 @@ const SystemUserPage = () => {
           pageSize: pagination.pageSize,
           total: userPage?.total || 0,
           showSizeChanger: true,
-          showTotal: (total) => `共 ${total} 条`,
+          showTotal: (total, range) => `${range[0]}-${range[1]} / 共 ${total} 条`,
         }}
         onChange={handleTableChange}
         size="middle"

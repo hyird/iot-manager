@@ -1,11 +1,36 @@
 import { CloseOutlined, HomeOutlined } from "@ant-design/icons";
+import type { DragEndEvent } from "@dnd-kit/core";
+import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type { MenuProps } from "antd";
 import { Button, Dropdown, Tabs, Tooltip } from "antd";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import type { CSSProperties } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { HOME_TAB, useAuthStore, useTabsStore } from "@/store/hooks";
 import type { Menu } from "@/types";
 import { buildMenuTree } from "@/utils";
+
+/** 可拖拽标签节点 — 用 cloneElement 注入，不额外包裹 div */
+function SortableTab({ node }: { node: React.ReactElement }) {
+  const nodeKey = (node.props as Record<string, unknown>)["data-node-key"] as string;
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: nodeKey,
+  });
+
+  return React.cloneElement(node as React.ReactElement<Record<string, unknown>>, {
+    ref: setNodeRef,
+    style: {
+      ...((node.props as Record<string, unknown>).style as CSSProperties),
+      transform: CSS.Translate.toString(transform),
+      transition: transition || undefined,
+      opacity: isDragging ? 0.5 : 1,
+    },
+    ...attributes,
+    ...listeners,
+  });
+}
 
 export default function PageTabs() {
   const navigate = useNavigate();
@@ -174,29 +199,55 @@ export default function PageTabs() {
     [tabs, getContextMenu]
   );
 
+  // DnD 拖拽排序
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 10 } }));
+
+  const handleDragEnd = useCallback(
+    ({ active, over }: DragEndEvent) => {
+      if (!over || active.id === over.id) return;
+      const activeIndex = tabs.findIndex((t) => t.key === active.id);
+      const overIndex = tabs.findIndex((t) => t.key === over.id);
+      if (activeIndex < 0 || overIndex < 0) return;
+      const newTabs = [...tabs];
+      const [removed] = newTabs.splice(activeIndex, 1);
+      newTabs.splice(overIndex, 0, removed);
+      setTabsState(newTabs, activeKey);
+    },
+    [tabs, activeKey, setTabsState]
+  );
+
   return (
-    <Tabs
-      type="editable-card"
-      hideAdd
-      activeKey={activeKey}
-      onChange={handleTabChange}
-      onEdit={handleTabEdit}
-      items={tabItems}
-      size="small"
-      className="page-tabs px-4 pt-2 pb-0 bg-white shrink-0"
-      tabBarExtraContent={
-        hasClosableTabs && (
-          <Tooltip title="关闭所有标签页">
-            <Button
-              type="text"
-              size="small"
-              icon={<CloseOutlined />}
-              onClick={handleCloseAll}
-              className="mr-2 text-gray-400 hover:text-gray-600"
-            />
-          </Tooltip>
-        )
-      }
-    />
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={tabs.map((t) => t.key)} strategy={horizontalListSortingStrategy}>
+        <Tabs
+          type="editable-card"
+          hideAdd
+          activeKey={activeKey}
+          onChange={handleTabChange}
+          onEdit={handleTabEdit}
+          items={tabItems}
+          size="small"
+          className="page-tabs px-4 pt-2 pb-0 bg-white shrink-0"
+          renderTabBar={(tabBarProps, DefaultTabBar) => (
+            <DefaultTabBar {...tabBarProps}>
+              {(node) => <SortableTab key={node.key} node={node} />}
+            </DefaultTabBar>
+          )}
+          tabBarExtraContent={
+            hasClosableTabs && (
+              <Tooltip title="关闭所有标签页">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<CloseOutlined />}
+                  onClick={handleCloseAll}
+                  className="mr-2 text-gray-400 hover:text-gray-600"
+                />
+              </Tooltip>
+            )
+          }
+        />
+      </SortableContext>
+    </DndContext>
   );
 }

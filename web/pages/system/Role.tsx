@@ -165,7 +165,9 @@ const SystemRolePage = () => {
   const onDelete = (record: Role.Item) => {
     modal.confirm({
       title: `确认删除角色「${record.name}」吗？`,
-      content: "删除后不可恢复",
+      content: "删除后拥有该角色的用户将失去对应权限。此操作不可撤销。",
+      okText: "确定删除",
+      okButtonProps: { danger: true },
       onOk: () => deleteMutation.mutate(record.id),
     });
   };
@@ -309,15 +311,15 @@ const SystemRolePage = () => {
   return (
     <PageContainer
       header={
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <h3 className="text-base font-medium m-0">角色管理</h3>
-          <Space>
+          <Space wrap>
             <Search
               allowClear
               placeholder="角色名称 / 编码"
               onChange={(e) => debouncedSearch(e.target.value)}
               onSearch={doSearch}
-              className="w-[220px]"
+              className="w-full sm:w-[220px]"
             />
             {canAdd && (
               <Button type="primary" onClick={openCreateModal}>
@@ -338,7 +340,7 @@ const SystemRolePage = () => {
           pageSize: pagination.pageSize,
           total: rolePage?.total || 0,
           showSizeChanger: true,
-          showTotal: (total) => `共 ${total} 条`,
+          showTotal: (total, range) => `${range[0]}-${range[1]} / 共 ${total} 条`,
         }}
         onChange={handleTableChange}
         size="middle"
@@ -409,7 +411,7 @@ const SystemRolePage = () => {
         destroyOnHidden
         width={600}
       >
-        <div className="mb-4">
+        <div className="mb-4 flex items-center justify-between">
           <Space>
             <Button size="small" onClick={handleSelectAll}>
               {checkedKeys.length === allKeys.length - parentKeys.size ? "取消全选" : "全选"}
@@ -418,6 +420,9 @@ const SystemRolePage = () => {
               {expandedKeys.length === allKeys.length ? "折叠全部" : "展开全部"}
             </Button>
           </Space>
+          <span className="text-xs text-gray-400">
+            已选 {checkedKeys.length} / {allKeys.length - parentKeys.size} 项权限
+          </span>
         </div>
         <div className="max-h-[400px] overflow-auto border border-gray-100 rounded p-3">
           {treeData.length > 0 ? (

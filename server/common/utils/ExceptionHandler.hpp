@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AppException.hpp"
+#include "ErrorCodes.hpp"
 
 /**
  * @brief 全局异常处理器
@@ -29,7 +30,7 @@ public:
                 status = appEx->getStatus();
             } else {
                 LOG_ERROR << "Unhandled exception: " << e.what();
-                json["code"] = "INTERNAL_ERROR";
+                json["code"] = ErrorCodes::INTERNAL_ERROR;
                 json["message"] = "服务器内部错误";
             }
 

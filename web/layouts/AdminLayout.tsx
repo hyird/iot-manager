@@ -3,10 +3,11 @@ import {
   MenuFoldOutlined,
   MenuOutlined,
   MenuUnfoldOutlined,
+  SearchOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
-import { Menu as AntdMenu, Button, Drawer, Dropdown, Grid, Layout, Space, Spin } from "antd";
+import { Menu as AntdMenu, Button, Drawer, Dropdown, Grid, Input, Layout, Space, Spin } from "antd";
 import type { ItemType } from "antd/es/menu/interface";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -32,6 +33,7 @@ export default function AdminLayout() {
 
   const [collapsed, setCollapsed] = useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [menuSearch, setMenuSearch] = useState("");
 
   // 判断是否为移动端
   const isMobile = !screens.md;
@@ -41,11 +43,10 @@ export default function AdminLayout() {
 
   // 路由变化时关闭移动端抽屉
   useEffect(() => {
-    if (isMobile && mobileDrawerOpen) {
+    if (isMobile) {
       setMobileDrawerOpen(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMobile, mobileDrawerOpen]);
+  }, [location.pathname, isMobile]);
 
   const menuTree = useMemo<Menu.TreeItem[]>(() => {
     const menus = user?.menus || [];
@@ -84,6 +85,28 @@ export default function AdminLayout() {
     return buildMenuItems(menuTree);
   }, [menuTree]);
 
+  // 菜单搜索过滤
+  const filteredMenuItems = useMemo(() => {
+    if (!menuSearch.trim()) return menuItems;
+    const keyword = menuSearch.trim().toLowerCase();
+    const filterItems = (items: ItemType[]): ItemType[] => {
+      return items
+        .map((item) => {
+          if (!item || !("key" in item)) return null;
+          const menuItem = item as { key: string; label?: string; children?: ItemType[] };
+          if (menuItem.children?.length) {
+            const filtered = filterItems(menuItem.children);
+            if (filtered.length > 0) return { ...menuItem, children: filtered };
+          }
+          const label = typeof menuItem.label === "string" ? menuItem.label : "";
+          if (label.toLowerCase().includes(keyword)) return item;
+          return null;
+        })
+        .filter(Boolean) as ItemType[];
+    };
+    return filterItems(menuItems);
+  }, [menuItems, menuSearch]);
+
   const onMenuClick = (info: { key: string }) => {
     // 空目录菜单（key 以 menu- 开头）点击无反应
     if (info.key.startsWith("menu-")) return;
@@ -108,22 +131,38 @@ export default function AdminLayout() {
   };
 
   // 侧边栏菜单内容
+  const showSearch = !collapsed || isMobile;
   const siderContent = (
     <>
       <div className="h-12 m-2 rounded flex items-center justify-center shrink-0 text-white font-medium">
         {!isInitialLoading && <span>{collapsed && !isMobile ? "IoT" : "物联平台"}</span>}
       </div>
       {!isInitialLoading && (
-        <div className="overflow-auto h-[calc(100vh-64px)] scrollbar-none">
-          <AntdMenu
-            theme="dark"
-            mode="inline"
-            selectedKeys={[location.pathname]}
-            items={menuItems}
-            onClick={onMenuClick}
-            inlineCollapsed={collapsed && !isMobile}
-          />
-        </div>
+        <>
+          {showSearch && (
+            <div className="px-3 mb-2">
+              <Input
+                allowClear
+                prefix={<SearchOutlined className="!text-white/30" />}
+                placeholder="搜索菜单"
+                variant="borderless"
+                value={menuSearch}
+                onChange={(e) => setMenuSearch(e.target.value)}
+                className="sider-search"
+              />
+            </div>
+          )}
+          <div className="overflow-auto flex-1 scrollbar-none">
+            <AntdMenu
+              theme="dark"
+              mode="inline"
+              selectedKeys={[location.pathname]}
+              items={filteredMenuItems}
+              onClick={onMenuClick}
+              inlineCollapsed={collapsed && !isMobile}
+            />
+          </div>
+        </>
       )}
     </>
   );

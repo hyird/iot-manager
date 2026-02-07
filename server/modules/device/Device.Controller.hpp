@@ -68,6 +68,7 @@ public:
      * @brief 获取设备详情
      */
     Task<HttpResponsePtr> detail(HttpRequestPtr req, int id) {
+        if (id <= 0) co_return Response::badRequest("无效的资源ID");
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
         co_return Response::ok(co_await service_.detail(id));
     }
@@ -93,6 +94,7 @@ public:
      * @brief 更新设备
      */
     Task<HttpResponsePtr> update(HttpRequestPtr req, int id) {
+        if (id <= 0) co_return Response::badRequest("无效的资源ID");
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:edit"});
 
         auto json = req->getJsonObject();
@@ -106,6 +108,7 @@ public:
      * @brief 删除设备
      */
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
+        if (id <= 0) co_return Response::badRequest("无效的资源ID");
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:delete"});
         co_await service_.remove(id);
         co_return Response::deleted("删除成功");

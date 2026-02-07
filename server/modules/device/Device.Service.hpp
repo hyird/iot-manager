@@ -10,6 +10,7 @@
 #include "common/utils/Constants.hpp"
 #include "common/protocol/ProtocolDispatcher.hpp"
 #include "common/cache/ResourceVersion.hpp"
+#include "common/utils/SqlHelper.hpp"
 
 // 类型别名，简化代码
 using ElementData = DeviceDataTransformer::ElementData;
@@ -138,12 +139,12 @@ public:
         }
 
         // 2. 构建设备 ID 列表，批量查询实时数据
-        std::ostringstream idListBuilder;
-        for (size_t i = 0; i < cachedDevices.size(); ++i) {
-            if (i > 0) idListBuilder << ",";
-            idListBuilder << cachedDevices[i].id;
+        std::vector<int> deviceIds;
+        deviceIds.reserve(cachedDevices.size());
+        for (const auto& d : cachedDevices) {
+            deviceIds.push_back(d.id);
         }
-        std::string idList = idListBuilder.str();
+        std::string idList = SqlHelper::buildInClause(deviceIds);
 
         // 3. 优化的 SQL：使用 DISTINCT ON 获取每个设备每个功能码的最新数据
         std::string sql = R"(
@@ -628,6 +629,34 @@ public:
         Json::Value items(Json::arrayValue);
         Json::CharReaderBuilder readerBuilder;
 
+        // 预扫描：收集所有 userId，批量查询用户名（避免 N+1）
+        if (!isImage) {
+            std::set<int> userIdSet;
+            for (const auto& row : result) {
+                if (row["data"].isNull()) continue;
+                std::string dataStr = row["data"].as<std::string>();
+                Json::Value parsedData;
+                std::istringstream iss(dataStr);
+                std::string errs;
+                if (Json::parseFromStream(readerBuilder, iss, &parsedData, &errs)) {
+                    if (parsedData.isMember("userId") && parsedData["userId"].isInt()) {
+                        userIdSet.insert(parsedData["userId"].asInt());
+                    }
+                }
+            }
+            if (!userIdSet.empty()) {
+                std::vector<int> userIds(userIdSet.begin(), userIdSet.end());
+                std::string userIdList = SqlHelper::buildInClause(userIds);
+                auto userResult = co_await dbService_.execSqlCoro(
+                    "SELECT id, username FROM sys_user WHERE id IN (" + userIdList + ")"
+                );
+                for (const auto& uRow : userResult) {
+                    std::string uid = std::to_string(FieldHelper::getInt(uRow["id"]));
+                    userNameCache[uid] = FieldHelper::getString(uRow["username"], "");
+                }
+            }
+        }
+
         for (const auto& row : result) {
             Json::Value item;
             item["reportTime"] = FieldHelper::getString(row["report_time"], "");
@@ -685,20 +714,11 @@ public:
                         if (parsedData.isMember("userId") && parsedData["userId"].isInt()) {
                             int userId = parsedData["userId"].asInt();
                             item["userId"] = userId;
-                            // 获取用户名（使用缓存避免重复查询）
+                            // 从预加载的缓存中查找用户名
                             std::string userIdStr = std::to_string(userId);
-                            if (userNameCache.find(userIdStr) == userNameCache.end()) {
-                                auto userResult = co_await dbService_.execSqlCoro(
-                                    "SELECT username FROM sys_user WHERE id = ?", {userIdStr}
-                                );
-                                if (!userResult.empty()) {
-                                    userNameCache[userIdStr] = FieldHelper::getString(userResult[0]["username"], "");
-                                } else {
-                                    userNameCache[userIdStr] = "";
-                                }
-                            }
-                            if (!userNameCache[userIdStr].empty()) {
-                                item["userName"] = userNameCache[userIdStr];
+                            auto nameIt = userNameCache.find(userIdStr);
+                            if (nameIt != userNameCache.end() && !nameIt->second.empty()) {
+                                item["userName"] = nameIt->second;
                             }
                         }
 

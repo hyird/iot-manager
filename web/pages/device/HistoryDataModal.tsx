@@ -4,12 +4,34 @@
 
 import { Button, DatePicker, Form, Image, Modal, Space, Table, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import dayjs from "dayjs";
 import { useCallback, useState } from "react";
 import { deviceApi } from "@/services";
 import type { Device, HistoryDataType } from "@/types";
 import { getDefaultTimeRange, makeRecordKey, resolveElementDisplay } from "./utils";
 
 const { RangePicker } = DatePicker;
+
+const timePresets = [
+  {
+    label: "最近1小时",
+    value: [dayjs().subtract(1, "hour"), dayjs()] as [dayjs.Dayjs, dayjs.Dayjs],
+  },
+  {
+    label: "最近6小时",
+    value: [dayjs().subtract(6, "hour"), dayjs()] as [dayjs.Dayjs, dayjs.Dayjs],
+  },
+  { label: "今天", value: [dayjs().startOf("day"), dayjs()] as [dayjs.Dayjs, dayjs.Dayjs] },
+  {
+    label: "最近3天",
+    value: [dayjs().subtract(3, "day").startOf("day"), dayjs()] as [dayjs.Dayjs, dayjs.Dayjs],
+  },
+  {
+    label: "最近7天",
+    value: [dayjs().subtract(7, "day").startOf("day"), dayjs()] as [dayjs.Dayjs, dayjs.Dayjs],
+  },
+  { label: "本月", value: [dayjs().startOf("month"), dayjs()] as [dayjs.Dayjs, dayjs.Dayjs] },
+];
 
 // ========== 类型 ==========
 
@@ -384,7 +406,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
           pageSize: rs?.pageSize ?? 10,
           total: rs?.total ?? 0,
           showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
+          showTotal: (t, range) => `${range[0]}-${range[1]} / 共 ${t} 条`,
           onChange: (p, ps) =>
             fetchFuncRecords({
               code: func.deviceCode,
@@ -435,7 +457,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
           pageSize: rs?.pageSize ?? 10,
           total: rs?.total ?? 0,
           showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
+          showTotal: (t, range) => `${range[0]}-${range[1]} / 共 ${t} 条`,
           onChange: (p, ps) =>
             fetchFuncRecords({
               code: func.deviceCode,
@@ -500,7 +522,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
           pageSize: rs?.pageSize ?? 10,
           total: rs?.total ?? 0,
           showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
+          showTotal: (t, range) => `${range[0]}-${range[1]} / 共 ${t} 条`,
           onChange: (p, ps) => fetchModbusRecords(device.id, p, ps),
         }}
       />
@@ -544,7 +566,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
           pageSize: state?.pageSize ?? 10,
           total: state?.total ?? 0,
           showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 个功能码`,
+          showTotal: (t, range) => `${range[0]}-${range[1]} / 共 ${t} 个功能码`,
           onChange: (p, ps) => fetchFuncList(device.device_code ?? "", p, ps),
         }}
         expandable={{
@@ -595,7 +617,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
           name="timeRange"
           rules={[{ required: true, message: "请选择时间范围" }]}
         >
-          <RangePicker showTime className="!w-[340px]" />
+          <RangePicker showTime presets={timePresets} className="!w-full sm:!w-[340px]" />
         </Form.Item>
         <Form.Item>
           <Space>

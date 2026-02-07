@@ -6,6 +6,7 @@
 #include "common/utils/FieldHelper.hpp"
 #include "common/utils/TimestampHelper.hpp"
 #include "common/utils/Pagination.hpp"
+#include "common/utils/JsonHelper.hpp"
 
 /**
  * @brief 设备聚合根
@@ -417,9 +418,7 @@ private:
     }
 
     Task<void> persistCreate(TransactionGuard& tx) {
-        Json::StreamWriterBuilder wb;
-        wb["indentation"] = "";
-        std::string ppJson = Json::writeString(wb, protocolParams_);
+        std::string ppJson = JsonHelper::serialize(protocolParams_);
 
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO device (name, link_id, protocol_config_id,
@@ -435,9 +434,7 @@ private:
     }
 
     Task<void> persistUpdate(TransactionGuard& tx) {
-        Json::StreamWriterBuilder wb;
-        wb["indentation"] = "";
-        std::string ppJson = Json::writeString(wb, protocolParams_);
+        std::string ppJson = JsonHelper::serialize(protocolParams_);
 
         co_await tx.execSqlCoro(R"(
             UPDATE device

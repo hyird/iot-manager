@@ -12,7 +12,6 @@ import {
   Form,
   Input,
   InputNumber,
-  Layout,
   Modal,
   Popconfirm,
   Result,
@@ -28,11 +27,9 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
-import { usePermission, useProtocolImportExport } from "@/hooks";
+import { usePermission, useProtocolImportExport, useResponsive } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { Modbus, ModbusDictConfig, Protocol } from "@/types";
-
-const { Sider, Content } = Layout;
 
 /** 寄存器类型选项 */
 const RegisterTypeOptions: { value: Modbus.RegisterType; label: string }[] = [
@@ -113,6 +110,8 @@ interface RegisterModalRef {
 }
 
 const ModbusConfigPage = () => {
+  const { isMobile } = useResponsive();
+
   // 权限检查
   const canQuery = usePermission("iot:protocol:query");
   const canAdd = usePermission("iot:protocol:add");
@@ -274,9 +273,9 @@ const ModbusConfigPage = () => {
 
   return (
     <PageContainer title="Modbus配置">
-      <Layout className="h-full bg-transparent">
+      <div className={`h-full ${isMobile ? "flex flex-col gap-3" : "flex"}`}>
         {/* 左侧：设备类型列表 */}
-        <Sider width={360} className="bg-transparent h-full pr-3">
+        <div className={isMobile ? "shrink-0 max-h-[40%]" : "w-[360px] shrink-0 pr-3 h-full"}>
           <Card
             title="设备类型"
             className="h-full flex flex-col"
@@ -337,6 +336,8 @@ const ModbusConfigPage = () => {
           >
             {loadingTypes ? (
               <Skeleton active paragraph={{ rows: 6 }} />
+            ) : types.length === 0 ? (
+              <Empty description="暂无设备类型" />
             ) : (
               <Tree
                 blockNode
@@ -368,10 +369,10 @@ const ModbusConfigPage = () => {
               />
             )}
           </Card>
-        </Sider>
+        </div>
 
         {/* 右侧：寄存器配置 */}
-        <Content className="h-full">
+        <div className={isMobile ? "flex-1 min-h-0" : "flex-1 min-w-0 h-full"}>
           <Card
             title={
               activeType ? (
@@ -418,8 +419,8 @@ const ModbusConfigPage = () => {
               </div>
             )}
           </Card>
-        </Content>
-      </Layout>
+        </div>
+      </div>
 
       {/* 设备类型 Modal */}
       <DeviceTypeModal

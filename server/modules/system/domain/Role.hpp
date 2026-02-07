@@ -6,6 +6,7 @@
 #include "common/utils/FieldHelper.hpp"
 #include "common/utils/TimestampHelper.hpp"
 #include "common/utils/Pagination.hpp"
+#include "common/utils/SqlHelper.hpp"
 
 /**
  * @brief 角色聚合根
@@ -124,14 +125,10 @@ public:
         if (roleIds.empty()) co_return result;
 
         // 构建 IN 子句
-        std::ostringstream idList;
-        for (size_t i = 0; i < roleIds.size(); ++i) {
-            if (i > 0) idList << ",";
-            idList << roleIds[i];
-        }
+        std::string idList = SqlHelper::buildInClause(roleIds);
 
         DatabaseService db;
-        std::string sql = "SELECT role_id, menu_id FROM sys_role_menu WHERE role_id IN (" + idList.str() + ")";
+        std::string sql = "SELECT role_id, menu_id FROM sys_role_menu WHERE role_id IN (" + idList + ")";
         auto queryResult = co_await db.execSqlCoro(sql);
 
         for (const auto& row : queryResult) {
@@ -456,18 +453,9 @@ private:
 
         // 插入新菜单
         if (!pendingMenuIds_.empty()) {
-            std::string sql = "INSERT INTO sys_role_menu (role_id, menu_id) VALUES ";
-            std::vector<std::string> params;
-            params.reserve(pendingMenuIds_.size() * 2);
-
-            for (size_t i = 0; i < pendingMenuIds_.size(); ++i) {
-                if (i > 0) sql += ", ";
-                sql += "(?, ?)";
-                params.push_back(std::to_string(id()));
-                params.push_back(std::to_string(pendingMenuIds_[i]));
-            }
-
-            co_await tx.execSqlCoro(sql, params);
+            auto [valuesSql, params] = SqlHelper::buildBatchInsertValues(id(), pendingMenuIds_);
+            co_await tx.execSqlCoro(
+                "INSERT INTO sys_role_menu (role_id, menu_id) VALUES " + valuesSql, params);
         }
 
         raiseEvent<RoleMenusChanged>(id());
