@@ -61,20 +61,22 @@ export function AlertRuleFormModal({
 
     if (type === "SL651") {
       const config = protocolConfig.config as SL651.Config;
+      // data key 格式与后端 SL651 解析器一致: funcCode_guideHex
       return (config.funcs ?? []).flatMap((f) =>
-        (f.elements ?? []).map((e) => ({
-          value: e.id,
-          label: `${e.name} (${e.id})`,
-        }))
+        (f.elements ?? []).map((e) => {
+          const dataKey = `${f.funcCode}_${e.guideHex}`;
+          return { value: dataKey, label: `${e.name} (${dataKey})` };
+        })
       );
     }
 
     if (type === "Modbus") {
       const config = protocolConfig.config as Modbus.Config;
-      return (config.registers ?? []).map((r) => ({
-        value: r.id,
-        label: `${r.name} (${r.id})`,
-      }));
+      // data key 格式与后端 Modbus 解析器一致: registerType_address
+      return (config.registers ?? []).map((r) => {
+        const dataKey = `${r.registerType}_${r.address}`;
+        return { value: dataKey, label: `${r.name} (${dataKey})` };
+      });
     }
 
     return [];
