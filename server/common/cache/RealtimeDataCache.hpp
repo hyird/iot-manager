@@ -222,15 +222,23 @@ private:
         std::string dataKey = std::string(REDIS_KEY_PREFIX) + std::to_string(deviceId);
         std::string latestKey = std::string(REDIS_LATEST_PREFIX) + std::to_string(deviceId);
 
-        // Lua: HSET + EXPIRE + 条件 SETEX（仅当新时间更新时覆盖）
-        co_await client->execCommandCoro(
-            "EVAL \"redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]) "
-            "redis.call('EXPIRE',KEYS[1],ARGV[3]) "
+        // HSET + EXPIRE + 条件 SETEX（仅当新时间更新时覆盖）
+        // KEYS: [1]=dataKey [2]=latestKey
+        // ARGV: [1]=funcCode [2]=jsonStr [3]=reportTime
+        // TTL 内嵌到脚本常量中，ARGV 仅传字符串
+        auto ttl = std::to_string(REDIS_TTL);
+        std::string script =
+            "redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]) "
+            "redis.call('EXPIRE',KEYS[1]," + ttl + ") "
             "local cur=redis.call('GET',KEYS[2]) "
-            "if not cur or ARGV[4]>cur then redis.call('SETEX',KEYS[2],ARGV[3],ARGV[4]) end "
-            "return 1\" 2 %s %s %s %s %d %s",
+            "if not cur or ARGV[3]>cur then redis.call('SETEX',KEYS[2]," + ttl + ",ARGV[3]) end "
+            "return 1";
+
+        co_await client->execCommandCoro(
+            "EVAL \"%s\" 2 %s %s %s %s %s",
+            script.c_str(),
             dataKey.c_str(), latestKey.c_str(),
-            funcCode.c_str(), jsonStr.c_str(), REDIS_TTL, reportTime.c_str()
+            funcCode.c_str(), jsonStr.c_str(), reportTime.c_str()
         );
     }
 
