@@ -37,19 +37,21 @@ public:
             }
         }
 
-        std::function<void(Json::Value&)> attachChildren;
-        attachChildren = [&itemMap, &idField, &childrenField, &attachChildren](Json::Value& node) {
+        static constexpr int MAX_DEPTH = 20;
+        std::function<void(Json::Value&, int)> attachChildren;
+        attachChildren = [&itemMap, &idField, &childrenField, &attachChildren](Json::Value& node, int depth) {
+            if (depth > MAX_DEPTH) return;
             int id = node[idField].asInt();
             if (itemMap[id].isMember(childrenField)) {
                 node[childrenField] = itemMap[id][childrenField];
                 for (auto& child : node[childrenField]) {
-                    attachChildren(child);
+                    attachChildren(child, depth + 1);
                 }
             }
         };
 
         for (auto& root : roots) {
-            attachChildren(root);
+            attachChildren(root, 0);
         }
 
         return roots;

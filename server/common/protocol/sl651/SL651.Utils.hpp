@@ -28,10 +28,11 @@ public:
 
     /**
      * @brief 读取 BCD 编码数据（从原始指针）
+     * @param bufSize 缓冲区总大小（用于边界检查）
      */
-    static std::string readBCD(const uint8_t* data, size_t offset, size_t len) {
+    static std::string readBCD(const uint8_t* data, size_t offset, size_t len, size_t bufSize) {
         std::string result;
-        for (size_t i = 0; i < len; ++i) {
+        for (size_t i = 0; i < len && (offset + i) < bufSize; ++i) {
             uint8_t byte = data[offset + i];
             uint8_t high = (byte >> 4) & 0x0F;
             uint8_t low = byte & 0x0F;

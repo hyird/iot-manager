@@ -19,7 +19,7 @@ import { useMemo, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { StatusTag } from "@/components/StatusTag";
 import { useDebounceFn, usePermission } from "@/hooks";
-import { departmentApi, userApi } from "@/services";
+import { departmentApi, departmentQueryKeys, userApi, userQueryKeys } from "@/services";
 import type { Department, User } from "@/types";
 
 const { Search } = Input;
@@ -81,14 +81,14 @@ const SystemDepartmentPage = () => {
 
   // 部门树 - 需要查询权限
   const { data: rawDepartmentTree = [], isLoading } = useQuery({
-    queryKey: ["departments", "tree", { all: true }],
+    queryKey: departmentQueryKeys.tree(),
     queryFn: () => departmentApi.getTree(),
     enabled: canQuery,
   });
 
   // 用户列表 - 用于负责人选择
   const { data: usersData } = useQuery({
-    queryKey: ["users", "all"],
+    queryKey: userQueryKeys.lists(),
     queryFn: () => userApi.getList({}),
     enabled: canQuery,
   });
@@ -153,7 +153,7 @@ const SystemDepartmentPage = () => {
       setModalVisible(false);
       setEditing(null);
       form.resetFields();
-      queryClient.invalidateQueries({ queryKey: ["departments"] });
+      queryClient.invalidateQueries({ queryKey: departmentQueryKeys.all });
     },
   });
 
@@ -161,7 +161,7 @@ const SystemDepartmentPage = () => {
     mutationFn: departmentApi.remove,
     onSuccess: () => {
       message.success("删除成功");
-      queryClient.invalidateQueries({ queryKey: ["departments"] });
+      queryClient.invalidateQueries({ queryKey: departmentQueryKeys.all });
     },
   });
 

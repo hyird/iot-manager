@@ -466,7 +466,7 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
             name: data.name,
             enabled: data.enabled,
             byteOrder: config?.byteOrder || "BIG_ENDIAN",
-            readInterval: config?.readInterval ?? 1,
+            readInterval: Number(config?.readInterval) || 1,
             remark: data.remark,
           });
         } else {
@@ -522,10 +522,7 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
             <Select options={ByteOrderOptions} />
           </Form.Item>
           <Form.Item label="读取间隔" name="readInterval" extra="轮询读取寄存器的时间间隔">
-            <Space.Compact className="!w-full">
-              <InputNumber min={1} max={3600} className="!w-full" />
-              <Button disabled>秒</Button>
-            </Space.Compact>
+            <InputNumber min={1} max={3600} className="!w-full" addonAfter="秒" />
           </Form.Item>
           <Form.Item label="启用" name="enabled" valuePropName="checked">
             <Switch />

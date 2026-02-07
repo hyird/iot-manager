@@ -69,7 +69,9 @@ public:
         std::string expectedHash = hashedPassword.substr(dollarPos + 1);
         std::string actualHash = pbkdf2Hash(password, salt);
 
-        return actualHash == expectedHash;
+        // 常量时间比较，防止时序攻击
+        return actualHash.size() == expectedHash.size() &&
+               CRYPTO_memcmp(actualHash.data(), expectedHash.data(), actualHash.size()) == 0;
     }
 
     static std::string generateRandomPassword(int length = 12) {

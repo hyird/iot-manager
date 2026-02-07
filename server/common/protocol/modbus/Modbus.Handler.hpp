@@ -832,8 +832,50 @@ private:
             return;
         }
 
+        // 清理超时的待处理请求，防止响应丢失导致内存泄漏
+        cleanupTimedOutRequests(ctx.linkId);
+
         for (const auto& group : ctx.readGroups) {
             sendReadRequest(ctx, group);
+        }
+    }
+
+    /**
+     * @brief 清理超时的待处理读/写请求
+     */
+    void cleanupTimedOutRequests(int linkId) {
+        auto now = std::chrono::steady_clock::now();
+        std::string prefix = std::to_string(linkId) + ":";
+
+        std::lock_guard<std::mutex> lock(pendingMutex_);
+
+        for (auto it = pendingRequests_.begin(); it != pendingRequests_.end(); ) {
+            if (it->first.compare(0, prefix.size(), prefix) != 0) { ++it; continue; }
+            auto& queue = it->second;
+            while (!queue.empty()) {
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - queue.front().sentTime).count();
+                if (elapsed < RESPONSE_TIMEOUT_MS) break;
+                LOG_WARN << "[Modbus] Read request timed out (" << elapsed << "ms): key=" << it->first;
+                queue.pop_front();
+            }
+            if (queue.empty()) { it = pendingRequests_.erase(it); } else { ++it; }
+        }
+
+        for (auto it = pendingWriteRequests_.begin(); it != pendingWriteRequests_.end(); ) {
+            if (it->first.compare(0, prefix.size(), prefix) != 0) { ++it; continue; }
+            auto& queue = it->second;
+            while (!queue.empty()) {
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - queue.front().sentTime).count();
+                if (elapsed < RESPONSE_TIMEOUT_MS) break;
+                LOG_WARN << "[Modbus] Write request timed out (" << elapsed << "ms): key=" << it->first;
+                if (commandResponseCallback_) {
+                    commandResponseCallback_(queue.front().deviceCode, "MODBUS_WRITE", false, 0);
+                }
+                queue.pop_front();
+            }
+            if (queue.empty()) { it = pendingWriteRequests_.erase(it); } else { ++it; }
         }
     }
 
@@ -994,7 +1036,7 @@ private:
                 // 线圈/离散输入：从位数据中提取
                 uint16_t bitOffset = reg->address - group.startAddress;
                 if (bitOffset / 8 < responseData.size()) {
-                    bool value = ModbusUtils::extractBit(responseData.data(), bitOffset);
+                    bool value = ModbusUtils::extractBit(responseData.data(), bitOffset, responseData.size());
                     elem["value"] = value ? 1 : 0;
                 } else {
                     elem["value"] = Json::nullValue;

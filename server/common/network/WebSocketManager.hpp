@@ -57,9 +57,9 @@ public:
 
     /** 广播给所有连接 */
     void broadcast(const std::string& type, const Json::Value& data) {
-        if (allConns_.empty()) return;
         auto msg = buildMessage(type, data);
         std::shared_lock lock(mutex_);
+        if (allConns_.empty()) return;
         for (const auto& conn : allConns_) {
             if (conn->connected()) {
                 conn->send(msg);

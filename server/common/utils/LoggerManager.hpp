@@ -171,8 +171,8 @@ public:
     }
 };
 
-// 静态成员初始化
-std::unique_ptr<trantor::AsyncFileLogger> LoggerManager::fileLogger_;
-std::shared_mutex LoggerManager::loggerMutex_;
-std::string LoggerManager::logDir_;
-std::atomic<int> LoggerManager::currentDay_{0};
+// 静态成员初始化（inline 避免多翻译单元 ODR 违规）
+inline std::unique_ptr<trantor::AsyncFileLogger> LoggerManager::fileLogger_;
+inline std::shared_mutex LoggerManager::loggerMutex_;
+inline std::string LoggerManager::logDir_;
+inline std::atomic<int> LoggerManager::currentDay_{0};

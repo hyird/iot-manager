@@ -97,8 +97,9 @@ public:
             co_return;
         }
 
-        // 构建 ID 列表
-        std::string idList = SqlHelper::buildInClause(deviceIds);
+        // 构建参数化 IN 子句
+        auto [placeholders, params] = SqlHelper::buildParameterizedIn(deviceIds);
+        params.push_back(std::to_string(Constants::DEVICE_DATA_LOOKBACK_DAYS));
 
         // 查询每个设备每个功能码的最新数据
         DatabaseService dbService;
@@ -108,13 +109,13 @@ public:
                 SELECT DISTINCT ON (device_id, data->>'funcCode')
                        device_id, data, report_time
                 FROM device_data
-                WHERE device_id IN ()" + idList + R"()
-                  AND report_time >= NOW() - INTERVAL ')" + std::to_string(Constants::DEVICE_DATA_LOOKBACK_DAYS) + R"( days'
+                WHERE device_id IN ()" + placeholders + R"()
+                  AND report_time >= NOW() - make_interval(days => ?::int)
                 ORDER BY device_id, data->>'funcCode', report_time DESC NULLS LAST
             ) sub
         )";
 
-        auto result = co_await dbService.execSqlCoro(sql);
+        auto result = co_await dbService.execSqlCoro(sql, params);
 
         Json::CharReaderBuilder readerBuilder;
 

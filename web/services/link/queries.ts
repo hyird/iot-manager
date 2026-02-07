@@ -36,7 +36,7 @@ export function useLinkDetail(
   return useQuery({
     queryKey: linkQueryKeys.detail(id),
     queryFn: () => api.getDetail(id),
-    enabled: !!id,
+    enabled: id > 0,
     ...options,
   });
 }

@@ -24,7 +24,7 @@ struct DomainEvent {
 
     virtual ~DomainEvent() = default;
 
-    // 禁止拷贝，允许移动
+    // 允许拷贝和移动（事件对象需要在订阅者间传递）
     DomainEvent(const DomainEvent&) = default;
     DomainEvent& operator=(const DomainEvent&) = default;
     DomainEvent(DomainEvent&&) = default;

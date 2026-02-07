@@ -22,9 +22,9 @@ export function useDebounceFn<T extends (...args: any[]) => any>(
   const run = useCallback(
     (...args: Parameters<T>) => {
       cancel();
-      timerRef.current = setTimeout(() => fn(...args), wait);
+      timerRef.current = setTimeout(() => fnRef.current(...args), wait);
     },
-    [cancel, fn, wait]
+    [cancel, wait]
   );
 
   useEffect(() => cancel, [cancel]);

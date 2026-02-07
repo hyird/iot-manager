@@ -78,9 +78,8 @@ public:
     ~TransactionGuard() {
         if (!committed_ && !rolledBack_ && transaction_) {
             try {
-                // 注意：析构函数中无法使用协程，只能同步回滚
-                // 但这通常不是问题，因为异常路径不需要高性能
                 LOG_WARN << "Transaction auto-rollback in destructor";
+                transaction_->rollback();
             } catch (const std::exception& e) {
                 LOG_ERROR << "Failed to rollback transaction in destructor: " << e.what();
             }

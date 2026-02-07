@@ -173,26 +173,17 @@ export function getPermissionConfig(code: string): PermissionConfig | undefined 
  * 注册整个模块 (页面 + 权限)
  */
 export function registerModule(config: ModuleConfig): void {
-  let _totalPermissions = 0;
-
-  // 注册页面及其权限
   config.pages.forEach((page) => {
-    // 注册页面
     registerPage({ ...page, module: config.name });
 
-    // 注册页面的权限
     if (page.permissions) {
       page.permissions.forEach((permission) => {
         registerPermission({
           ...permission,
           module: config.name,
-          resource: page.name, // 自动填充资源为页面名称
+          resource: page.name,
         });
-        _totalPermissions++;
       });
     }
   });
-
-  if (import.meta.env.DEV) {
-  }
 }

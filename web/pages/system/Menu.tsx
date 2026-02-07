@@ -22,7 +22,7 @@ import { PageContainer } from "@/components/PageContainer";
 import { StatusTag } from "@/components/StatusTag";
 import { getPageConfig, getRegisteredPages, getRegisteredPermissions } from "@/config/registry";
 import { useDebounceFn, usePermission } from "@/hooks";
-import { authKeys, menuApi } from "@/services";
+import { authKeys, menuApi, menuQueryKeys } from "@/services";
 import type { Menu } from "@/types";
 import { MenuTypeMap } from "@/types/constants";
 import { filterMenuTree, flattenTree, getPathSegment } from "@/utils";
@@ -88,7 +88,7 @@ const SystemMenuPage = () => {
 
   // 菜单树 - 需要查询权限
   const { data: rawMenuTree = [], isLoading } = useQuery({
-    queryKey: ["menus", "tree", { all: true }],
+    queryKey: menuQueryKeys.tree(),
     queryFn: () => menuApi.getTree(),
     enabled: canQuery,
   });
@@ -273,7 +273,7 @@ const SystemMenuPage = () => {
       setModalVisible(false);
       setEditing(null);
       form.resetFields();
-      queryClient.invalidateQueries({ queryKey: ["menus", "tree"] });
+      queryClient.invalidateQueries({ queryKey: menuQueryKeys.all });
       await syncAuthAfterMenuChange();
     },
   });
@@ -282,7 +282,7 @@ const SystemMenuPage = () => {
     mutationFn: (id: number) => menuApi.remove(id),
     onSuccess: async () => {
       message.success("删除成功");
-      queryClient.invalidateQueries({ queryKey: ["menus", "tree"] });
+      queryClient.invalidateQueries({ queryKey: menuQueryKeys.all });
       await syncAuthAfterMenuChange();
     },
   });
@@ -334,7 +334,7 @@ const SystemMenuPage = () => {
       setPermModalVisible(false);
       setPermTargetPage(null);
       setPermSelectedCodes([]);
-      queryClient.invalidateQueries({ queryKey: ["menus", "tree"] });
+      queryClient.invalidateQueries({ queryKey: menuQueryKeys.all });
       await syncAuthAfterMenuChange();
     },
   });

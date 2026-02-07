@@ -9,18 +9,7 @@ import {
   TeamOutlined,
   UserOutlined,
 } from "@ant-design/icons";
-import {
-  Button,
-  Card,
-  Col,
-  Divider,
-  message,
-  Row,
-  Skeleton,
-  Space,
-  Statistic,
-  Typography,
-} from "antd";
+import { App, Button, Card, Col, Divider, Row, Skeleton, Space, Statistic, Typography } from "antd";
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import DynamicIcon from "@/components/DynamicIcon";
@@ -49,6 +38,7 @@ function formatUptime(seconds: number): string {
 }
 
 export default function HomePage() {
+  const { message } = App.useApp();
   const { user } = useAuthStore();
   const navigate = useNavigate();
 

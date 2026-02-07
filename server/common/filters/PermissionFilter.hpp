@@ -38,7 +38,7 @@ public:
         // 返回两个计数：is_superadmin 和 has_permission
         std::string sql = R"(
             SELECT
-                COALESCE(MAX(CASE WHEN r.code = ')" + std::string(Constants::ROLE_SUPERADMIN) + R"(' THEN 1 ELSE 0 END), 0) as is_superadmin,
+                COALESCE(MAX(CASE WHEN r.code = ? THEN 1 ELSE 0 END), 0) as is_superadmin,
                 COUNT(DISTINCT m.permission_code) as permission_count
             FROM sys_user_role ur
             INNER JOIN sys_role r ON ur.role_id = r.id
@@ -51,9 +51,10 @@ public:
               AND r.deleted_at IS NULL
         )";
 
-        // 构建参数：先权限码，后用户ID
+        // 构建参数：角色码 → 权限码 → 用户ID
         std::vector<std::string> params;
-        params.reserve(requiredPermissions.size() + 1);
+        params.reserve(requiredPermissions.size() + 2);
+        params.emplace_back(Constants::ROLE_SUPERADMIN);
         for (const auto& perm : requiredPermissions) {
             params.push_back(perm);
         }

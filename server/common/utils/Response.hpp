@@ -30,6 +30,7 @@ public:
                                   int total,
                                   int page,
                                   int pageSize) {
+        if (pageSize < 1) pageSize = 1;
         Json::Value data;
         data["list"] = items;
         data["total"] = total;

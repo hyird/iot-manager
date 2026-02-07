@@ -306,8 +306,9 @@ public:
     }
 
     /** 从线圈/离散输入位数据中提取布尔值 */
-    static bool extractBit(const uint8_t* data, uint16_t bitOffset) {
+    static bool extractBit(const uint8_t* data, uint16_t bitOffset, size_t dataSize) {
         uint16_t byteIdx = bitOffset / 8;
+        if (byteIdx >= dataSize) return false;
         uint8_t bitIdx = bitOffset % 8;
         return (data[byteIdx] >> bitIdx) & 0x01;
     }

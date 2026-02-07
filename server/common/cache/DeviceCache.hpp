@@ -370,9 +370,17 @@ private:
 
         /** 重置通知状态（新一轮刷新开始时调用） */
         void reset() {
-            notified_.store(false, std::memory_order_release);
             std::lock_guard lock(waitersMutex_);
+            // 安全起见：先恢复残留等待者，避免协程句柄泄漏
+            for (auto& [loop, handle] : waiters_) {
+                if (loop) {
+                    loop->queueInLoop([h = handle]() { h.resume(); });
+                } else {
+                    handle.resume();
+                }
+            }
             waiters_.clear();
+            notified_.store(false, std::memory_order_release);
         }
 
         /** 通知所有等待的协程（刷新完成时调用） */

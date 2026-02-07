@@ -20,13 +20,9 @@ const tabsTransform = createTransform(
   (inboundState: { tabs: TabItem[]; activeKey: string }) => inboundState,
   (outboundState: { tabs: TabItem[]; activeKey: string }) => {
     const hasHome = outboundState.tabs?.some((t) => t.key === HOME_TAB.key);
-    if (!hasHome) {
-      outboundState.tabs = [HOME_TAB, ...(outboundState.tabs || [])];
-    }
-    if (!outboundState.activeKey) {
-      outboundState.activeKey = HOME_TAB.key;
-    }
-    return outboundState;
+    const tabs = hasHome ? outboundState.tabs : [HOME_TAB, ...(outboundState.tabs || [])];
+    const activeKey = outboundState.activeKey || HOME_TAB.key;
+    return { ...outboundState, tabs, activeKey };
   },
   { whitelist: ["tabs"] }
 );

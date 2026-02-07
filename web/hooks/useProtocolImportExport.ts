@@ -5,7 +5,7 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as protocolApi from "@/services/protocol/api";
 import { protocolQueryKeys } from "@/services/protocol/keys";
 import type { Protocol } from "@/types";
@@ -197,6 +197,16 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
     }
     fileInputRef.current.click();
   }, [processImport]);
+
+  // 组件卸载时清理动态创建的 input 元素
+  useEffect(() => {
+    return () => {
+      if (fileInputRef.current) {
+        fileInputRef.current.remove();
+        fileInputRef.current = null;
+      }
+    };
+  }, []);
 
   return { exportConfigs, triggerImport, importing };
 }

@@ -48,7 +48,7 @@ export function useMenuDetail(
   return useQuery({
     queryKey: menuQueryKeys.detail(id),
     queryFn: () => api.getDetail(id),
-    enabled: !!id,
+    enabled: id > 0,
     ...options,
   });
 }

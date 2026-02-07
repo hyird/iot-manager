@@ -22,7 +22,7 @@ export function useDeviceSave() {
       }
     },
     successMessage: (_, variables) => (variables.id ? "更新成功" : "创建成功"),
-    invalidateKeys: [deviceKeys.lists()],
+    invalidateKeys: [deviceKeys.all],
     onSuccess: (_, variables) => {
       if (variables.id) {
         queryClient.invalidateQueries({ queryKey: deviceKeys.detail(variables.id) });
@@ -37,7 +37,7 @@ export function useDeviceDelete() {
     mutationFn: (id: number) => deviceApi.remove(id),
     successMessage: "删除成功",
     errorMessage: (e) => e.message || "删除失败",
-    invalidateKeys: [deviceKeys.lists()],
+    invalidateKeys: [deviceKeys.all],
   });
 }
 

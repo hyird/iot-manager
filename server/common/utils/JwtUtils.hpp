@@ -127,7 +127,10 @@ public:
         std::string expectedSignature = hmacSha256(message);
         std::string expectedEncodedSignature = base64UrlEncode(expectedSignature);
 
-        if (encodedSignature != expectedEncodedSignature) {
+        // 常量时间比较，防止时序攻击
+        if (encodedSignature.size() != expectedEncodedSignature.size() ||
+            CRYPTO_memcmp(encodedSignature.data(), expectedEncodedSignature.data(),
+                          expectedEncodedSignature.size()) != 0) {
             throw AuthException::TokenInvalid();
         }
 

@@ -30,6 +30,24 @@ std::string buildInClause(const std::vector<T>& ids) {
 }
 
 /**
+ * @brief 构建 IN 子句的参数化占位符和参数（如 "?, ?, ?" + ["1", "2", "3"]）
+ * @param ids ID 列表
+ * @return {占位符字符串, 参数列表}
+ */
+template <typename T>
+std::pair<std::string, std::vector<std::string>> buildParameterizedIn(const std::vector<T>& ids) {
+    std::string placeholders;
+    std::vector<std::string> params;
+    params.reserve(ids.size());
+    for (size_t i = 0; i < ids.size(); ++i) {
+        if (i > 0) placeholders += ", ";
+        placeholders += "?";
+        params.push_back(std::to_string(ids[i]));
+    }
+    return {placeholders, params};
+}
+
+/**
  * @brief 构建批量插入的 VALUES 子句和参数
  *
  * 生成 "(?, ?), (?, ?), ..." 格式的 SQL 片段及对应参数列表，

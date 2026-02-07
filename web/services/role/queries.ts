@@ -34,7 +34,7 @@ export function useRoleDetail(
   return useQuery({
     queryKey: roleQueryKeys.detail(id),
     queryFn: () => api.getDetail(id),
-    enabled: !!id,
+    enabled: id > 0,
     ...options,
   });
 }
