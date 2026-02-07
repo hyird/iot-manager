@@ -42,6 +42,10 @@
 // Controllers - Device Module
 #include "modules/device/Device.Controller.hpp"
 
+// WebSocket Module
+#include "modules/websocket/WebSocket.Controller.hpp"
+#include "modules/websocket/WsEventHandlers.hpp"
+
 // Protocol
 #include "common/protocol/ProtocolDispatcher.hpp"
 
@@ -65,8 +69,9 @@ void onServerStarted() {
     // 初始化 TCP 链路管理器（使用独立的 IO 线程池）
     TcpLinkManager::instance().initialize(ConfigManager::getNumberOfThreads());
 
-    // 注册 Link 事件处理器（在启动链路之前）
+    // 注册事件处理器（在启动链路之前）
     LinkEventHandlers::registerAll();
+    WsEventHandlers::registerAll();
 
     // 异步初始化任务（顺序执行）
     async_run([]() -> Task<> {

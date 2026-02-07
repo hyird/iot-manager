@@ -432,10 +432,60 @@ private:
                 LOG_INFO << "device_data is already a TimescaleDB hypertable";
             }
 
+            // 创建连续聚合（每小时数据量统计，用于首页仪表盘）
+            co_await createContinuousAggregates(db);
+
             // 创建归档表和归档机制
             co_await createArchiveTable(db);
         } catch (const std::exception& e) {
             LOG_WARN << "TimescaleDB initialization skipped: " << e.what();
+        }
+    }
+
+    /**
+     * @brief 创建 TimescaleDB 连续聚合
+     * 预计算每小时的数据量统计，加速首页仪表盘查询
+     */
+    static Task<> createContinuousAggregates(const DbClientPtr& db) {
+        try {
+            // 检查连续聚合是否已存在
+            auto viewExists = co_await db->execSqlCoro(R"(
+                SELECT EXISTS (
+                    SELECT 1 FROM timescaledb_information.continuous_aggregates
+                    WHERE view_name = 'device_data_hourly'
+                ) as exists
+            )");
+
+            if (!viewExists[0]["exists"].as<bool>()) {
+                // 每小时聚合：每设备的记录数
+                co_await db->execSqlCoro(R"(
+                    CREATE MATERIALIZED VIEW device_data_hourly
+                    WITH (timescaledb.continuous) AS
+                    SELECT
+                        time_bucket('1 hour', report_time) AS bucket,
+                        device_id,
+                        COUNT(*) AS record_count
+                    FROM device_data
+                    GROUP BY bucket, device_id
+                    WITH NO DATA
+                )");
+
+                // 刷新策略：每小时刷新，覆盖最近 3 小时（确保延迟数据被统计）
+                co_await db->execSqlCoro(R"(
+                    SELECT add_continuous_aggregate_policy('device_data_hourly',
+                        start_offset => INTERVAL '3 hours',
+                        end_offset => INTERVAL '1 hour',
+                        schedule_interval => INTERVAL '1 hour',
+                        if_not_exists => TRUE
+                    )
+                )");
+
+                LOG_INFO << "Continuous aggregate device_data_hourly created";
+            } else {
+                LOG_INFO << "Continuous aggregate device_data_hourly already exists";
+            }
+        } catch (const std::exception& e) {
+            LOG_WARN << "Failed to create continuous aggregates: " << e.what();
         }
     }
 

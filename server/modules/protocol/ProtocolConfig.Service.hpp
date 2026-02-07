@@ -46,7 +46,7 @@ public:
     /**
      * @brief 创建配置
      */
-    Task<Json::Value> create(const Json::Value& data) {
+    Task<void> create(const Json::Value& data) {
         auto config = ProtocolConfig::create(data);
 
         config.require(ProtocolConfig::protocolRequired)
@@ -54,23 +54,27 @@ public:
               .require(ProtocolConfig::nameUnique);
 
         co_await config.save();
-
-        // 返回创建后的详情
-        co_return co_await detail(config.id());
     }
 
     /**
      * @brief 更新配置
+     * @param configValidator 可选的 config 字段验证回调，接收 (protocol, config)
      */
-    Task<void> update(int id, const Json::Value& data) {
+    Task<void> update(int id, const Json::Value& data,
+                      std::function<void(const std::string&, const Json::Value&)> configValidator = nullptr) {
         auto config = co_await ProtocolConfig::of(id);
 
-        // 如果修改了名称，需要检查唯一性
+        // 先应用更新，再检查约束（nameUnique 需要检查更新后的名称）
+        config.update(data);
+
+        // 使用已加载的 protocol 校验 config 结构（即使请求体未携带 protocol 也能校验）
+        if (configValidator && data.isMember("config") && data["config"].isObject()) {
+            configValidator(config.protocol(), data["config"]);
+        }
+
         if (data.isMember("name")) {
             config.require(ProtocolConfig::nameUnique);
         }
-
-        config.update(data);
 
         co_await config.save();
     }

@@ -31,12 +31,12 @@ export function getDetail(id: number) {
 
 /** 创建菜单 */
 export function create(data: Menu.CreateDto) {
-  return request.post<Menu.Item>(ENDPOINTS.BASE, data);
+  return request.post<void>(ENDPOINTS.BASE, data);
 }
 
 /** 更新菜单 */
 export function update(id: number, data: Menu.UpdateDto) {
-  return request.put<Menu.Item>(ENDPOINTS.DETAIL(id), data);
+  return request.put<void>(ENDPOINTS.DETAIL(id), data);
 }
 
 /** 删除菜单 */

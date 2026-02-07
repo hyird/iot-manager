@@ -3,6 +3,13 @@
 // 不包含项目内部头文件（变化频繁会导致 PCH 频繁重建）
 #pragma once
 
+// Windows: 禁用 min/max 宏，避免与 std::min/std::max 冲突
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+
 // ==================== C++ 标准库 ====================
 
 // 容器
@@ -49,6 +56,7 @@
 #include <drogon/drogon.h>
 #include <drogon/HttpController.h>
 #include <drogon/HttpFilter.h>
+#include <drogon/WebSocketController.h>
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpRequest.h>
 #include <drogon/HttpResponse.h>

@@ -200,6 +200,8 @@ public:
             // 转换为字符串
             return std::string(frameBytes.begin(), frameBytes.end());
 
+        } catch (const ValidationException&) {
+            throw;  // 校验异常直接传播，由上层返回给用户
         } catch (const std::exception& e) {
             LOG_ERROR << "[SL651] buildCommand error: " << e.what();
             return "";
@@ -538,7 +540,8 @@ private:
 
         cleanExpiredSessions();
 
-        MultiPacketSession* session = nullptr;
+        bool complete = false;
+        MultiPacketSession completedSession;
         {
             std::lock_guard<std::mutex> lock(sessionMutex_);
             auto it = multiPacketSessions_.find(sessionKey);
@@ -550,22 +553,23 @@ private:
                 newSession.startTime = std::chrono::steady_clock::now();
                 multiPacketSessions_[sessionKey] = newSession;
             }
-            session = &multiPacketSessions_[sessionKey];
+            auto& session = multiPacketSessions_[sessionKey];
+            session.receivedPk.insert(frame.seqPk);
+            session.packets[frame.seqPk] = frame.body;
+            session.rawFrames[frame.seqPk] = frame.raw;
+
+            LOG_DEBUG << "[SL651] 多包缓存: " << sessionKey << " (" << session.receivedPk.size() << "/" << session.totalPk << ")";
+
+            if (static_cast<int>(session.receivedPk.size()) == session.totalPk) {
+                complete = true;
+                completedSession = std::move(session);
+                multiPacketSessions_.erase(sessionKey);
+            }
         }
 
-        session->receivedPk.insert(frame.seqPk);
-        session->packets[frame.seqPk] = frame.body;
-        session->rawFrames[frame.seqPk] = frame.raw;
-
-        LOG_DEBUG << "[SL651] 多包缓存: " << sessionKey << " (" << session->receivedPk.size() << "/" << session->totalPk << ")";
-
-        if (static_cast<int>(session->receivedPk.size()) == session->totalPk) {
-            LOG_DEBUG << "[SL651] 多包完成: " << sessionKey << " (" << session->totalPk << "包)";
-            auto result = mergeAndBuildMultiPacketResult(linkId, *session, frame, getConfigSync);
-
-            std::lock_guard<std::mutex> lock(sessionMutex_);
-            multiPacketSessions_.erase(sessionKey);
-
+        if (complete) {
+            LOG_DEBUG << "[SL651] 多包完成: " << sessionKey << " (" << completedSession.totalPk << "包)";
+            auto result = mergeAndBuildMultiPacketResult(linkId, completedSession, frame, getConfigSync);
             if (result) {
                 return {std::move(*result)};
             }
@@ -817,7 +821,8 @@ private:
 
         cleanExpiredSessions();
 
-        MultiPacketSession* session = nullptr;
+        bool complete = false;
+        MultiPacketSession completedSession;
         {
             std::lock_guard<std::mutex> lock(sessionMutex_);
             auto it = multiPacketSessions_.find(sessionKey);
@@ -829,22 +834,23 @@ private:
                 newSession.startTime = std::chrono::steady_clock::now();
                 multiPacketSessions_[sessionKey] = newSession;
             }
-            session = &multiPacketSessions_[sessionKey];
+            auto& session = multiPacketSessions_[sessionKey];
+            session.receivedPk.insert(frame.seqPk);
+            session.packets[frame.seqPk] = frame.body;
+            session.rawFrames[frame.seqPk] = frame.raw;
+
+            LOG_DEBUG << "[SL651] 多包缓存: " << sessionKey << " (" << session.receivedPk.size() << "/" << session.totalPk << ")";
+
+            if (static_cast<int>(session.receivedPk.size()) == session.totalPk) {
+                complete = true;
+                completedSession = std::move(session);
+                multiPacketSessions_.erase(sessionKey);
+            }
         }
 
-        session->receivedPk.insert(frame.seqPk);
-        session->packets[frame.seqPk] = frame.body;
-        session->rawFrames[frame.seqPk] = frame.raw;
-
-        LOG_DEBUG << "[SL651] 多包缓存: " << sessionKey << " (" << session->receivedPk.size() << "/" << session->totalPk << ")";
-
-        // 检查是否接收完成
-        if (static_cast<int>(session->receivedPk.size()) == session->totalPk) {
-            LOG_DEBUG << "[SL651] 多包完成: " << sessionKey << " (" << session->totalPk << "包)";
-            co_await mergeAndParseMultiPacket(linkId, *session, frame);
-
-            std::lock_guard<std::mutex> lock(sessionMutex_);
-            multiPacketSessions_.erase(sessionKey);
+        if (complete) {
+            LOG_DEBUG << "[SL651] 多包完成: " << sessionKey << " (" << completedSession.totalPk << "包)";
+            co_await mergeAndParseMultiPacket(linkId, completedSession, frame);
         }
     }
 

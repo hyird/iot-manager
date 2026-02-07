@@ -1,15 +1,14 @@
 import {
   LogoutOutlined,
   MenuFoldOutlined,
-  MenuOutlined,
   MenuUnfoldOutlined,
   SearchOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
-import { Menu as AntdMenu, Button, Drawer, Dropdown, Grid, Input, Layout, Space, Spin } from "antd";
+import { Menu as AntdMenu, Button, Dropdown, Input, Layout, Space, Spin } from "antd";
 import type { ItemType } from "antd/es/menu/interface";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import LayoutBreadcrumb from "@/components/LayoutBreadcrumb";
 import PageTabs from "@/components/PageTabs";
@@ -21,7 +20,6 @@ import { buildMenuTree } from "@/utils";
 import { renderIcon } from "@/utils/icon";
 
 const { Header, Sider, Content } = Layout;
-const { useBreakpoint } = Grid;
 
 export default function AdminLayout() {
   const { token, clearAuth } = useAuthStore();
@@ -29,24 +27,12 @@ export default function AdminLayout() {
   const { data: user } = useCurrentUser();
   const navigate = useNavigate();
   const location = useLocation();
-  const screens = useBreakpoint();
 
   const [collapsed, setCollapsed] = useState(false);
-  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [menuSearch, setMenuSearch] = useState("");
-
-  // 判断是否为移动端
-  const isMobile = !screens.md;
 
   // 有 token 但完全没有 user 缓存时才显示 loading
   const isInitialLoading = !!token && !user;
-
-  // 路由变化时关闭移动端抽屉
-  useEffect(() => {
-    if (isMobile) {
-      setMobileDrawerOpen(false);
-    }
-  }, [location.pathname, isMobile]);
 
   const menuTree = useMemo<Menu.TreeItem[]>(() => {
     const menus = user?.menus || [];
@@ -125,21 +111,19 @@ export default function AdminLayout() {
       if (info.key === "logout") {
         clearAuth();
         clearTabs();
-        // AuthGuard 会自动检测到 token 为空并重定向到登录页
       }
     },
   };
 
   // 侧边栏菜单内容
-  const showSearch = !collapsed || isMobile;
   const siderContent = (
     <>
       <div className="h-12 m-2 rounded flex items-center justify-center shrink-0 text-white font-medium">
-        {!isInitialLoading && <span>{collapsed && !isMobile ? "IoT" : "物联平台"}</span>}
+        {!isInitialLoading && <span>{collapsed ? "IoT" : "物联平台"}</span>}
       </div>
       {!isInitialLoading && (
         <>
-          {showSearch && (
+          {!collapsed && (
             <div className="px-3 mb-2">
               <Input
                 allowClear
@@ -159,7 +143,7 @@ export default function AdminLayout() {
               selectedKeys={[location.pathname]}
               items={filteredMenuItems}
               onClick={onMenuClick}
-              inlineCollapsed={collapsed && !isMobile}
+              inlineCollapsed={collapsed}
             />
           </div>
         </>
@@ -169,52 +153,25 @@ export default function AdminLayout() {
 
   return (
     <Layout className="h-screen overflow-hidden">
-      {/* 桌面端：固定侧边栏 */}
-      {!isMobile && (
-        <Sider
-          width={220}
-          className="flex flex-col"
-          collapsible
-          collapsed={collapsed}
-          onCollapse={setCollapsed}
-          trigger={null}
-        >
-          {siderContent}
-        </Sider>
-      )}
-
-      {/* 移动端：抽屉菜单 */}
-      {isMobile && (
-        <Drawer
-          placement="left"
-          open={mobileDrawerOpen}
-          onClose={() => setMobileDrawerOpen(false)}
-          styles={{ body: { padding: 0, background: "#001529" } }}
-          size={220}
-        >
-          {siderContent}
-        </Drawer>
-      )}
+      <Sider
+        width={220}
+        className="flex flex-col"
+        collapsible
+        collapsed={collapsed}
+        onCollapse={setCollapsed}
+        trigger={null}
+      >
+        {siderContent}
+      </Sider>
 
       <Layout className="flex flex-col overflow-hidden bg-[#f5f5f5]">
         <Header className="h-12 px-4 bg-white flex items-center justify-between shrink-0 shadow-[0_2px_8px_rgba(0,0,0,0.06)] relative z-10">
           <div className="flex items-center gap-2 flex-1">
-            {/* 移动端：显示菜单按钮 */}
-            {isMobile && (
-              <Button
-                type="text"
-                icon={<MenuOutlined />}
-                onClick={() => setMobileDrawerOpen(true)}
-              />
-            )}
-            {/* 桌面端：显示折叠按钮 */}
-            {!isMobile && (
-              <Button
-                type="text"
-                icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-                onClick={() => setCollapsed(!collapsed)}
-              />
-            )}
+            <Button
+              type="text"
+              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              onClick={() => setCollapsed(!collapsed)}
+            />
             {!isInitialLoading && <LayoutBreadcrumb />}
           </div>
           <div className="flex justify-end items-center gap-3">
@@ -227,7 +184,7 @@ export default function AdminLayout() {
                 <Button>
                   <Space>
                     <UserOutlined />
-                    <span className="hidden sm:inline">{user?.username}</span>
+                    <span>{user?.username}</span>
                   </Space>
                 </Button>
               </Dropdown>
@@ -237,7 +194,7 @@ export default function AdminLayout() {
 
         {!isInitialLoading && <PageTabs />}
 
-        <Content className="m-2 sm:m-4 bg-white flex flex-col flex-1 overflow-hidden rounded-lg">
+        <Content className="m-4 bg-white flex flex-col flex-1 overflow-hidden rounded-lg">
           {isInitialLoading ? (
             <div className="flex-1 flex items-center justify-center">
               <Spin tip="加载中..." fullscreen />

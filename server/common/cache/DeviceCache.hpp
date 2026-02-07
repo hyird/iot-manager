@@ -51,57 +51,46 @@ public:
 
     /**
      * @brief 获取缓存的设备列表
+     *
+     * 并发安全：多个协程同时请求时，只有一个执行刷新，
+     * 其他协程通过 RefreshNotifier 零轮询等待刷新完成。
      */
     Task<std::vector<CachedDevice>> getDevices() {
-        auto now = std::chrono::steady_clock::now();
-
         {
             std::unique_lock lock(mutex_);
+            auto now = std::chrono::steady_clock::now();
             // 缓存有效，直接返回
             if (!devices_.empty() &&
                 std::chrono::duration_cast<std::chrono::seconds>(now - lastRefresh_).count() < CACHE_TTL_SECONDS) {
                 co_return devices_;
             }
 
-            // 如果已有协程正在刷新，等待其完成后返回缓存
-            if (refreshing_) {
-                // 释放锁后等待一段时间再重试
-            } else {
+            if (!refreshing_) {
+                // 本协程负责刷新
                 refreshing_ = true;
+                refreshNotifier_.reset();
+            } else {
+                // 已有协程在刷新，零轮询等待通知
+                lock.unlock();
+                co_await refreshNotifier_;
+                std::shared_lock readLock(mutex_);
+                co_return devices_;
             }
         }
 
-        // 等待其他协程刷新完成
-        while (true) {
-            {
-                std::unique_lock lock(mutex_);
-                if (!refreshing_) {
-                    // 其他协程已完成刷新，返回缓存
-                    co_return devices_;
-                }
-                // 检查是否是本协程负责刷新
-                if (!devices_.empty() &&
-                    std::chrono::duration_cast<std::chrono::seconds>(
-                        std::chrono::steady_clock::now() - lastRefresh_).count() < CACHE_TTL_SECONDS) {
-                    refreshing_ = false;
-                    co_return devices_;
-                }
-            }
-            // 本协程负责刷新
-            break;
-        }
-
-        // 执行刷新
+        // 本协程执行刷新
         try {
             co_await refreshCache();
         } catch (...) {
             std::unique_lock lock(mutex_);
             refreshing_ = false;
+            refreshNotifier_.notify();
             throw;
         }
 
         std::unique_lock lock(mutex_);
         refreshing_ = false;
+        refreshNotifier_.notify();
         co_return devices_;
     }
 
@@ -290,13 +279,14 @@ public:
 
     /**
      * @brief 通过 linkId 同步获取该链路下所有设备（心跳/注册包匹配用）
+     * 返回值拷贝而非指针，避免锁释放后缓存刷新导致悬垂指针
      */
-    std::vector<const CachedDevice*> getDevicesByLinkIdSync(int linkId) const {
+    std::vector<CachedDevice> getDevicesByLinkIdSync(int linkId) const {
         std::shared_lock lock(mutex_);
-        std::vector<const CachedDevice*> result;
+        std::vector<CachedDevice> result;
         for (const auto& device : devices_) {
             if (device.linkId == linkId) {
-                result.push_back(&device);
+                result.push_back(device);
             }
         }
         return result;
@@ -348,13 +338,76 @@ public:
 private:
     DeviceCache() = default;
 
+    /**
+     * @brief 零轮询协程通知器
+     *
+     * 等待的协程挂起后，在 notify() 时通过各自的 EventLoop 恢复。
+     * 避免 sleep 轮询，实现真正的零 CPU 等待。
+     */
+    class RefreshNotifier {
+    public:
+        struct Awaiter {
+            RefreshNotifier& notifier;
+
+            bool await_ready() const noexcept {
+                return notifier.notified_.load(std::memory_order_acquire);
+            }
+
+            bool await_suspend(std::coroutine_handle<> handle) {
+                auto* loop = trantor::EventLoop::getEventLoopOfCurrentThread();
+                std::lock_guard lock(notifier.waitersMutex_);
+                if (notifier.notified_.load(std::memory_order_acquire)) {
+                    return false;  // 已通知，不挂起
+                }
+                notifier.waiters_.push_back({loop, handle});
+                return true;  // 挂起等待
+            }
+
+            void await_resume() const noexcept {}
+        };
+
+        Awaiter operator co_await() { return Awaiter{*this}; }
+
+        /** 重置通知状态（新一轮刷新开始时调用） */
+        void reset() {
+            notified_.store(false, std::memory_order_release);
+            std::lock_guard lock(waitersMutex_);
+            waiters_.clear();
+        }
+
+        /** 通知所有等待的协程（刷新完成时调用） */
+        void notify() {
+            std::lock_guard lock(waitersMutex_);
+            notified_.store(true, std::memory_order_release);
+            for (auto& [loop, handle] : waiters_) {
+                if (loop) {
+                    loop->queueInLoop([h = handle]() { h.resume(); });
+                } else {
+                    handle.resume();
+                }
+            }
+            waiters_.clear();
+        }
+
+    private:
+        struct Waiter {
+            trantor::EventLoop* loop;
+            std::coroutine_handle<> handle;
+        };
+
+        std::atomic<bool> notified_{false};
+        std::mutex waitersMutex_;
+        std::vector<Waiter> waiters_;
+    };
+
     static constexpr int CACHE_TTL_SECONDS = 60;  // 缓存有效期 60 秒
 
     std::vector<CachedDevice> devices_;
     std::map<int, size_t> deviceIndex_;  // deviceId -> index in devices_
     std::chrono::steady_clock::time_point lastRefresh_;
     mutable std::shared_mutex mutex_;
-    bool refreshing_ = false;  // 防止多协程同时刷新缓存
+    bool refreshing_ = false;       // 防止多协程同时刷新缓存
+    RefreshNotifier refreshNotifier_;  // 零轮询等待通知
 
 public:
     // ==================== 同步访问接口（TcpIoPool 线程使用） ====================

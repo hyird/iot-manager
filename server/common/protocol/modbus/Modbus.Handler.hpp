@@ -6,6 +6,7 @@
 #include <deque>
 #include "common/protocol/ParsedResult.hpp"
 #include "common/database/DatabaseService.hpp"
+#include "common/utils/AppException.hpp"
 #include "common/cache/DeviceCache.hpp"
 #include "common/cache/DeviceConnectionCache.hpp"
 #include "common/cache/RealtimeDataCache.hpp"
@@ -202,19 +203,20 @@ public:
                 }
             }
             if (!regDef) {
-                LOG_WARN << "[Modbus] writeRegister: register not found, id=" << registerId;
-                continue;
+                throw ValidationException("寄存器未找到: " + registerId);
             }
             if (!isWritable(regDef->registerType)) {
-                LOG_WARN << "[Modbus] writeRegister: register not writable, id=" << registerId;
-                continue;
+                throw ValidationException("寄存器「" + regDef->name + "」不可写（类型: "
+                    + registerTypeToString(regDef->registerType) + "）");
             }
 
             double value = 0.0;
             try { value = std::stod(valueStr); } catch (...) {
-                LOG_WARN << "[Modbus] writeRegister: invalid value: " << valueStr;
-                continue;
+                throw ValidationException("寄存器「" + regDef->name + "」的值不是有效数字: " + valueStr);
             }
+
+            // 数据类型范围检查
+            validateModbusValue(value, regDef->dataType, regDef->name);
 
             WriteEntry entry;
             entry.address = regDef->address;
@@ -639,7 +641,11 @@ private:
         const auto& config = device.protocolConfig;
         ctx.byteOrder = parseByteOrder(config.get("byteOrder", "BIG_ENDIAN").asString());
         ctx.readInterval = config.get("readInterval", DEFAULT_READ_INTERVAL).asInt();
-        if (ctx.readInterval < 1) ctx.readInterval = 1;
+        if (ctx.readInterval < 1 || ctx.readInterval > 3600) {
+            LOG_WARN << "[Modbus] Invalid readInterval=" << ctx.readInterval
+                     << " for device " << device.name << ", using default";
+            ctx.readInterval = DEFAULT_READ_INTERVAL;
+        }
 
         // 解析寄存器列表
         if (config.isMember("registers") && config["registers"].isArray()) {
@@ -651,6 +657,16 @@ private:
                 def.address = static_cast<uint16_t>(reg.get("address", 0).asUInt());
                 def.dataType = parseDataType(reg.get("dataType", "UINT16").asString());
                 def.quantity = static_cast<uint16_t>(reg.get("quantity", 1).asUInt());
+
+                // Modbus 协议限制：线圈/离散输入最多 2000 个，寄存器最多 125 个
+                uint16_t maxQuantity = (def.registerType == RegisterType::COIL ||
+                                        def.registerType == RegisterType::DISCRETE_INPUT) ? 2000 : 125;
+                if (def.quantity < 1 || def.quantity > maxQuantity) {
+                    LOG_WARN << "[Modbus] Invalid quantity=" << def.quantity
+                             << " for register " << def.name << ", clamping to [1," << maxQuantity << "]";
+                    def.quantity = std::clamp(def.quantity, static_cast<uint16_t>(1), maxQuantity);
+                }
+
                 def.unit = reg.get("unit", "").asString();
                 def.remark = reg.get("remark", "").asString();
                 def.decimals = reg.get("decimals", -1).asInt();
@@ -1130,6 +1146,57 @@ private:
         if (count > 0) {
             LOG_INFO << "[Modbus] Marked " << count << " device(s) offline, client=" << clientAddr;
             ResourceVersion::instance().incrementVersion("device");
+        }
+    }
+
+    // ==================== 值校验 ====================
+
+    /**
+     * @brief 校验写入值是否在数据类型允许范围内
+     */
+    static void validateModbusValue(double value, DataType dataType, const std::string& name) {
+        switch (dataType) {
+            case DataType::BOOL:
+                if (value != 0.0 && value != 1.0) {
+                    throw ValidationException("寄存器「" + name + "」BOOL 类型只能为 0 或 1");
+                }
+                break;
+            case DataType::INT16:
+                if (value < -32768.0 || value > 32767.0) {
+                    throw ValidationException("寄存器「" + name + "」INT16 范围 -32768 ~ 32767");
+                }
+                break;
+            case DataType::UINT16:
+                if (value < 0.0 || value > 65535.0) {
+                    throw ValidationException("寄存器「" + name + "」UINT16 范围 0 ~ 65535");
+                }
+                break;
+            case DataType::INT32:
+                if (value < -2147483648.0 || value > 2147483647.0) {
+                    throw ValidationException("寄存器「" + name + "」INT32 范围 -2147483648 ~ 2147483647");
+                }
+                break;
+            case DataType::UINT32:
+                if (value < 0.0 || value > 4294967295.0) {
+                    throw ValidationException("寄存器「" + name + "」UINT32 范围 0 ~ 4294967295");
+                }
+                break;
+            case DataType::FLOAT32:
+                if (!std::isfinite(static_cast<float>(value))) {
+                    throw ValidationException("寄存器「" + name + "」FLOAT32 值超出范围");
+                }
+                break;
+            case DataType::INT64:
+            case DataType::UINT64:
+                if (dataType == DataType::UINT64 && value < 0.0) {
+                    throw ValidationException("寄存器「" + name + "」UINT64 不能为负数");
+                }
+                break;
+            case DataType::DOUBLE:
+                if (!std::isfinite(value)) {
+                    throw ValidationException("寄存器「" + name + "」DOUBLE 值不合法");
+                }
+                break;
         }
     }
 

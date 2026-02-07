@@ -17,6 +17,7 @@ import { useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { StatusTag } from "@/components/StatusTag";
 import { useDebounceFn, usePermission } from "@/hooks";
+import { useWsStatus } from "@/providers";
 import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave, usePublicIp } from "@/services";
 import type { Link } from "@/types";
 
@@ -72,10 +73,11 @@ const LinkPage = () => {
   // 链路枚举值（模式和协议列表）
   const { data: linkEnums } = useLinkEnums({ enabled: canQuery });
 
-  // 链路列表（每 5 秒刷新一次，实时更新连接状态）
+  // 链路列表（WS 连接时禁用轮询，断开时回退到 10s 轮询）
+  const { connected: wsConnected } = useWsStatus();
   const { data: linkPage, isLoading: loadingLinks } = useLinkList(
     { page: pagination.page, pageSize: pagination.pageSize, keyword: keyword || undefined },
-    { enabled: canQuery, refetchInterval: 5000 }
+    { enabled: canQuery, refetchInterval: wsConnected ? false : 10000 }
   );
 
   // 保存 mutation
@@ -270,7 +272,7 @@ const LinkPage = () => {
               placeholder="链路名称 / IP地址"
               onChange={(e) => debouncedSearch(e.target.value)}
               onSearch={doSearch}
-              className="w-full sm:w-60"
+              className="w-60"
             />
             {canAdd && (
               <Button type="primary" onClick={openCreateModal}>

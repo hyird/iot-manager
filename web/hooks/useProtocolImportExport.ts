@@ -24,6 +24,7 @@ interface ImportResult {
   total: number;
   success: number;
   renamed: string[];
+  failed: { name: string; reason: string }[];
 }
 
 /** 生成不冲突的名称 */
@@ -93,11 +94,29 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
           return;
         }
 
-        // 校验每项必要字段
+        // 校验每项必要字段和 config 结构
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
           if (!item.name || !item.config) {
             message.error(`第 ${i + 1} 项缺少 name 或 config 字段`);
+            return;
+          }
+          if (typeof item.config !== "object" || Array.isArray(item.config)) {
+            message.error(`第 ${i + 1} 项 config 必须是对象`);
+            return;
+          }
+          // 协议特定结构校验
+          const cfg = item.config as Record<string, unknown>;
+          if (protocol === "SL651" && !Array.isArray(cfg.funcs)) {
+            message.error(`第 ${i + 1} 项缺少 config.funcs 数组（SL651 必需）`);
+            return;
+          }
+          if (
+            protocol === "Modbus" &&
+            cfg.registers !== undefined &&
+            !Array.isArray(cfg.registers)
+          ) {
+            message.error(`第 ${i + 1} 项 config.registers 必须是数组`);
             return;
           }
         }
@@ -106,7 +125,12 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
         const existingList = await protocolApi.getList({ protocol, pageSize: 999 });
         const existingNames = new Set(existingList.list.map((c) => c.name));
 
-        const result: ImportResult = { total: items.length, success: 0, renamed: [] };
+        const result: ImportResult = {
+          total: items.length,
+          success: 0,
+          renamed: [],
+          failed: [],
+        };
 
         for (const item of items) {
           const finalName = resolveNameConflict(item.name, existingNames);
@@ -116,7 +140,7 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
 
           try {
             await protocolApi.create({
-              protocol: item.protocol ?? protocol,
+              protocol, // 强制使用当前页面协议类型，忽略文件中的 protocol
               name: finalName,
               enabled: item.enabled ?? true,
               config: item.config,
@@ -124,8 +148,11 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
             });
             existingNames.add(finalName);
             result.success++;
-          } catch {
-            // 单项导入失败，继续处理下一项
+          } catch (e) {
+            result.failed.push({
+              name: item.name,
+              reason: e instanceof Error ? e.message : "未知错误",
+            });
           }
         }
 
@@ -138,7 +165,10 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
             result.renamed.length > 0 ? `\n重命名：${result.renamed.join("、")}` : "";
           message.success(`成功导入 ${result.success} 条配置${renameInfo}`);
         } else {
-          message.warning(`导入完成：${result.success}/${result.total} 成功`);
+          const failInfo = result.failed.map((f) => `${f.name}(${f.reason})`).join("、");
+          message.warning(
+            `导入完成：${result.success}/${result.total} 成功${failInfo ? `，失败：${failInfo}` : ""}`
+          );
         }
       } catch {
         message.error("导入失败，请检查文件格式");

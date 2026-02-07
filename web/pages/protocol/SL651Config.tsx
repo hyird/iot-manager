@@ -22,7 +22,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { useMemo, useRef, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
-import { usePermission, useProtocolImportExport, useResponsive } from "@/hooks";
+import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { SL651 } from "@/types";
 import {
@@ -47,8 +47,6 @@ interface FuncWithElements extends SL651.Func {
 }
 
 const SL651ConfigPage = () => {
-  const { isMobile } = useResponsive();
-
   // 权限检查
   const canQuery = usePermission("iot:protocol:query");
   const canAdd = usePermission("iot:protocol:add");
@@ -109,8 +107,11 @@ const SL651ConfigPage = () => {
 
   const handleDeleteDeviceType = async () => {
     if (!activeTypeId) return;
+    // 删除前记录下一个可选中的类型
+    const idx = types.findIndex((t) => t.id === activeTypeId);
+    const nextType = types[idx + 1] ?? types[idx - 1];
     await deleteMutation.mutateAsync(activeTypeId);
-    setSelectedTypeId(undefined);
+    setSelectedTypeId(nextType?.id);
   };
 
   // ========== 功能码操作 ==========
@@ -314,9 +315,9 @@ const SL651ConfigPage = () => {
 
   return (
     <PageContainer title="SL651配置">
-      <div className={`h-full ${isMobile ? "flex flex-col gap-3" : "flex"}`}>
+      <div className="h-full flex">
         {/* 左侧：设备类型列表 */}
-        <div className={isMobile ? "shrink-0 max-h-[40%]" : "w-[360px] shrink-0 pr-3 h-full"}>
+        <div className="w-[360px] shrink-0 pr-3 h-full">
           <Card
             title="设备类型"
             className="h-full flex flex-col"
@@ -418,7 +419,7 @@ const SL651ConfigPage = () => {
         </div>
 
         {/* 右侧：功能码配置 */}
-        <div className={isMobile ? "flex-1 min-h-0" : "flex-1 min-w-0 h-full"}>
+        <div className="flex-1 min-w-0 h-full">
           <Card
             title={activeTypeId ? "功能码配置" : "请选择设备类型"}
             className="h-full flex flex-col"

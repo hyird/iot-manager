@@ -2,12 +2,14 @@
 
 #include "common/database/DatabaseService.hpp"
 #include "common/network/TcpLinkManager.hpp"
+#include "common/network/WebSocketManager.hpp"
 #include "common/cache/DeviceCache.hpp"
 #include "common/cache/DeviceConnectionCache.hpp"
 #include "common/cache/RealtimeDataCache.hpp"
 #include "common/cache/ResourceVersion.hpp"
 #include "common/domain/EventBus.hpp"
 #include "common/utils/Constants.hpp"
+#include "common/utils/AppException.hpp"
 #include "modules/device/domain/CommandRepository.hpp"
 #include "modules/device/domain/Events.hpp"
 #include "modules/protocol/domain/Events.hpp"
@@ -15,12 +17,71 @@
 #include "modbus/Modbus.hpp"
 
 /**
+ * @brief 指令等待的共享状态（零轮询协程挂起/唤醒）
+ *
+ * 协程挂起后，由以下两种方式之一精确唤醒：
+ * - 应答回调 resolve() → queueInLoop → handle.resume()（跨线程安全）
+ * - 超时定时器 → handle.resume()（同线程，定时器在协程所在 EventLoop）
+ *
+ * resolved atomic 保证只唤醒一次，避免 double-resume。
+ */
+struct CommandWaitState {
+    trantor::EventLoop* loop = nullptr;
+    std::coroutine_handle<> handle;
+    trantor::TimerId timerId{0};
+    std::atomic<bool> resolved{false};
+    bool result = false;
+};
+
+/**
+ * @brief 自定义 co_await Awaiter：零轮询指令等待
+ *
+ * 使用方式：bool success = co_await CommandAwaiter{state, timeoutMs};
+ */
+struct CommandAwaiter {
+    std::shared_ptr<CommandWaitState> state;
+    int timeoutMs;
+
+    bool await_ready() const noexcept {
+        // 极快响应：挂起前已有应答，跳过挂起
+        return state->resolved.load(std::memory_order_acquire);
+    }
+
+    bool await_suspend(std::coroutine_handle<> h) {
+        state->handle = h;
+
+        // 注册超时定时器（在协程所在的 EventLoop 上触发）
+        std::weak_ptr<CommandWaitState> weak = state;
+        state->timerId = state->loop->runAfter(
+            static_cast<double>(timeoutMs) / 1000.0,
+            [weak]() {
+                if (auto s = weak.lock()) {
+                    if (!s->resolved.exchange(true, std::memory_order_acq_rel)) {
+                        s->result = false;  // 超时
+                        s->handle.resume();  // 定时器在 loop 线程，直接唤醒
+                    }
+                }
+            }
+        );
+
+        // 双重检查：挂起前 resolve() 可能已从 TcpIoPool 被调用
+        if (state->resolved.load(std::memory_order_acquire)) {
+            state->loop->invalidateTimer(state->timerId);
+            return false;  // 取消挂起，直接进 await_resume
+        }
+        return true;  // 正式挂起
+    }
+
+    bool await_resume() const noexcept { return state->result; }
+};
+
+/**
  * @brief 待应答的指令
  */
 struct PendingCommand {
     std::string deviceCode;
     std::string funcCode;
-    std::promise<bool> promise;
+    std::shared_ptr<CommandWaitState> waitState;
     std::chrono::steady_clock::time_point expireTime;
     int64_t downCommandId;  // 下行指令的数据库记录 ID
     int userId;             // 下发用户 ID
@@ -29,11 +90,20 @@ struct PendingCommand {
 /**
  * @brief 协议分发服务
  * 负责将链路接收的数据路由到对应的协议解析器
+ *
+ * 写入优化：
+ * - 报文解析结果通过 BatchWriter 攒批（100 条或 200ms 触发）
+ * - 批量 INSERT 减少 DB 往返，ResourceVersion 每批只递增一次
  */
 class ProtocolDispatcher {
 public:
     template<typename T = void>
     using Task = drogon::Task<T>;
+
+    /** 攒批阈值：达到此数量立即 flush */
+    static constexpr size_t BATCH_SIZE = 100;
+    /** 攒批定时器间隔（秒）：超过此时间强制 flush */
+    static constexpr double BATCH_FLUSH_INTERVAL_SEC = 0.2;
 
     static ProtocolDispatcher& instance() {
         static ProtocolDispatcher inst;
@@ -86,8 +156,20 @@ public:
                     DeviceConnectionCache::instance().removeByClient(linkId, clientAddr);
                 }
                 ResourceVersion::instance().incrementVersion("link");
+
+                // WebSocket 推送连接状态变更
+                if (WebSocketManager::instance().connectionCount() > 0) {
+                    Json::Value data;
+                    data["linkId"] = linkId;
+                    data["clientAddr"] = clientAddr;
+                    data["connected"] = connected;
+                    WebSocketManager::instance().broadcast("link:connection", data);
+                }
             }
         );
+
+        // 指定批量写入 IO 线程（所有报文解析结果汇聚到此线程攒批）
+        batchLoop_ = drogon::app().getIOLoop(0);
 
         // 创建 Modbus 处理器并初始化
         modbusHandler_ = std::make_unique<modbus::ModbusHandler>();
@@ -185,35 +267,35 @@ private:
         auto devices = DeviceCache::instance().getDevicesByLinkIdSync(linkId);
 
         // 1. 注册包匹配（ON 模式：智能判断完整匹配或前缀匹配）
-        for (const auto* dev : devices) {
-            if (dev->registrationMode != "OFF" && !dev->registrationBytes.empty()) {
-                if (bytes == dev->registrationBytes) {
+        for (const auto& dev : devices) {
+            if (dev.registrationMode != "OFF" && !dev.registrationBytes.empty()) {
+                if (bytes == dev.registrationBytes) {
                     // 完整匹配：整包就是注册包
-                    DeviceConnectionCache::instance().registerConnection(dev->deviceCode, linkId, clientAddr);
+                    DeviceConnectionCache::instance().registerConnection(dev.deviceCode, linkId, clientAddr);
                     LOG_INFO << "[Link " << linkId << "] Registration matched device "
-                             << dev->deviceCode << " from " << clientAddr;
+                             << dev.deviceCode << " from " << clientAddr;
                     return;  // 注册包不传给协议解析器
                 }
-                if (bytes.size() > dev->registrationBytes.size() &&
-                    std::equal(dev->registrationBytes.begin(), dev->registrationBytes.end(), bytes.begin())) {
+                if (bytes.size() > dev.registrationBytes.size() &&
+                    std::equal(dev.registrationBytes.begin(), dev.registrationBytes.end(), bytes.begin())) {
                     // 前缀匹配：数据以注册包开头
-                    DeviceConnectionCache::instance().registerConnection(dev->deviceCode, linkId, clientAddr);
+                    DeviceConnectionCache::instance().registerConnection(dev.deviceCode, linkId, clientAddr);
                     LOG_INFO << "[Link " << linkId << "] Registration prefix matched device "
-                             << dev->deviceCode << " from " << clientAddr;
+                             << dev.deviceCode << " from " << clientAddr;
                     // 剥离前缀，继续协议解析
-                    bytes.erase(bytes.begin(), bytes.begin() + static_cast<ptrdiff_t>(dev->registrationBytes.size()));
+                    bytes.erase(bytes.begin(), bytes.begin() + static_cast<ptrdiff_t>(dev.registrationBytes.size()));
                     break;
                 }
             }
         }
 
         // 2. 心跳包匹配
-        for (const auto* dev : devices) {
-            if (dev->heartbeatMode != "OFF" && !dev->heartbeatBytes.empty()) {
-                if (bytes == dev->heartbeatBytes) {
-                    DeviceConnectionCache::instance().registerConnection(dev->deviceCode, linkId, clientAddr);
+        for (const auto& dev : devices) {
+            if (dev.heartbeatMode != "OFF" && !dev.heartbeatBytes.empty()) {
+                if (bytes == dev.heartbeatBytes) {
+                    DeviceConnectionCache::instance().registerConnection(dev.deviceCode, linkId, clientAddr);
                     LOG_DEBUG << "[Link " << linkId << "] Heartbeat matched device "
-                              << dev->deviceCode << " from " << clientAddr;
+                              << dev.deviceCode << " from " << clientAddr;
                     return;  // 心跳包不传给协议解析器
                 }
             }
@@ -221,7 +303,7 @@ private:
 
         // === 注册包拦截：配置了注册包的链路，未注册的连接不允许通过 ===
         bool requiresRegistration = std::any_of(devices.begin(), devices.end(),
-            [](const auto* dev) { return dev->registrationMode != "OFF" && !dev->registrationBytes.empty(); });
+            [](const auto& dev) { return dev.registrationMode != "OFF" && !dev.registrationBytes.empty(); });
         if (requiresRegistration &&
             !DeviceConnectionCache::instance().isClientRegistered(linkId, clientAddr)) {
             LOG_WARN << "[Link " << linkId << "] Unregistered client " << clientAddr
@@ -246,15 +328,10 @@ private:
             LOG_WARN << "[ProtocolDispatcher] 未知协议: " << protocol;
         }
 
-        // === 解析完成，投递到 Drogon IO 做 DB 写入 ===
+        // === 解析完成，投递到批量写入线程攒批 ===
         if (!results.empty()) {
-            auto* ioLoop = getNextDrogonLoop();
-            ioLoop->queueInLoop([this, results = std::move(results)]() {
-                drogon::async_run([this, results = std::move(results)]() -> Task<> {
-                    for (const auto& r : results) {
-                        co_await saveParsedResult(r);
-                    }
-                });
+            batchLoop_->queueInLoop([this, results = std::move(results)]() mutable {
+                enqueueBatchResults(std::move(results));
             });
         }
     }
@@ -271,8 +348,121 @@ private:
         return drogon::app().getIOLoop(idx);
     }
 
+    // ==================== 批量写入（BatchWriter）====================
+
     /**
-     * @brief 保存解析结果到数据库（Drogon IO 线程执行）
+     * @brief 将解析结果加入攒批队列（仅在 batchLoop_ 线程调用）
+     *
+     * 触发条件：队列达到 BATCH_SIZE 立即 flush，否则 200ms 定时器 flush
+     */
+    void enqueueBatchResults(std::vector<ParsedFrameResult>&& results) {
+        for (auto& r : results) {
+            pendingBatch_.push_back(std::move(r));
+        }
+
+        // 启动定时器（首次入队时）
+        if (!batchTimerActive_ && !pendingBatch_.empty()) {
+            batchTimerActive_ = true;
+            batchTimerId_ = batchLoop_->runAfter(BATCH_FLUSH_INTERVAL_SEC, [this]() {
+                batchTimerActive_ = false;
+                flushBatch();
+            });
+        }
+
+        // 达到阈值立即 flush
+        if (pendingBatch_.size() >= BATCH_SIZE) {
+            if (batchTimerActive_) {
+                batchLoop_->invalidateTimer(batchTimerId_);
+                batchTimerActive_ = false;
+            }
+            flushBatch();
+        }
+    }
+
+    /**
+     * @brief flush 攒批队列（仅在 batchLoop_ 线程调用）
+     */
+    void flushBatch() {
+        if (pendingBatch_.empty()) return;
+
+        std::vector<ParsedFrameResult> batch;
+        batch.swap(pendingBatch_);
+
+        drogon::async_run([this, batch = std::move(batch)]() -> Task<> {
+            co_await saveBatchResults(batch);
+        });
+    }
+
+    /**
+     * @brief 批量保存解析结果到数据库
+     * - 多值 INSERT 减少 DB 往返
+     * - ResourceVersion 每批只递增一次
+     * - 失败时回退到逐条写入
+     */
+    Task<void> saveBatchResults(const std::vector<ParsedFrameResult>& batch) {
+        // MSVC 不支持 catch 中 co_await，用标志位重构
+        bool batchFailed = false;
+        try {
+            // 1. 构建批量写入条目
+            std::vector<CommandRepository::SaveItem> items;
+            items.reserve(batch.size());
+            for (const auto& r : batch) {
+                items.push_back({r.deviceId, r.linkId, r.protocol, r.data, r.reportTime});
+            }
+
+            // 2. 批量 INSERT
+            auto ids = co_await CommandRepository::saveBatch(items);
+
+            // 3. 更新实时数据缓存 + 处理指令应答
+            for (size_t i = 0; i < batch.size(); ++i) {
+                const auto& r = batch[i];
+                RealtimeDataCache::instance().update(r.deviceId, r.funcCode, r.data, r.reportTime);
+
+                if (r.commandResponse && i < ids.size()) {
+                    notifyCommandResponse(
+                        r.commandResponse->deviceCode,
+                        r.commandResponse->funcCode,
+                        r.commandResponse->success,
+                        ids[i]
+                    );
+                }
+            }
+
+            // 4. 资源版本号：整批只递增一次
+            ResourceVersion::instance().incrementVersion("device");
+
+            // 5. WebSocket 推送实时数据
+            if (WebSocketManager::instance().connectionCount() > 0) {
+                Json::Value updates(Json::arrayValue);
+                for (const auto& r : batch) {
+                    Json::Value item;
+                    item["deviceId"] = r.deviceId;
+                    item["funcCode"] = r.funcCode;
+                    item["data"] = r.data;
+                    item["reportTime"] = r.reportTime;
+                    updates.append(std::move(item));
+                }
+                Json::Value payload;
+                payload["updates"] = std::move(updates);
+                WebSocketManager::instance().broadcast("device:realtime", payload);
+            }
+
+            LOG_TRACE << "[ProtocolDispatcher] Batch saved: " << batch.size() << " records";
+        } catch (const std::exception& e) {
+            LOG_ERROR << "[ProtocolDispatcher] saveBatchResults failed: " << e.what()
+                      << ", falling back to individual saves";
+            batchFailed = true;
+        }
+        // 回退到逐条写入（catch 外执行，避免 MSVC co_await in catch 限制）
+        if (batchFailed) {
+            for (const auto& r : batch) {
+                co_await saveParsedResult(r);
+            }
+        }
+    }
+
+    /**
+     * @brief 保存解析结果到数据库（逐条，作为批量写入的回退路径）
      */
     Task<void> saveParsedResult(const ParsedFrameResult& result) {
         try {
@@ -587,6 +777,8 @@ public:
                            const Json::Value& elements, int userId, int deviceId = 0,
                            int timeoutMs = 10000) {
         int64_t downCommandId = 0;
+        std::string validationError;
+        std::string generalError;
         try {
             // 获取协议类型（从缓存同步读取）
             std::string protocol = DeviceCache::instance().getProtocolByLinkIdSync(linkId);
@@ -634,9 +826,9 @@ public:
                 // 优先用 deviceId 定位，fallback 到 deviceCode 匹配
                 if (deviceId == 0) {
                     auto devices = DeviceCache::instance().getDevicesByLinkIdSync(linkId);
-                    for (const auto* dev : devices) {
-                        if (!deviceCode.empty() && dev->deviceCode == deviceCode) {
-                            deviceId = dev->id;
+                    for (const auto& dev : devices) {
+                        if (!deviceCode.empty() && dev.deviceCode == deviceCode) {
+                            deviceId = dev.id;
                             break;
                         }
                     }
@@ -671,17 +863,27 @@ public:
                 cmdKey = deviceCode.empty() ? ("modbus:" + std::to_string(deviceId)) : deviceCode;
             }
 
-            // 创建待应答记录
-            std::promise<bool> responsePromise;
-            std::future<bool> responseFuture = responsePromise.get_future();
+            // 创建待应答记录（拒绝并发：同一设备同时只允许一条待应答指令）
+            auto waitState = std::make_shared<CommandWaitState>();
+            waitState->loop = trantor::EventLoop::getEventLoopOfCurrentThread();
 
             {
                 std::lock_guard<std::mutex> lock(pendingMutex_);
-                pendingCommands_.erase(cmdKey);
+                auto existIt = pendingCommands_.find(cmdKey);
+                if (existIt != pendingCommands_.end()) {
+                    // 检查是否已过期
+                    if (std::chrono::steady_clock::now() < existIt->second.expireTime) {
+                        LOG_WARN << "[ProtocolDispatcher] 设备 " << cmdKey << " 存在未完成的指令，拒绝并发下发";
+                        co_await updateDownCommandStatus(downCommandId, "SEND_FAILED", "设备有未完成的指令");
+                        co_return false;
+                    }
+                    // 已过期，清理旧指令
+                    pendingCommands_.erase(existIt);
+                }
                 PendingCommand cmd;
                 cmd.deviceCode = cmdKey;
                 cmd.funcCode = funcCode;
-                cmd.promise = std::move(responsePromise);
+                cmd.waitState = waitState;
                 cmd.expireTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
                 cmd.downCommandId = downCommandId;
                 cmd.userId = userId;
@@ -691,28 +893,10 @@ public:
             LOG_INFO << "[ProtocolDispatcher] 指令已发送，等待应答: linkId=" << linkId
                      << ", device=" << cmdKey << ", func=" << funcCode;
 
-            // 等待应答（使用协程轮询方式，每 100ms 检查一次）
-            constexpr int pollIntervalMs = 100;
-            int elapsedMs = 0;
-            bool success = false;
+            // 零轮询等待：协程挂起，由应答回调或超时定时器精确唤醒
+            bool success = co_await CommandAwaiter{waitState, timeoutMs};
 
-            while (elapsedMs < timeoutMs) {
-                // 检查 future 是否就绪
-                auto status = responseFuture.wait_for(std::chrono::milliseconds(0));
-                if (status == std::future_status::ready) {
-                    success = responseFuture.get();
-                    break;
-                }
-
-                // 协程休眠，让出执行权
-                co_await drogon::sleepCoro(
-                    trantor::EventLoop::getEventLoopOfCurrentThread(),
-                    std::chrono::milliseconds(pollIntervalMs)
-                );
-                elapsedMs += pollIntervalMs;
-            }
-
-            // 清理（如果超时，promise 未被消费）
+            // 清理
             {
                 std::lock_guard<std::mutex> lock(pendingMutex_);
                 pendingCommands_.erase(cmdKey);
@@ -727,10 +911,29 @@ public:
             }
 
             co_return success;
+        } catch (const ValidationException& e) {
+            // MSVC 不支持 catch 中 co_await，保存异常信息后在 catch 外处理
+            LOG_WARN << "[ProtocolDispatcher] 指令校验失败: " << e.what();
+            validationError = e.what();
         } catch (const std::exception& e) {
             LOG_ERROR << "[ProtocolDispatcher] 下发指令异常: " << e.what();
+            generalError = e.what();
+        }
+
+        // catch 外执行异步操作
+        if (!validationError.empty()) {
+            if (downCommandId > 0) {
+                co_await updateDownCommandStatus(downCommandId, "SEND_FAILED", validationError);
+            }
+            throw ValidationException(validationError);
+        }
+        if (!generalError.empty()) {
+            if (downCommandId > 0) {
+                co_await updateDownCommandStatus(downCommandId, "SEND_FAILED", generalError);
+            }
             co_return false;
         }
+        co_return false;  // 不应到达此处
     }
 
     /**
@@ -742,6 +945,7 @@ public:
      */
     void notifyCommandResponse(const std::string& deviceCode, const std::string& funcCode, bool success, int64_t responseId) {
         int64_t downCommandId = 0;
+        std::shared_ptr<CommandWaitState> waitState;
 
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
@@ -751,17 +955,25 @@ public:
                 if (it->second.funcCode == funcCode ||
                     funcCode == sl651::FuncCodes::ACK_OK ||
                     funcCode == sl651::FuncCodes::ACK_ERR) {
-                    try {
-                        downCommandId = it->second.downCommandId;
-                        it->second.promise.set_value(success);
-                        LOG_DEBUG << "[ProtocolDispatcher] 指令应答已处理: device=" << deviceCode
-                                  << ", sentFunc=" << it->second.funcCode
-                                  << ", respFunc=" << funcCode << ", success=" << success;
-                    } catch (const std::future_error&) {
-                        // promise 已被设置，忽略
-                    }
-                    pendingCommands_.erase(it);
+                    downCommandId = it->second.downCommandId;
+                    waitState = it->second.waitState;
+                    LOG_DEBUG << "[ProtocolDispatcher] 指令应答已处理: device=" << deviceCode
+                              << ", sentFunc=" << it->second.funcCode
+                              << ", respFunc=" << funcCode << ", success=" << success;
+                    // 不 erase：让 sendCommand 的清理逻辑统一处理
                 }
+            }
+        }
+
+        // 锁外唤醒协程（notifyCommandResponse 从 TcpIoPool 线程调用，
+        // 必须 queueInLoop 到协程所在的 Drogon EventLoop 唤醒）
+        if (waitState) {
+            if (!waitState->resolved.exchange(true, std::memory_order_acq_rel)) {
+                waitState->result = success;
+                waitState->loop->queueInLoop([waitState]() {
+                    waitState->loop->invalidateTimer(waitState->timerId);
+                    waitState->handle.resume();
+                });
             }
         }
 
@@ -780,6 +992,12 @@ private:
     std::unique_ptr<sl651::SL651Parser> sl651Parser_;
     std::unique_ptr<modbus::ModbusHandler> modbusHandler_;
     std::atomic<size_t> ioLoopIndex_{0};  // 轮询 IO 线程索引
+
+    // 批量写入（仅在 batchLoop_ 线程访问，无需锁）
+    trantor::EventLoop* batchLoop_ = nullptr;
+    std::vector<ParsedFrameResult> pendingBatch_;
+    trantor::TimerId batchTimerId_{0};
+    bool batchTimerActive_ = false;
 
     // 待应答指令
     std::map<std::string, PendingCommand> pendingCommands_;

@@ -52,16 +52,13 @@ public:
     /**
      * @brief 创建链路（事件处理器自动启动 TCP 连接）
      */
-    Task<Json::Value> create(const Json::Value& data) {
+    Task<void> create(const Json::Value& data) {
         auto link = Link::create(data);
 
         link.require(Link::nameUnique)
             .require(Link::endpointUnique);
 
         co_await link.save();
-
-        // 返回创建后的详情
-        co_return co_await detail(link.id());
     }
 
     /**

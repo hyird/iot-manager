@@ -17,6 +17,10 @@ export default defineConfig({
         target: "http://127.0.0.1:3000",
         changeOrigin: true,
       },
+      "/ws": {
+        target: "ws://127.0.0.1:3000",
+        ws: true,
+      },
     },
   },
   resolve: {
@@ -33,7 +37,7 @@ export default defineConfig({
       output: {
         inlineDynamicImports: true,
         entryFileNames: "assets/app.js",
-        assetFileNames: "assets/app.[ext]"
+        assetFileNames: "assets/app.[ext]",
       },
     },
   },

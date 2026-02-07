@@ -2,6 +2,7 @@
 
 #include "SL651.Types.hpp"
 #include "SL651.Utils.hpp"
+#include "common/utils/AppException.hpp"
 
 namespace sl651 {
 
@@ -47,10 +48,23 @@ public:
             // 要素值
             std::vector<uint8_t> valueBytes;
             if (elem.encode == Encode::BCD) {
-                double numValue = std::stod(elem.value);
+                double numValue;
+                try {
+                    numValue = std::stod(elem.value);
+                } catch (...) {
+                    throw ValidationException("BCD 编码要素值必须为数字: " + elem.value);
+                }
+                if (!std::isfinite(numValue)) {
+                    throw ValidationException("BCD 编码要素值不合法: " + elem.value);
+                }
                 valueBytes = SL651Utils::encodeBCDValue(numValue, elem.length, elem.digits);
             } else {
-                // HEX 编码
+                // HEX 编码：校验字符合法性
+                for (char c : elem.value) {
+                    if (!std::isxdigit(static_cast<unsigned char>(c))) {
+                        throw ValidationException("HEX 编码要素值包含非法字符: " + elem.value);
+                    }
+                }
                 std::string hexStr = elem.value;
                 while (hexStr.length() < static_cast<size_t>(elem.length * 2)) {
                     hexStr = "0" + hexStr;

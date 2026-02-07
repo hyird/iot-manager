@@ -27,7 +27,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
-import { usePermission, useProtocolImportExport, useResponsive } from "@/hooks";
+import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { Modbus, ModbusDictConfig, Protocol } from "@/types";
 
@@ -110,8 +110,6 @@ interface RegisterModalRef {
 }
 
 const ModbusConfigPage = () => {
-  const { isMobile } = useResponsive();
-
   // 权限检查
   const canQuery = usePermission("iot:protocol:query");
   const canAdd = usePermission("iot:protocol:add");
@@ -171,8 +169,11 @@ const ModbusConfigPage = () => {
 
   const handleDeleteDeviceType = async () => {
     if (!activeTypeId) return;
+    // 删除前记录下一个可选中的类型
+    const idx = types.findIndex((t) => t.id === activeTypeId);
+    const nextType = types[idx + 1] ?? types[idx - 1];
     await deleteMutation.mutateAsync(activeTypeId);
-    setSelectedTypeId(undefined);
+    setSelectedTypeId(nextType?.id);
   };
 
   // ========== 寄存器操作 ==========
@@ -238,7 +239,7 @@ const ModbusConfigPage = () => {
     {
       title: "操作",
       width: 120,
-      fixed: "right" as const,
+      fixed: "end" as const,
       render: (_, r) => (
         <Space>
           {canEdit && (
@@ -273,9 +274,9 @@ const ModbusConfigPage = () => {
 
   return (
     <PageContainer title="Modbus配置">
-      <div className={`h-full ${isMobile ? "flex flex-col gap-3" : "flex"}`}>
+      <div className="h-full flex">
         {/* 左侧：设备类型列表 */}
-        <div className={isMobile ? "shrink-0 max-h-[40%]" : "w-[360px] shrink-0 pr-3 h-full"}>
+        <div className="w-[360px] shrink-0 pr-3 h-full">
           <Card
             title="设备类型"
             className="h-full flex flex-col"
@@ -372,7 +373,7 @@ const ModbusConfigPage = () => {
         </div>
 
         {/* 右侧：寄存器配置 */}
-        <div className={isMobile ? "flex-1 min-h-0" : "flex-1 min-w-0 h-full"}>
+        <div className="flex-1 min-w-0 h-full">
           <Card
             title={
               activeType ? (
@@ -521,7 +522,10 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
             <Select options={ByteOrderOptions} />
           </Form.Item>
           <Form.Item label="读取间隔" name="readInterval" extra="轮询读取寄存器的时间间隔">
-            <InputNumber min={1} max={3600} addonAfter="秒" className="!w-full" />
+            <Space.Compact className="!w-full">
+              <InputNumber min={1} max={3600} className="!w-full" />
+              <Button disabled>秒</Button>
+            </Space.Compact>
           </Form.Item>
           <Form.Item label="启用" name="enabled" valuePropName="checked">
             <Switch />
@@ -587,6 +591,15 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
       const config = type.config as Modbus.Config;
       const actualQuantity = getQuantityByDataType(values.dataType);
 
+      // 检查地址 + 数量是否溢出 uint16 范围
+      if (values.address + actualQuantity - 1 > 65535) {
+        Modal.error({
+          title: "地址溢出",
+          content: `地址 ${values.address} + 数量 ${actualQuantity} 超出范围（末地址不能超过 65535）`,
+        });
+        return;
+      }
+
       // 检查地址冲突
       const conflictCheck = checkAddressConflict(
         config.registers || [],
@@ -603,16 +616,22 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
         return;
       }
 
-      // 构建 dictConfig（Bool 值映射）
-      const dictConfig: ModbusDictConfig | undefined =
-        values.boolLabel0 || values.boolLabel1
-          ? {
-              items: [
-                ...(values.boolLabel0 ? [{ key: "0", label: values.boolLabel0 }] : []),
-                ...(values.boolLabel1 ? [{ key: "1", label: values.boolLabel1 }] : []),
-              ],
-            }
-          : undefined;
+      // 构建 dictConfig（Bool 值映射；非 BOOL 类型保留已有配置）
+      let dictConfig: ModbusDictConfig | undefined;
+      if (values.dataType === "BOOL") {
+        dictConfig =
+          values.boolLabel0 || values.boolLabel1
+            ? {
+                items: [
+                  ...(values.boolLabel0 ? [{ key: "0", label: values.boolLabel0 }] : []),
+                  ...(values.boolLabel1 ? [{ key: "1", label: values.boolLabel1 }] : []),
+                ],
+              }
+            : undefined;
+      } else {
+        // 非 BOOL 类型：编辑时保留已有 dictConfig，创建时无
+        dictConfig = mode === "edit" ? current?.dictConfig : undefined;
+      }
 
       const registerFields = {
         name: values.name,
@@ -680,10 +699,14 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                 options={RegisterTypeOptions}
                 onChange={(val) => {
                   if (val === "COIL" || val === "DISCRETE_INPUT") {
-                    form.setFieldsValue({ dataType: "BOOL", decimals: undefined });
+                    form.setFieldsValue({
+                      dataType: "BOOL",
+                      decimals: undefined,
+                    });
                   } else if (form.getFieldValue("dataType") === "BOOL") {
                     form.setFieldsValue({
                       dataType: "UINT16",
+                      decimals: undefined,
                       boolLabel0: undefined,
                       boolLabel1: undefined,
                     });

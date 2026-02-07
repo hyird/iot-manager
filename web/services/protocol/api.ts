@@ -24,7 +24,7 @@ export function getDetail(id: number) {
 
 /** 创建配置 */
 export function create(data: Protocol.CreateDto) {
-  return request.post<Protocol.Item>(ENDPOINTS.BASE, data);
+  return request.post<void>(ENDPOINTS.BASE, data);
 }
 
 /** 更新配置 */

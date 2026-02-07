@@ -302,7 +302,7 @@ const SystemDepartmentPage = () => {
               placeholder="部门名称 / 编码"
               onChange={(e) => debouncedSearch(e.target.value)}
               onSearch={doSearch}
-              className="w-full sm:w-60"
+              className="w-60"
             />
             {canAdd && (
               <Button type="primary" onClick={openCreateModal}>

@@ -319,7 +319,7 @@ const SystemRolePage = () => {
               placeholder="角色名称 / 编码"
               onChange={(e) => debouncedSearch(e.target.value)}
               onSearch={doSearch}
-              className="w-full sm:w-[220px]"
+              className="w-[220px]"
             />
             {canAdd && (
               <Button type="primary" onClick={openCreateModal}>

@@ -617,7 +617,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
           name="timeRange"
           rules={[{ required: true, message: "请选择时间范围" }]}
         >
-          <RangePicker showTime presets={timePresets} className="!w-full sm:!w-[340px]" />
+          <RangePicker showTime presets={timePresets} className="!w-[340px]" />
         </Form.Item>
         <Form.Item>
           <Space>

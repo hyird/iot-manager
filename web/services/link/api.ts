@@ -26,7 +26,7 @@ export function getDetail(id: number) {
 
 /** 创建链路 */
 export function create(data: Link.CreateDto) {
-  return request.post<Link.Item>(ENDPOINTS.BASE, data);
+  return request.post<void>(ENDPOINTS.BASE, data);
 }
 
 /** 更新链路 */

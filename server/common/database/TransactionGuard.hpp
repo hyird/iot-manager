@@ -88,7 +88,8 @@ public:
     }
 
     /**
-     * @brief 执行 SQL（带参数替换）
+     * @brief 执行 SQL（带参数绑定）
+     * 使用 PostgreSQL 原生 $N 参数化查询，由 libpq 服务端绑定防止 SQL 注入
      */
     Task<Result> execSqlCoro(const std::string& sql, const std::vector<std::string>& params = {}) {
         if (committed_) {
@@ -98,8 +99,14 @@ public:
             throw std::runtime_error("Transaction already rolled back");
         }
 
-        std::string finalSql = buildSql(sql, params);
-        co_return co_await transaction_->execSqlCoro(finalSql);
+        if (params.empty()) {
+            co_return co_await transaction_->execSqlCoro(sql);
+        }
+        auto binder = *transaction_ << toParameterized(sql, params.size());
+        for (const auto& p : params) {
+            binder << p;
+        }
+        co_return co_await drogon::orm::internal::SqlAwaiter(std::move(binder));
     }
 
     /**
@@ -191,43 +198,4 @@ public:
      */
     std::shared_ptr<Transaction> getTransaction() const { return transaction_; }
 
-private:
-    /**
-     * @brief SQL 参数替换（与 DatabaseService 保持一致）
-     */
-    static std::string buildSql(const std::string& sql, const std::vector<std::string>& params) {
-        if (params.empty()) return sql;
-
-        std::string result;
-        result.reserve(sql.size() + params.size() * 32);
-
-        size_t paramIndex = 0;
-        for (size_t i = 0; i < sql.size(); ++i) {
-            if (sql[i] == '?' && paramIndex < params.size()) {
-                result += '\'';
-                result += escapeSqlParam(params[paramIndex++]);
-                result += '\'';
-            } else {
-                result += sql[i];
-            }
-        }
-        return result;
-    }
-
-    static std::string escapeSqlParam(const std::string& param) {
-        std::string escaped;
-        escaped.reserve(param.size() * 2);
-        for (char c : param) {
-            switch (c) {
-                case '\'': escaped += "''"; break;
-                case '\\': escaped += "\\\\"; break;
-                case '\0': escaped += "\\0"; break;
-                case '\n': escaped += "\\n"; break;
-                case '\r': escaped += "\\r"; break;
-                case '\x1a': escaped += "\\Z"; break;
-                default: escaped += c;
-            }
-        }
-        return escaped;
-    }
 };

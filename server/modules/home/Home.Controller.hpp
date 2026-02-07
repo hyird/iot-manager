@@ -32,6 +32,7 @@ public:
 
     /**
      * @brief 获取统计数据
+     * 单条 SQL 合并所有 COUNT，减少 DB 往返
      */
     Task<HttpResponsePtr> stats(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(
@@ -39,17 +40,47 @@ public:
             {"home:dashboard:query"}
         );
 
-        // 查询各表的记录数（排除软删除的记录）
-        auto userResult = co_await db_.execSqlCoro("SELECT COUNT(*) as count FROM sys_user WHERE deleted_at IS NULL");
-        auto roleResult = co_await db_.execSqlCoro("SELECT COUNT(*) as count FROM sys_role WHERE deleted_at IS NULL");
-        auto menuResult = co_await db_.execSqlCoro("SELECT COUNT(*) as count FROM sys_menu WHERE deleted_at IS NULL AND type = 'page'");
-        auto deptResult = co_await db_.execSqlCoro("SELECT COUNT(*) as count FROM sys_department WHERE deleted_at IS NULL");
+        // 合并所有统计查询为单条 SQL（4 次往返 → 1 次）
+        auto result = co_await db_.execSqlCoro(R"(
+            SELECT
+                (SELECT COUNT(*) FROM sys_user WHERE deleted_at IS NULL) AS user_count,
+                (SELECT COUNT(*) FROM sys_role WHERE deleted_at IS NULL) AS role_count,
+                (SELECT COUNT(*) FROM sys_menu WHERE deleted_at IS NULL AND type = 'page') AS menu_count,
+                (SELECT COUNT(*) FROM sys_department WHERE deleted_at IS NULL) AS dept_count,
+                (SELECT COUNT(*) FROM device WHERE deleted_at IS NULL) AS device_count,
+                (SELECT COUNT(*) FROM link WHERE deleted_at IS NULL) AS link_count
+        )");
 
         Json::Value data;
-        data["userCount"] = userResult[0]["count"].as<int>();
-        data["roleCount"] = roleResult[0]["count"].as<int>();
-        data["menuCount"] = menuResult[0]["count"].as<int>();
-        data["departmentCount"] = deptResult[0]["count"].as<int>();
+        data["userCount"] = result[0]["user_count"].as<int>();
+        data["roleCount"] = result[0]["role_count"].as<int>();
+        data["menuCount"] = result[0]["menu_count"].as<int>();
+        data["departmentCount"] = result[0]["dept_count"].as<int>();
+        data["deviceCount"] = result[0]["device_count"].as<int>();
+        data["linkCount"] = result[0]["link_count"].as<int>();
+
+        // 今日数据量：优先从连续聚合读取，回退到直接 COUNT
+        // 注意：MSVC 不支持 catch 块中使用 co_await，用标志位重构
+        bool useFallbackCount = false;
+        try {
+            auto todayResult = co_await db_.execSqlCoro(R"(
+                SELECT COALESCE(SUM(record_count), 0) AS today_count
+                FROM device_data_hourly
+                WHERE bucket >= date_trunc('day', now())
+            )");
+            data["todayDataCount"] = static_cast<Json::Int64>(todayResult[0]["today_count"].as<int64_t>());
+        } catch (...) {
+            useFallbackCount = true;
+        }
+        if (useFallbackCount) {
+            // 连续聚合不可用，回退到直接查询
+            auto todayResult = co_await db_.execSqlCoro(R"(
+                SELECT COUNT(*) AS today_count
+                FROM device_data
+                WHERE report_time >= date_trunc('day', now())
+            )");
+            data["todayDataCount"] = static_cast<Json::Int64>(todayResult[0]["today_count"].as<int64_t>());
+        }
 
         co_return Response::ok(data);
     }

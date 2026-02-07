@@ -81,9 +81,22 @@ public:
      * @param digits 小数位数
      */
     static std::vector<uint8_t> encodeBCDValue(double value, int length, int digits = 0) {
+        // 防御：限制 digits 范围，避免 pow 溢出
+        if (digits < 0) digits = 0;
+        if (digits > 8) digits = 8;
+
         int64_t scaledValue = static_cast<int64_t>(std::round(value * std::pow(10, digits)));
+        // BCD 编码无符号，取绝对值
+        if (scaledValue < 0) scaledValue = -scaledValue;
+
         std::string bcdStr = std::to_string(scaledValue);
-        while (bcdStr.length() < static_cast<size_t>(length * 2)) {
+        size_t maxDigits = static_cast<size_t>(length) * 2;
+
+        // 截断到目标长度（防止溢出）
+        if (bcdStr.length() > maxDigits) {
+            bcdStr = bcdStr.substr(bcdStr.length() - maxDigits);
+        }
+        while (bcdStr.length() < maxDigits) {
             bcdStr = "0" + bcdStr;
         }
         return stringToBCD(bcdStr);

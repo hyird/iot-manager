@@ -55,7 +55,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
           guideHex: ele.guideHex?.trim(),
           encode: ele.encode,
           length: ele.length,
-          digits: ele.digits ?? 0,
+          digits: Number.isFinite(ele.digits) ? ele.digits : 0,
           unit: ele.unit?.trim() || undefined,
           remark: ele.remark?.trim() || undefined,
         }));
@@ -158,7 +158,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                           rules={[{ required: true, message: "必填" }]}
                           className="!mb-0"
                         >
-                          <InputNumber min={0} className="!w-full" />
+                          <InputNumber min={1} className="!w-full" />
                         </Form.Item>
                       ),
                     },
@@ -210,7 +210,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                       name: "",
                       guideHex: "",
                       encode: "BCD",
-                      length: 0,
+                      length: 1,
                       digits: 0,
                     })
                   }

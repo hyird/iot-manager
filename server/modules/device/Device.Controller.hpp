@@ -86,8 +86,8 @@ public:
         ValidatorHelper::requirePositiveInt(*json, "link_id", "关联链路").throwIfInvalid();
         ValidatorHelper::requirePositiveInt(*json, "protocol_config_id", "协议配置").throwIfInvalid();
 
-        auto result = co_await service_.create(*json);
-        co_return Response::ok(result, "创建成功");
+        co_await service_.create(*json);
+        co_return Response::created("创建成功");
     }
 
     /**
@@ -201,8 +201,14 @@ public:
         if (deviceCode.empty() && deviceId == 0) co_return Response::badRequest("设备标识不能为空");
         if (funcCode.empty()) co_return Response::badRequest("功能码不能为空");
 
-        // 获取 elements 数组
+        // 校验 elements 数组
         Json::Value elements = (*json).get("elements", Json::arrayValue);
+        if (!elements.isArray() || elements.empty()) co_return Response::badRequest("要素列表不能为空");
+        for (const auto& elem : elements) {
+            if (!elem.isObject()) co_return Response::badRequest("要素格式错误");
+            if (elem.get("elementId", "").asString().empty()) co_return Response::badRequest("要素 elementId 不能为空");
+            if (elem.get("value", "").asString().empty()) co_return Response::badRequest("要素值不能为空");
+        }
 
         // 通过 Service 层下发指令
         bool success = co_await service_.sendCommand(linkId, deviceCode, funcCode, elements, userId, deviceId);

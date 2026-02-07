@@ -202,6 +202,10 @@ private:
 
     // ==================== Redis 缓存操作 ====================
 
+    /**
+     * @brief 更新单个设备的实时数据（Lua 脚本，单次 Redis 往返）
+     * 合并 HSET + EXPIRE + 条件 SETEX 为一次调用
+     */
     Task<void> updateRedis(int deviceId, const std::string& funcCode, const Json::Value& data, const std::string& reportTime) {
         RedisService redis;
         auto client = redis.getClient();
@@ -209,21 +213,24 @@ private:
             throw std::runtime_error("Redis client not available");
         }
 
-        // 构建存储的 JSON
         Json::Value cacheData;
         cacheData["data"] = data;
         cacheData["reportTime"] = reportTime;
-
         std::string jsonStr = JsonHelper::serialize(cacheData);
 
-        // 使用 HSET 存储
-        std::string key = std::string(REDIS_KEY_PREFIX) + std::to_string(deviceId);
-        co_await client->execCommandCoro("HSET %s %s %s",
-            key.c_str(), funcCode.c_str(), jsonStr.c_str());
-        co_await client->execCommandCoro("EXPIRE %s %d", key.c_str(), REDIS_TTL);
+        std::string dataKey = std::string(REDIS_KEY_PREFIX) + std::to_string(deviceId);
+        std::string latestKey = std::string(REDIS_LATEST_PREFIX) + std::to_string(deviceId);
 
-        // 更新最新上报时间
-        co_await setLatestReportTimeToRedis(deviceId, reportTime);
+        // Lua: HSET + EXPIRE + 条件 SETEX（仅当新时间更新时覆盖）
+        co_await client->execCommandCoro(
+            "EVAL \"redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]) "
+            "redis.call('EXPIRE',KEYS[1],ARGV[3]) "
+            "local cur=redis.call('GET',KEYS[2]) "
+            "if not cur or ARGV[4]>cur then redis.call('SETEX',KEYS[2],ARGV[3],ARGV[4]) end "
+            "return 1\" 2 %s %s %s %s %d %s",
+            dataKey.c_str(), latestKey.c_str(),
+            funcCode.c_str(), jsonStr.c_str(), REDIS_TTL, reportTime.c_str()
+        );
     }
 
     /**
@@ -346,21 +353,102 @@ private:
     }
 
     /**
-     * @brief 批量获取设备实时数据
-     * 逐个获取每个设备的 Hash 数据
+     * @brief 批量获取设备实时数据（Lua 脚本，减少 Redis 往返）
+     *
+     * 使用 EVAL + Lua 在 Redis 侧批量执行 HGETALL，
+     * 每批 50 个设备，将 N 次往返减少为 ceil(N/50) 次。
      */
     Task<std::map<int, DeviceRealtimeData>> getBatchFromRedis(const std::vector<int>& deviceIds) {
         std::map<int, DeviceRealtimeData> result;
+        if (deviceIds.empty()) co_return result;
 
-        if (deviceIds.empty()) {
-            co_return result;
-        }
+        RedisService redis;
+        auto client = redis.getClient();
+        if (!client) throw std::runtime_error("Redis client not available");
 
-        // 逐个获取每个设备的数据
-        for (int deviceId : deviceIds) {
-            auto deviceData = co_await getFromRedis(deviceId);
-            if (deviceData) {
-                result[deviceId] = std::move(*deviceData);
+        Json::CharReaderBuilder readerBuilder;
+        constexpr size_t SUB_BATCH = 50;
+        bool needFallback = false;
+        size_t fallbackStart = 0, fallbackEnd = 0;
+
+        for (size_t start = 0; start < deviceIds.size(); start += SUB_BATCH) {
+            size_t end = std::min(start + SUB_BATCH, deviceIds.size());
+
+            // 构建 EVAL 命令：
+            // EVAL "lua" numkeys key1 key2 ... deviceId1 deviceId2 ...
+            // Lua 返回扁平数组: [deviceId, fieldCount, f1, v1, f2, v2, ..., deviceId, ...]
+            std::ostringstream cmd;
+            cmd << "EVAL "
+                << "\"local r={} "
+                << "for i=1,#KEYS do "
+                << "  local d=redis.call('HGETALL',KEYS[i]) "
+                << "  r[#r+1]=ARGV[i] r[#r+1]=tostring(#d) "
+                << "  for _,v in ipairs(d) do r[#r+1]=v end "
+                << "end "
+                << "return r\" "
+                << (end - start);  // numkeys
+
+            // KEYS: Redis 键
+            for (size_t i = start; i < end; ++i) {
+                cmd << " " << REDIS_KEY_PREFIX << deviceIds[i];
+            }
+            // ARGV: deviceId（用于结果映射）
+            for (size_t i = start; i < end; ++i) {
+                cmd << " " << deviceIds[i];
+            }
+
+            try {
+                auto evalResult = co_await client->execCommandCoro(cmd.str().c_str());
+
+                if (evalResult.isNil() || evalResult.type() != drogon::nosql::RedisResultType::kArray) continue;
+
+                auto arr = evalResult.asArray();
+                size_t idx = 0;
+
+                while (idx + 1 < arr.size()) {
+                    int deviceId = std::stoi(arr[idx].asString());
+                    int pairCount = std::stoi(arr[idx + 1].asString());  // HGETALL 返回的 field-value 对数
+                    idx += 2;
+
+                    DeviceRealtimeData deviceData;
+                    for (int f = 0; f < pairCount && (idx + 1) < arr.size(); ++f) {
+                        std::string funcCode = arr[idx].asString();
+                        std::string jsonStr = arr[idx + 1].asString();
+                        idx += 2;
+
+                        Json::Value cacheData;
+                        std::string errs;
+                        std::istringstream iss(jsonStr);
+                        if (Json::parseFromStream(readerBuilder, iss, &cacheData, &errs)) {
+                            FuncData fd;
+                            fd.data = cacheData["data"];
+                            fd.reportTime = cacheData["reportTime"].asString();
+                            deviceData[funcCode] = std::move(fd);
+                        }
+                    }
+
+                    if (!deviceData.empty()) {
+                        result[deviceId] = std::move(deviceData);
+                    }
+                }
+            } catch (const std::exception& e) {
+                LOG_WARN << "[RealtimeDataCache] Lua batch HGETALL failed: " << e.what()
+                         << ", falling back to individual reads";
+                // MSVC 不支持 catch 中 co_await，记录需要回退的范围
+                fallbackStart = start;
+                fallbackEnd = end;
+                needFallback = true;
+            }
+
+            // catch 外执行回退逻辑
+            if (needFallback) {
+                needFallback = false;
+                for (size_t i = fallbackStart; i < fallbackEnd; ++i) {
+                    auto deviceData = co_await getFromRedis(deviceIds[i]);
+                    if (deviceData) {
+                        result[deviceIds[i]] = std::move(*deviceData);
+                    }
+                }
             }
         }
 
@@ -368,21 +456,50 @@ private:
     }
 
     /**
-     * @brief 批量获取设备最新上报时间
-     * 逐个获取每个设备的上报时间
+     * @brief 批量获取设备最新上报时间（MGET，单次 Redis 往返）
      */
     Task<std::map<int, std::string>> getLatestReportTimesFromRedis(const std::vector<int>& deviceIds) {
         std::map<int, std::string> result;
+        if (deviceIds.empty()) co_return result;
 
-        if (deviceIds.empty()) {
-            co_return result;
+        RedisService redis;
+        auto client = redis.getClient();
+        if (!client) throw std::runtime_error("Redis client not available");
+
+        bool mgetFallback = false;
+
+        // 构建 MGET 命令：MGET key1 key2 key3 ...
+        std::ostringstream cmd;
+        cmd << "MGET";
+        for (int id : deviceIds) {
+            cmd << " " << REDIS_LATEST_PREFIX << id;
         }
 
-        // 逐个获取每个设备的最新上报时间
-        for (int deviceId : deviceIds) {
-            std::string time = co_await getLatestReportTimeFromRedis(deviceId);
-            if (!time.empty()) {
-                result[deviceId] = time;
+        try {
+            auto mgetResult = co_await client->execCommandCoro(cmd.str().c_str());
+
+            if (!mgetResult.isNil() && mgetResult.type() == drogon::nosql::RedisResultType::kArray) {
+                auto arr = mgetResult.asArray();
+                for (size_t i = 0; i < arr.size() && i < deviceIds.size(); ++i) {
+                    if (!arr[i].isNil()) {
+                        std::string time = arr[i].asString();
+                        if (!time.empty()) {
+                            result[deviceIds[i]] = time;
+                        }
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            LOG_WARN << "[RealtimeDataCache] MGET failed: " << e.what()
+                     << ", falling back to individual reads";
+            mgetFallback = true;
+        }
+        if (mgetFallback) {
+            for (int deviceId : deviceIds) {
+                std::string time = co_await getLatestReportTimeFromRedis(deviceId);
+                if (!time.empty()) {
+                    result[deviceId] = time;
+                }
             }
         }
 

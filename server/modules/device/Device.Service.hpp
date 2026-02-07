@@ -72,7 +72,7 @@ public:
     /**
      * @brief 创建设备
      */
-    Task<Json::Value> create(const Json::Value& data) {
+    Task<void> create(const Json::Value& data) {
         auto device = Device::create(data);
 
         device.require(Device::nameUnique)
@@ -85,9 +85,6 @@ public:
         }
 
         co_await device.save();
-
-        // 返回创建后的详情
-        co_return co_await detail(device.id());
     }
 
     /**

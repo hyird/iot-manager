@@ -31,12 +31,12 @@ export function getDetail(id: number) {
 
 /** 创建部门 */
 export function create(data: Department.CreateDto) {
-  return request.post<Department.Item>(ENDPOINTS.BASE, data);
+  return request.post<void>(ENDPOINTS.BASE, data);
 }
 
 /** 更新部门 */
 export function update(id: number, data: Department.UpdateDto) {
-  return request.put<Department.Item>(ENDPOINTS.DETAIL(id), data);
+  return request.put<void>(ENDPOINTS.DETAIL(id), data);
 }
 
 /** 删除部门 */

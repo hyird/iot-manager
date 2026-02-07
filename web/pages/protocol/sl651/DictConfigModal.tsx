@@ -23,58 +23,55 @@ const DictConfigModal = forwardRef<DictConfigModalRef, DictConfigModalProps>(
     const [typeId, setTypeId] = useState<number>();
     const [funcId, setFuncId] = useState<string>();
     const [element, setElement] = useState<SL651.Element>();
+    const [pendingElement, setPendingElement] = useState<SL651.Element>();
     const [form] = Form.useForm();
+
+    /** Modal 打开动画完成后设置表单值，避免闪烁 */
+    const initForm = (ele: SL651.Element) => {
+      form.resetFields();
+
+      const mapType = ele.dictConfig?.mapType || "VALUE";
+
+      const items = (ele.dictConfig?.items || [])
+        .filter((item) => item && typeof item === "object")
+        .map((item) => {
+          if (mapType === "VALUE") {
+            return {
+              key: item.key || "",
+              label: item.label || "",
+            };
+          }
+          const validConditions = (item.dependsOn?.conditions || [])
+            .filter(
+              (c: FormCondition) =>
+                c && typeof c === "object" && c.bitIndex !== undefined && c.bitValue !== undefined
+            )
+            .map((c: FormCondition) => ({
+              bitIndex: String(c.bitIndex),
+              bitValue: String(c.bitValue),
+            }));
+
+          return {
+            key: item.key || "",
+            label: item.label || "",
+            value: item.value || "1",
+            dependsOn: {
+              operator: item.dependsOn?.operator || "AND",
+              conditions: validConditions,
+            },
+          };
+        });
+
+      form.setFieldsValue({ mapType, items });
+    };
 
     useImperativeHandle(ref, () => ({
       open(t, fId, ele) {
         setTypeId(t);
         setFuncId(fId);
         setElement(ele);
+        setPendingElement(ele);
         setOpen(true);
-
-        // 延迟设置表单值，确保 Modal 已经打开
-        setTimeout(() => {
-          form.resetFields();
-
-          const mapType = ele.dictConfig?.mapType || "VALUE";
-
-          // 根据映射类型区分处理数据，过滤并修复不完整的数据
-          const items = (ele.dictConfig?.items || [])
-            .filter((item) => item && typeof item === "object")
-            .map((item) => {
-              if (mapType === "VALUE") {
-                return {
-                  key: item.key || "",
-                  label: item.label || "",
-                };
-              } else {
-                const validConditions = (item.dependsOn?.conditions || [])
-                  .filter(
-                    (c: FormCondition) =>
-                      c &&
-                      typeof c === "object" &&
-                      c.bitIndex !== undefined &&
-                      c.bitValue !== undefined
-                  )
-                  .map((c: FormCondition) => ({
-                    bitIndex: String(c.bitIndex),
-                    bitValue: String(c.bitValue),
-                  }));
-
-                return {
-                  key: item.key || "",
-                  label: item.label || "",
-                  value: item.value || "1",
-                  dependsOn: {
-                    operator: item.dependsOn?.operator || "AND",
-                    conditions: validConditions,
-                  },
-                };
-              }
-            });
-
-          form.setFieldsValue({ mapType, items });
-        }, 0);
       },
     }));
 
@@ -173,6 +170,12 @@ const DictConfigModal = forwardRef<DictConfigModalRef, DictConfigModalProps>(
         onCancel={() => setOpen(false)}
         onOk={handleOk}
         confirmLoading={saveMutation.isPending}
+        afterOpenChange={(visible) => {
+          if (visible && pendingElement) {
+            initForm(pendingElement);
+            setPendingElement(undefined);
+          }
+        }}
         forceRender
         width={800}
       >

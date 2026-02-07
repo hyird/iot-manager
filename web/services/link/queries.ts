@@ -20,7 +20,8 @@ export function useLinkList(
   return useQuery({
     queryKey: linkQueryKeys.list(params),
     queryFn: () => api.getList(params),
-    refetchInterval: 5000,
+    refetchInterval: 10000,
+    refetchIntervalInBackground: false,
     ...options,
   });
 }

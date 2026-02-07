@@ -363,9 +363,8 @@ public:
             }
         }
 
-        if (ioLoopPool_) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
+        // 无需阻塞等待：lambda 通过 shared_ptr 拷贝捕获 runtime，
+        // IO 线程回调完成后自动释放，生命周期由引用计数保证
     }
 
     bool isRunning(int linkId) {

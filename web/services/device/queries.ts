@@ -48,11 +48,11 @@ export function useDeviceStatic(
 /** 设备实时数据 Query（轮询获取） */
 export function useDeviceRealtime(
   options?: Omit<UseQueryOptions<{ list: Device.Realtime[] }>, "queryKey" | "queryFn"> & {
-    /** 轮询间隔（毫秒），默认 1000ms，设为 false 禁用轮询 */
+    /** 轮询间隔（毫秒），默认 3000ms，设为 false 禁用轮询 */
     pollingInterval?: number | false;
   }
 ) {
-  const { pollingInterval = 1000, ...queryOptions } = options || {};
+  const { pollingInterval = 3000, ...queryOptions } = options || {};
   return useQuery({
     queryKey: deviceKeys.realtime(),
     queryFn: () => deviceApi.getRealtime(),
@@ -67,12 +67,12 @@ export function useDeviceRealtime(
  * 保持与原 useDeviceList 接口兼容
  */
 export function useDeviceList(options?: {
-  /** 轮询间隔（毫秒），默认 1000ms，设为 false 禁用轮询 */
+  /** 轮询间隔（毫秒），默认 3000ms，设为 false 禁用轮询 */
   pollingInterval?: number | false;
   /** 是否启用查询 */
   enabled?: boolean;
 }) {
-  const { pollingInterval = 1000, enabled = true } = options || {};
+  const { pollingInterval = 3000, enabled = true } = options || {};
 
   const staticQuery = useDeviceStatic({ enabled });
   const realtimeQuery = useDeviceRealtime({

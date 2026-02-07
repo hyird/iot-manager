@@ -211,7 +211,7 @@ const SystemUserPage = () => {
               placeholder="用户名 / 昵称 / 手机 / 邮箱"
               onChange={(e) => debouncedSearch(e.target.value)}
               onSearch={doSearch}
-              className="w-full sm:w-[280px]"
+              className="w-[280px]"
             />
             {canAdd && (
               <Button type="primary" onClick={openCreateModal}>

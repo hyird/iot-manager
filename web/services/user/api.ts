@@ -23,12 +23,12 @@ export function getDetail(id: number) {
 
 /** 创建用户 */
 export function create(data: User.CreateDto) {
-  return request.post<User.Item>(ENDPOINTS.BASE, data);
+  return request.post<void>(ENDPOINTS.BASE, data);
 }
 
 /** 更新用户 */
 export function update(id: number, data: User.UpdateDto) {
-  return request.put<User.Item>(ENDPOINTS.DETAIL(id), data);
+  return request.put<void>(ENDPOINTS.DETAIL(id), data);
 }
 
 /** 删除用户 */

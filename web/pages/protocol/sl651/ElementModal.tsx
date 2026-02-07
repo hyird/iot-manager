@@ -33,7 +33,7 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
         setFuncId(fId);
         setCurrent(element);
         form.resetFields();
-        form.setFieldsValue(element ?? { encode: "BCD", length: 0, digits: 0 });
+        form.setFieldsValue(element ?? { encode: "BCD", length: 1, digits: 0 });
         setOpen(true);
       },
     }));
@@ -108,7 +108,7 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
             <Select options={EncodeList.map((e) => ({ value: e, label: e }))} />
           </Form.Item>
           <Form.Item label="长度" name="length" rules={[{ required: true, message: "请输入长度" }]}>
-            <InputNumber min={0} className="!w-full" />
+            <InputNumber min={1} className="!w-full" />
           </Form.Item>
           <Form.Item
             label="小数位"

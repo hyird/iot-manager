@@ -2,7 +2,7 @@
  * SL651 功能码 Modal
  */
 
-import { Form, Input, Modal, Select } from "antd";
+import { App, Form, Input, Modal, Select } from "antd";
 import { forwardRef, useImperativeHandle, useState } from "react";
 import type { Protocol, SL651 } from "@/types";
 import { generateId, type SaveMutation } from "./shared";
@@ -19,6 +19,7 @@ interface FuncModalProps {
 
 const FuncModal = forwardRef<FuncModalRef, FuncModalProps>(
   ({ types, onSuccess, saveMutation }, ref) => {
+    const { message } = App.useApp();
     const [open, setOpen] = useState(false);
     const [mode, setMode] = useState<"create" | "edit">("create");
     const [typeId, setTypeId] = useState<number>();
@@ -44,6 +45,16 @@ const FuncModal = forwardRef<FuncModalRef, FuncModalProps>(
       if (!type) return;
 
       const config = type.config as SL651.Config;
+
+      // 检查功能码唯一性（排除自身）
+      const duplicate = (config.funcs || []).find(
+        (f) => f.funcCode === values.funcCode && (mode === "create" || f.id !== current?.id)
+      );
+      if (duplicate) {
+        message.error(`功能码 ${values.funcCode} 已存在（${duplicate.name}）`);
+        return;
+      }
+
       let newFuncs: SL651.Func[];
 
       if (mode === "create") {

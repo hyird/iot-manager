@@ -27,6 +27,98 @@ class ProtocolConfigController : public drogon::HttpController<ProtocolConfigCon
 private:
     ProtocolConfigService service_;
 
+    /**
+     * @brief 校验协议配置 config JSON 的结构合法性
+     */
+    static void validateConfig(const std::string& protocol, const Json::Value& config) {
+        if (protocol == Constants::PROTOCOL_SL651) {
+            // SL651: funcs 必须是数组
+            if (config.isMember("funcs")) {
+                if (!config["funcs"].isArray()) {
+                    throw ValidationException("SL651 配置的 funcs 必须是数组");
+                }
+                for (const auto& func : config["funcs"]) {
+                    if (!func.isObject()) continue;
+                    std::string funcCode = func.get("funcCode", "").asString();
+                    if (funcCode.empty()) {
+                        throw ValidationException("功能码 funcCode 不能为空");
+                    }
+                    // 校验要素
+                    if (func.isMember("elements") && func["elements"].isArray()) {
+                        for (const auto& elem : func["elements"]) {
+                            if (!elem.isObject()) continue;
+                            if (elem.get("guideHex", "").asString().empty()) {
+                                std::string elemName = elem.get("name", "未命名").asString();
+                                throw ValidationException("要素「" + elemName + "」的引导符不能为空");
+                            }
+                            int length = elem.get("length", 0).asInt();
+                            if (length < 1) {
+                                std::string elemName = elem.get("name", "未命名").asString();
+                                throw ValidationException("要素「" + elemName + "」的长度必须 >= 1");
+                            }
+                            int digits = elem.get("digits", 0).asInt();
+                            if (digits < 0 || digits > 8) {
+                                std::string elemName = elem.get("name", "未命名").asString();
+                                throw ValidationException("要素「" + elemName + "」的小数位必须在 0-8 之间");
+                            }
+                        }
+                    }
+                    // 校验应答要素（同样的规则）
+                    if (func.isMember("responseElements") && func["responseElements"].isArray()) {
+                        for (const auto& elem : func["responseElements"]) {
+                            if (!elem.isObject()) continue;
+                            if (elem.get("guideHex", "").asString().empty()) {
+                                std::string elemName = elem.get("name", "未命名").asString();
+                                throw ValidationException("应答要素「" + elemName + "」的引导符不能为空");
+                            }
+                            int length = elem.get("length", 0).asInt();
+                            if (length < 1) {
+                                std::string elemName = elem.get("name", "未命名").asString();
+                                throw ValidationException("应答要素「" + elemName + "」的长度必须 >= 1");
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (protocol == Constants::PROTOCOL_MODBUS ||
+                   protocol == Constants::PROTOCOL_MODBUS_TCP ||
+                   protocol == Constants::PROTOCOL_MODBUS_RTU) {
+            // Modbus: readInterval 范围检查
+            if (config.isMember("readInterval")) {
+                int interval = config["readInterval"].asInt();
+                if (interval < 1 || interval > 3600) {
+                    throw ValidationException("读取间隔必须在 1-3600 秒之间");
+                }
+            }
+            // Modbus: registers 必须是数组
+            if (config.isMember("registers")) {
+                if (!config["registers"].isArray()) {
+                    throw ValidationException("Modbus 配置的 registers 必须是数组");
+                }
+                for (const auto& reg : config["registers"]) {
+                    if (!reg.isObject()) continue;
+                    // 地址范围
+                    unsigned int address = reg.get("address", 0).asUInt();
+                    if (address > 65535) {
+                        std::string regName = reg.get("name", "未命名").asString();
+                        throw ValidationException("寄存器「" + regName + "」的地址超出范围 (0-65535)");
+                    }
+                    // quantity 范围（Modbus 协议限制）
+                    unsigned int quantity = reg.get("quantity", 1).asUInt();
+                    if (quantity < 1 || quantity > 125) {
+                        std::string regName = reg.get("name", "未命名").asString();
+                        throw ValidationException("寄存器「" + regName + "」的数量超出范围 (1-125)");
+                    }
+                    // 地址 + 数量不能溢出 uint16
+                    if (address + quantity - 1 > 65535) {
+                        std::string regName = reg.get("name", "未命名").asString();
+                        throw ValidationException("寄存器「" + regName + "」的地址 + 数量超出范围（末地址不能超过 65535）");
+                    }
+                }
+            }
+        }
+    }
+
 public:
     using enum drogon::HttpMethod;
     using HttpRequestPtr = drogon::HttpRequestPtr;
@@ -88,8 +180,13 @@ public:
         ValidatorHelper::requireInList(*json, "protocol", ALLOWED_CONFIG_PROTOCOLS,
             "协议类型", "SL651、MODBUS、Modbus TCP 或 Modbus RTU").throwIfInvalid();
 
-        auto result = co_await service_.create(*json);
-        co_return Response::ok(result, "创建成功");
+        // 校验 config 字段结构
+        if (json->isMember("config") && (*json)["config"].isObject()) {
+            validateConfig((*json)["protocol"].asString(), (*json)["config"]);
+        }
+
+        co_await service_.create(*json);
+        co_return Response::created("创建成功");
     }
 
     /**
@@ -105,7 +202,9 @@ public:
         ValidatorHelper::requireInListIfPresent(*json, "protocol", ALLOWED_CONFIG_PROTOCOLS,
             "协议类型", "SL651、MODBUS、Modbus TCP 或 Modbus RTU").throwIfInvalid();
 
-        co_await service_.update(id, *json);
+        co_await service_.update(id, *json, [](const std::string& proto, const Json::Value& cfg) {
+            validateConfig(proto, cfg);
+        });
         co_return Response::updated("更新成功");
     }
 

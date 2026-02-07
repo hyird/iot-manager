@@ -40,6 +40,11 @@ public:
     /**
      * @brief 更新版本号（数据变更时调用）
      * @param key 资源 key
+     *
+     * 内存立即更新（mutex 保护），Redis 异步写入。
+     * 设计取舍：优先保证低延迟（TcpIoPool 线程调用不阻塞），
+     * 代价是服务崩溃时可能丢失最近一次版本号。
+     * 重启后从 Redis 加载旧版本 → ETag 不匹配 → 客户端获取全量数据（自愈）。
      */
     void incrementVersion(const std::string& key) {
         std::string uuid;

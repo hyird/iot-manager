@@ -22,7 +22,7 @@ export function getDetail(id: number) {
 
 /** 创建设备 */
 export function create(data: Device.CreateDto) {
-  return request.post<Device.Item>(ENDPOINTS.BASE, data);
+  return request.post<void>(ENDPOINTS.BASE, data);
 }
 
 /** 更新设备 */

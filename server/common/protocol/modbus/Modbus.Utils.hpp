@@ -393,13 +393,28 @@ public:
                 buf[0] = value != 0.0 ? 1 : 0;
                 return buf;  // BOOL 不需要字节序处理
             }
-            case DataType::INT16: { int16_t v = static_cast<int16_t>(value); std::memcpy(buf.data(), &v, 2); break; }
-            case DataType::UINT16: { uint16_t v = static_cast<uint16_t>(value); std::memcpy(buf.data(), &v, 2); break; }
-            case DataType::INT32: { int32_t v = static_cast<int32_t>(value); std::memcpy(buf.data(), &v, 4); break; }
-            case DataType::UINT32: { uint32_t v = static_cast<uint32_t>(value); std::memcpy(buf.data(), &v, 4); break; }
+            case DataType::INT16: {
+                auto v = static_cast<int16_t>(std::clamp(value, -32768.0, 32767.0));
+                std::memcpy(buf.data(), &v, 2); break;
+            }
+            case DataType::UINT16: {
+                auto v = static_cast<uint16_t>(std::clamp(value, 0.0, 65535.0));
+                std::memcpy(buf.data(), &v, 2); break;
+            }
+            case DataType::INT32: {
+                auto v = static_cast<int32_t>(std::clamp(value, -2147483648.0, 2147483647.0));
+                std::memcpy(buf.data(), &v, 4); break;
+            }
+            case DataType::UINT32: {
+                auto v = static_cast<uint32_t>(std::clamp(value, 0.0, 4294967295.0));
+                std::memcpy(buf.data(), &v, 4); break;
+            }
             case DataType::FLOAT32: { float v = static_cast<float>(value); std::memcpy(buf.data(), &v, 4); break; }
             case DataType::INT64: { int64_t v = static_cast<int64_t>(value); std::memcpy(buf.data(), &v, 8); break; }
-            case DataType::UINT64: { uint64_t v = static_cast<uint64_t>(value); std::memcpy(buf.data(), &v, 8); break; }
+            case DataType::UINT64: {
+                auto v = static_cast<uint64_t>(std::max(value, 0.0));
+                std::memcpy(buf.data(), &v, 8); break;
+            }
             case DataType::DOUBLE: { std::memcpy(buf.data(), &value, 8); break; }
         }
 

@@ -99,8 +99,8 @@ public:
         ValidatorHelper::requireInList(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
             "协议", "SL651、Modbus、Modbus TCP 或 Modbus RTU").throwIfInvalid();
 
-        auto result = co_await service_.create(*json);
-        co_return Response::ok(result, "创建成功");
+        co_await service_.create(*json);
+        co_return Response::created("创建成功");
     }
 
     /**

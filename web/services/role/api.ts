@@ -29,12 +29,12 @@ export function getAll() {
 
 /** 创建角色 */
 export function create(data: Role.CreateDto) {
-  return request.post<Role.Item>(ENDPOINTS.BASE, data);
+  return request.post<void>(ENDPOINTS.BASE, data);
 }
 
 /** 更新角色 */
 export function update(id: number, data: Role.UpdateDto) {
-  return request.put<Role.Item>(ENDPOINTS.DETAIL(id), data);
+  return request.put<void>(ENDPOINTS.DETAIL(id), data);
 }
 
 /** 删除角色 */

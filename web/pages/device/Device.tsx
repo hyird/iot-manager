@@ -32,13 +32,13 @@ import DeviceCard from "@/components/DeviceCard";
 import ImagePreviewModal, { type ImagePreviewModalRef } from "@/components/ImagePreviewModal";
 import { PageContainer } from "@/components/PageContainer";
 import { useDebounceFn, usePermission } from "@/hooks";
+import { useWsStatus } from "@/providers";
 import { useDeviceDelete, useDeviceList, useDeviceSave, useLinkOptions } from "@/services";
 import type { Device } from "@/types";
 import CommandPopover from "./CommandPopover";
 import DeviceFormModal, { type DeviceFormValues } from "./DeviceFormModal";
 import HistoryDataModal from "./HistoryDataModal";
 import { useDeviceStats } from "./useDeviceStats";
-import { useResponsiveColumns } from "./useResponsiveColumns";
 import {
   calcWeightedLength,
   formatReportTime,
@@ -79,7 +79,11 @@ const DevicePage = () => {
 
   // ========== Queries & Mutations ==========
 
-  const { data, isLoading, refetch } = useDeviceList({ enabled: canQuery });
+  const { connected: wsConnected } = useWsStatus();
+  const { data, isLoading, refetch } = useDeviceList({
+    enabled: canQuery,
+    pollingInterval: wsConnected ? false : 3000,
+  });
   const { data: linkOptions = [] } = useLinkOptions({ enabled: canQuery });
 
   const saveMutation = useDeviceSave();
@@ -102,8 +106,7 @@ const DevicePage = () => {
   // 统计数据
   const stats = useDeviceStats(deviceList);
 
-  // 响应式列数
-  const columns = useResponsiveColumns();
+  const columns = 3;
 
   // ========== 搜索 ==========
 
@@ -246,7 +249,7 @@ const DevicePage = () => {
   };
 
   // CSS Grid 布局（gridTemplateColumns 需动态值，保留 style）
-  const gridCols = useMemo(() => ({ gridTemplateColumns: `repeat(${columns}, 1fr)` }), [columns]);
+  const gridCols = useMemo(() => ({ gridTemplateColumns: `repeat(${columns}, 1fr)` }), []);
 
   if (!canQuery) {
     return (
@@ -266,7 +269,7 @@ const DevicePage = () => {
               allowClear
               placeholder="设备名称 / 编码 / 类型"
               onChange={(e) => debouncedSearch(e.target.value)}
-              className="w-full sm:w-60"
+              className="w-60"
             />
             <Tooltip title="刷新">
               <Button icon={<ReloadOutlined />} onClick={() => refetch()} loading={isLoading} />
@@ -419,28 +422,32 @@ const DevicePage = () => {
                   length={20}
                   extra={
                     <Flex align="center" justify="space-around" className="w-full">
-                      {/* 图片查看 */}
-                      <Dropdown
-                        disabled={!hasImageData}
-                        menu={{
-                          items: imageMenuItems,
-                          onClick: ({ key }) => {
-                            const func = imageFuncs.find((f) => f.funcCode === key);
-                            if (func) handleImageClick(func);
-                          },
-                        }}
-                      >
-                        <Tooltip title={hasImageData ? "查看图片" : "暂无图片数据"}>
-                          <Button
-                            type="text"
-                            size="small"
-                            icon={<PictureOutlined />}
+                      {/* 图片查看（仅 SL651 协议显示） */}
+                      {imageFuncs.length > 0 && (
+                        <>
+                          <Dropdown
                             disabled={!hasImageData}
-                          />
-                        </Tooltip>
-                      </Dropdown>
+                            menu={{
+                              items: imageMenuItems,
+                              onClick: ({ key }) => {
+                                const func = imageFuncs.find((f) => f.funcCode === key);
+                                if (func) handleImageClick(func);
+                              },
+                            }}
+                          >
+                            <Tooltip title={hasImageData ? "查看图片" : "暂无图片数据"}>
+                              <Button
+                                type="text"
+                                size="small"
+                                icon={<PictureOutlined />}
+                                disabled={!hasImageData}
+                              />
+                            </Tooltip>
+                          </Dropdown>
 
-                      <span className={separatorClass} />
+                          <span className={separatorClass} />
+                        </>
+                      )}
 
                       {/* 指令下发 */}
                       <Popover
