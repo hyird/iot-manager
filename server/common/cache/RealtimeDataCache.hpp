@@ -37,7 +37,7 @@ public:
     }
 
     /**
-     * @brief 更新设备的某个功能码数据（报文解析后调用）
+     * @brief 更新设备的某个功能码数据（fire-and-forget，非协程上下文使用）
      */
     void update(int deviceId, const std::string& funcCode, const Json::Value& data, const std::string& reportTime) {
         drogon::async_run([this, deviceId, funcCode, data, reportTime]() -> Task<void> {
@@ -47,6 +47,13 @@ public:
                 LOG_ERROR << "[RealtimeDataCache] update failed for device " << deviceId << ": " << e.what();
             }
         });
+    }
+
+    /**
+     * @brief 更新设备的某个功能码数据（可 co_await，用于需要确保写入完成的场景）
+     */
+    Task<void> updateAsync(int deviceId, const std::string& funcCode, const Json::Value& data, const std::string& reportTime) {
+        co_await updateRedis(deviceId, funcCode, data, reportTime);
     }
 
     /**

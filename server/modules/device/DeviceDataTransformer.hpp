@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/cache/DeviceCache.hpp"
+#include "common/cache/RealtimeDataCache.hpp"
 #include "common/utils/Constants.hpp"
 
 /**
@@ -440,5 +441,66 @@ public:
             downFunc["elements"] = funcElements;
             outDownFuncs.append(downFunc);
         }
+    }
+
+    /**
+     * @brief 构建单个设备的实时数据 JSON（供 API 和 WebSocket 共用）
+     *
+     * 从 RealtimeDataCache 数据 + 设备协议配置 → {id, reportTime, elements, image}
+     */
+    static Json::Value buildRealtimeItem(
+        const DeviceCache::CachedDevice& device,
+        const RealtimeDataCache::DeviceRealtimeData& deviceData,
+        const std::string& latestTime
+    ) {
+        Json::Value item;
+        item["id"] = device.id;
+        item["reportTime"] = latestTime.empty() ? Json::nullValue : Json::Value(latestTime);
+        item["lastHeartbeatTime"] = Json::nullValue;
+
+        // 从 funcCode 数据中提取实时值
+        std::map<std::string, std::pair<Json::Value, std::string>> funcDataPairs;
+        std::map<std::string, Json::Value> funcDataMap;
+        for (const auto& [funcCode, funcData] : deviceData) {
+            funcDataPairs[funcCode] = {funcData.data, funcData.reportTime};
+            funcDataMap[funcCode] = funcData.data;
+        }
+        auto realtimeValues = parseRealtimeValues(funcDataPairs);
+
+        // 根据协议配置转换为 elements + image
+        Json::Value elements(Json::arrayValue);
+        Json::Value image = Json::nullValue;
+
+        if (!device.protocolConfig.isNull()) {
+            if (device.protocolType == Constants::PROTOCOL_SL651) {
+                const auto& config = device.protocolConfig;
+                if (config.isMember("funcs") && config["funcs"].isArray()) {
+                    std::set<std::string> addedGuideHex;
+                    for (const auto& func : config["funcs"]) {
+                        std::string dir = func.get("dir", "").asString();
+                        std::string funcCode = func.get("funcCode", "").asString();
+                        if (dir != "UP" || !func.isMember("elements") || !func["elements"].isArray()) continue;
+
+                        if (hasJpegElement(func)) {
+                            auto imageData = findImageData(funcCode, funcDataMap);
+                            if (imageData) {
+                                Json::Value latestImage;
+                                latestImage["funcCode"] = funcCode;
+                                latestImage["data"] = *imageData;
+                                image = latestImage;
+                            }
+                        } else {
+                            parseUpElements(func, realtimeValues, addedGuideHex, elements);
+                        }
+                    }
+                }
+            } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
+                parseModbusRegisters(device, realtimeValues, elements);
+            }
+        }
+
+        item["elements"] = elements;
+        item["image"] = image;
+        return item;
     }
 };

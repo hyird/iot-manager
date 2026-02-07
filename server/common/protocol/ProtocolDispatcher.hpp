@@ -12,6 +12,7 @@
 #include "common/utils/AppException.hpp"
 #include "modules/device/domain/CommandRepository.hpp"
 #include "modules/device/domain/Events.hpp"
+#include "modules/device/DeviceDataTransformer.hpp"
 #include "modules/protocol/domain/Events.hpp"
 #include "sl651/SL651.hpp"
 #include "modbus/Modbus.hpp"
@@ -413,10 +414,10 @@ private:
             // 2. 批量 INSERT
             auto ids = co_await CommandRepository::saveBatch(items);
 
-            // 3. 更新实时数据缓存 + 处理指令应答
+            // 3. 更新实时数据缓存（co_await 确保 Redis 写入完成）+ 处理指令应答
             for (size_t i = 0; i < batch.size(); ++i) {
                 const auto& r = batch[i];
-                RealtimeDataCache::instance().update(r.deviceId, r.funcCode, r.data, r.reportTime);
+                co_await RealtimeDataCache::instance().updateAsync(r.deviceId, r.funcCode, r.data, r.reportTime);
 
                 if (r.commandResponse && i < ids.size()) {
                     notifyCommandResponse(
@@ -431,22 +432,6 @@ private:
             // 4. 资源版本号：整批只递增一次
             ResourceVersion::instance().incrementVersion("device");
 
-            // 5. WebSocket 推送实时数据
-            if (WebSocketManager::instance().connectionCount() > 0) {
-                Json::Value updates(Json::arrayValue);
-                for (const auto& r : batch) {
-                    Json::Value item;
-                    item["deviceId"] = r.deviceId;
-                    item["funcCode"] = r.funcCode;
-                    item["data"] = r.data;
-                    item["reportTime"] = r.reportTime;
-                    updates.append(std::move(item));
-                }
-                Json::Value payload;
-                payload["updates"] = std::move(updates);
-                WebSocketManager::instance().broadcast("device:realtime", payload);
-            }
-
             LOG_TRACE << "[ProtocolDispatcher] Batch saved: " << batch.size() << " records";
         } catch (const std::exception& e) {
             LOG_ERROR << "[ProtocolDispatcher] saveBatchResults failed: " << e.what()
@@ -459,6 +444,9 @@ private:
                 co_await saveParsedResult(r);
             }
         }
+
+        // 5. WebSocket 推送已转换的实时数据（无论批量还是回退路径，都在 Redis 更新后推送）
+        co_await broadcastRealtimeViaWs(batch);
     }
 
     /**
@@ -491,6 +479,54 @@ private:
                       << " func=" << result.funcCode;
         } catch (const std::exception& e) {
             LOG_ERROR << "[ProtocolDispatcher] saveParsedResult failed: " << e.what();
+        }
+    }
+
+    /**
+     * @brief WebSocket 推送已转换的实时数据
+     *
+     * 从 Redis 读回受影响设备的完整实时数据，通过 DeviceDataTransformer 转换为
+     * 与 GET /api/device/realtime 相同的 {id, reportTime, elements, image} 格式推送。
+     * 前端收到后可直接 setQueryData 更新缓存，无需 HTTP 请求。
+     */
+    Task<void> broadcastRealtimeViaWs(const std::vector<ParsedFrameResult>& batch) {
+        if (WebSocketManager::instance().connectionCount() == 0) co_return;
+
+        try {
+            // 收集受影响的 deviceId（去重）
+            std::set<int> affectedIds;
+            for (const auto& r : batch) {
+                affectedIds.insert(r.deviceId);
+            }
+
+            // 获取设备配置（内存缓存，快速）
+            auto cachedDevices = co_await DeviceCache::instance().getDevices();
+            std::map<int, const DeviceCache::CachedDevice*> deviceMap;
+            for (const auto& d : cachedDevices) {
+                deviceMap[d.id] = &d;
+            }
+
+            auto& realtimeCache = RealtimeDataCache::instance();
+            Json::Value updates(Json::arrayValue);
+
+            for (int deviceId : affectedIds) {
+                auto it = deviceMap.find(deviceId);
+                if (it == deviceMap.end()) continue;
+
+                // 从 Redis 读取完整的实时数据（所有 funcCode，已被 updateAsync 写入）
+                auto realtimeData = co_await realtimeCache.get(deviceId);
+                auto latestTime = co_await realtimeCache.getLatestReportTime(deviceId);
+
+                RealtimeDataCache::DeviceRealtimeData emptyData;
+                const auto& data = realtimeData ? *realtimeData : emptyData;
+                updates.append(DeviceDataTransformer::buildRealtimeItem(*it->second, data, latestTime));
+            }
+
+            Json::Value payload;
+            payload["updates"] = std::move(updates);
+            WebSocketManager::instance().broadcast("device:realtime", payload);
+        } catch (const std::exception& e) {
+            LOG_WARN << "[ProtocolDispatcher] broadcastRealtimeViaWs failed: " << e.what();
         }
     }
 

@@ -1,8 +1,11 @@
 /**
  * WebSocket 实时推送 Provider
  *
- * 连接到后端 /ws 端点，接收领域事件并自动失效对应的 TanStack Query 缓存。
- * 当 WebSocket 连接时，页面轮询可被禁用以减少不必要的请求。
+ * 连接到后端 /ws 端点，接收领域事件：
+ * - device:realtime → 直接 setQueryData 更新缓存（零 HTTP 请求）
+ * - 其他事件 → invalidateQueries 触发 refetch
+ *
+ * 降级策略：WS 断开时 connected=false，页面自动恢复轮询。
  */
 
 import { useQueryClient } from "@tanstack/react-query";
@@ -15,7 +18,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { deviceKeys } from "@/services/device/keys";
 import { useAppSelector } from "@/store/hooks";
+import type { Device } from "@/types";
 
 interface WsContextValue {
   connected: boolean;
@@ -28,12 +33,11 @@ export function useWsStatus() {
   return useContext(WsContext);
 }
 
-// WebSocket 事件类型 → TanStack Query key 前缀映射
+// WebSocket 事件类型 → TanStack Query key 前缀映射（device:realtime 单独处理）
 const EVENT_QUERY_MAP: Record<string, string[][]> = {
   "device:created": [["device"]],
   "device:updated": [["device"]],
   "device:deleted": [["device"]],
-  "device:realtime": [["device", "realtime"]],
   "link:created": [["links"]],
   "link:updated": [["links"]],
   "link:deleted": [["links"]],
@@ -54,6 +58,15 @@ function getReconnectDelay(attempt: number) {
 
 /** 心跳间隔（30 秒） */
 const PING_INTERVAL = 30000;
+
+/** device:realtime WS payload 中的单个设备更新 */
+interface RealtimeUpdate {
+  id: number;
+  reportTime?: string | null;
+  lastHeartbeatTime?: string | null;
+  elements?: Device.Element[];
+  image?: { funcCode: string; data: string } | null;
+}
 
 export function WebSocketProvider({ children }: { children: ReactNode }) {
   const token = useAppSelector((s) => s.auth.token);
@@ -81,6 +94,47 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     }
     setConnected(false);
   }, []);
+
+  /** 将 WS 推送的实时数据直接合并到 Query 缓存 */
+  const mergeRealtimeUpdates = useCallback(
+    (updates: RealtimeUpdate[]) => {
+      const queryKey = deviceKeys.realtime();
+      const existing = queryClient.getQueryData<{ list: Device.Realtime[] }>(queryKey);
+
+      if (!existing) {
+        // 缓存为空（首次加载前），直接设置
+        queryClient.setQueryData(queryKey, { list: updates as Device.Realtime[] });
+        return;
+      }
+
+      // 构建 id → update 映射
+      const updateMap = new Map(updates.map((u) => [u.id, u]));
+
+      // 合并：已有设备更新字段，新设备追加
+      const mergedList = existing.list.map((device) => {
+        const update = updateMap.get(device.id);
+        if (update) {
+          updateMap.delete(device.id);
+          return {
+            ...device,
+            reportTime: update.reportTime ?? device.reportTime,
+            lastHeartbeatTime: update.lastHeartbeatTime ?? device.lastHeartbeatTime,
+            elements: update.elements ?? device.elements,
+            image: update.image ?? device.image,
+          } as Device.Realtime;
+        }
+        return device;
+      });
+
+      // 追加缓存中不存在的新设备
+      for (const update of updateMap.values()) {
+        mergedList.push(update as Device.Realtime);
+      }
+
+      queryClient.setQueryData(queryKey, { list: mergedList });
+    },
+    [queryClient],
+  );
 
   const connect = useCallback(() => {
     if (!token) return;
@@ -118,7 +172,16 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         // 错误消息
         if (msg.type === "error") return;
 
-        // 查找对应的 query key 并失效
+        // device:realtime → 直接更新缓存，零 HTTP 请求
+        if (msg.type === "device:realtime") {
+          const payload = msg.data as { updates?: RealtimeUpdate[] } | undefined;
+          if (payload?.updates?.length) {
+            mergeRealtimeUpdates(payload.updates);
+          }
+          return;
+        }
+
+        // 其他事件：invalidate 触发 refetch
         const keys = EVENT_QUERY_MAP[msg.type];
         if (keys) {
           for (const key of keys) {
@@ -146,7 +209,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     ws.onerror = () => {
       // onclose 会紧随 onerror 触发，重连逻辑在 onclose 中处理
     };
-  }, [token, queryClient]);
+  }, [token, queryClient, mergeRealtimeUpdates]);
 
   useEffect(() => {
     if (token) {

@@ -296,74 +296,16 @@ public:
         auto deviceDataMap = co_await realtimeCache.getBatch(deviceIds);
         auto latestTimeMap = co_await realtimeCache.getLatestReportTimes(deviceIds);
 
-        // 构建返回数据
+        // 构建返回数据（复用 DeviceDataTransformer::buildRealtimeItem）
         Json::Value items(Json::arrayValue);
+        RealtimeDataCache::DeviceRealtimeData emptyData;
 
         for (const auto& device : cachedDevices) {
-            Json::Value item;
-            item["id"] = device.id;
-
-            // 最新上报时间
-            auto latestIt = latestTimeMap.find(device.id);
-            item["reportTime"] = (latestIt != latestTimeMap.end() && !latestIt->second.empty())
-                ? Json::Value(latestIt->second) : Json::nullValue;
-            item["lastHeartbeatTime"] = Json::nullValue;
-
-            // 解析实时要素数据
-            std::map<std::string, ElementData> realtimeValues;
-            std::map<std::string, Json::Value> funcDataMap;
-
-            auto deviceDataIt = deviceDataMap.find(device.id);
-            if (deviceDataIt != deviceDataMap.end()) {
-                // 转换为 parseRealtimeValues 需要的格式
-                std::map<std::string, std::pair<Json::Value, std::string>> funcDataPairs;
-                for (const auto& [funcCode, funcData] : deviceDataIt->second) {
-                    funcDataPairs[funcCode] = {funcData.data, funcData.reportTime};
-                    funcDataMap[funcCode] = funcData.data;
-                }
-                realtimeValues = DeviceDataTransformer::parseRealtimeValues(funcDataPairs);
-            }
-
-            // 根据协议配置构建 elements 和 image
-            Json::Value elements(Json::arrayValue);
-            Json::Value image = Json::nullValue;
-
-            if (!device.protocolConfig.isNull()) {
-                if (device.protocolType == Constants::PROTOCOL_SL651) {
-                    const auto& config = device.protocolConfig;
-                    if (config.isMember("funcs") && config["funcs"].isArray()) {
-                        std::set<std::string> addedGuideHex;
-
-                        for (const auto& func : config["funcs"]) {
-                            std::string dir = func.get("dir", "").asString();
-                            std::string funcCode = func.get("funcCode", "").asString();
-
-                            if (dir != "UP" || !func.isMember("elements") || !func["elements"].isArray()) {
-                                continue;
-                            }
-
-                            if (DeviceDataTransformer::hasJpegElement(func)) {
-                                auto imageData = DeviceDataTransformer::findImageData(funcCode, funcDataMap);
-                                if (imageData) {
-                                    Json::Value latestImage;
-                                    latestImage["funcCode"] = funcCode;
-                                    latestImage["data"] = *imageData;
-                                    image = latestImage;
-                                }
-                            } else {
-                                DeviceDataTransformer::parseUpElements(func, realtimeValues, addedGuideHex, elements);
-                            }
-                        }
-                    }
-                } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
-                    DeviceDataTransformer::parseModbusRegisters(device, realtimeValues, elements);
-                }
-            }
-
-            item["elements"] = elements;
-            item["image"] = image;
-
-            items.append(item);
+            auto dataIt = deviceDataMap.find(device.id);
+            auto timeIt = latestTimeMap.find(device.id);
+            const auto& data = dataIt != deviceDataMap.end() ? dataIt->second : emptyData;
+            std::string latestTime = timeIt != latestTimeMap.end() ? timeIt->second : "";
+            items.append(DeviceDataTransformer::buildRealtimeItem(device, data, latestTime));
         }
 
         co_return items;
