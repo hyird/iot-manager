@@ -16,15 +16,16 @@ import authReducer from "./slices/authSlice";
 import tabsReducer, { HOME_TAB, type TabItem } from "./slices/tabsSlice";
 
 // Tabs 转换器：确保 HOME_TAB 始终存在
+// createTransform 的 whitelist 指定 slice 中的子键名，
+// outboundState 是该子键的值（TabItem[]），不是整个 slice
 const tabsTransform = createTransform(
-  (inboundState: { tabs: TabItem[]; activeKey: string }) => inboundState,
-  (outboundState: { tabs: TabItem[]; activeKey: string }) => {
-    const hasHome = outboundState.tabs?.some((t) => t.key === HOME_TAB.key);
-    const tabs = hasHome ? outboundState.tabs : [HOME_TAB, ...(outboundState.tabs || [])];
-    const activeKey = outboundState.activeKey || HOME_TAB.key;
-    return { ...outboundState, tabs, activeKey };
+  (inboundState: TabItem[]) => inboundState,
+  (outboundState: TabItem[]) => {
+    const tabs = Array.isArray(outboundState) ? outboundState : [];
+    const hasHome = tabs.some((t) => t.key === HOME_TAB.key);
+    return hasHome ? tabs : [HOME_TAB, ...tabs];
   },
-  { whitelist: ["tabs"] }
+  { whitelist: ["tabs"] },
 );
 
 // Auth 持久化配置

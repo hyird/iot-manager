@@ -41,7 +41,11 @@ public:
      */
     void update(int deviceId, const std::string& funcCode, const Json::Value& data, const std::string& reportTime) {
         drogon::async_run([this, deviceId, funcCode, data, reportTime]() -> Task<void> {
-            co_await updateRedis(deviceId, funcCode, data, reportTime);
+            try {
+                co_await updateRedis(deviceId, funcCode, data, reportTime);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[RealtimeDataCache] update failed for device " << deviceId << ": " << e.what();
+            }
         });
     }
 
@@ -177,7 +181,11 @@ public:
      */
     void invalidate(int deviceId) {
         drogon::async_run([this, deviceId]() -> Task<void> {
-            co_await invalidateRedis(deviceId);
+            try {
+                co_await invalidateRedis(deviceId);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[RealtimeDataCache] invalidate failed for device " << deviceId << ": " << e.what();
+            }
         });
     }
 
@@ -187,7 +195,11 @@ public:
     void invalidateAll() {
         initialized_ = false;
         drogon::async_run([this]() -> Task<void> {
-            co_await invalidateAllRedis();
+            try {
+                co_await invalidateAllRedis();
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[RealtimeDataCache] invalidateAll failed: " << e.what();
+            }
         });
     }
 
@@ -235,7 +247,7 @@ private:
             "return 1";
 
         co_await client->execCommandCoro(
-            "EVAL \"%s\" 2 %s %s %s %s %s",
+            "EVAL %s 2 %s %s %s %s %s",
             script.c_str(),
             dataKey.c_str(), latestKey.c_str(),
             funcCode.c_str(), jsonStr.c_str(), reportTime.c_str()
