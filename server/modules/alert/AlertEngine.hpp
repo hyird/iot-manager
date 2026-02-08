@@ -148,7 +148,7 @@ public:
             } else {
                 // 检查恢复
                 try {
-                    co_await checkAndTriggerRecovery(rule, data, deviceId);
+                    co_await checkAndTriggerRecovery(rule, data);
                 } catch (const std::exception& e) {
                     LOG_WARN << "[AlertEngine] checkAndTriggerRecovery failed for rule=" << rule.name
                              << ": " << e.what();
@@ -579,8 +579,7 @@ private:
     }
 
     Task<void> checkAndTriggerRecovery(const CachedRule& rule,
-                                        const Json::Value& data,
-                                        int deviceId) {
+                                        const Json::Value& data) {
         // 先在锁内读取状态，co_await 前释放锁（避免持锁跨协程挂起导致死锁）
         int recordId = 0;
         bool shouldRecover = false;
