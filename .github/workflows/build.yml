@@ -1,0 +1,240 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+
+    runs-on: ubuntu-latest
+    name: linux - ${{ matrix.build_type }}
+
+    env:
+      VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 autoconf autoconf-archive automake libtool
+
+      # 恢复 vcpkg 已安装包缓存（Configure 前）
+      - name: Restore vcpkg cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLED_DIR }}
+          key: vcpkg-installed-linux-x64-linux-${{ hashFiles('vcpkg.json') }}
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 66c0373dc7fca549e5803087b9487edfe3aca0a1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install
+
+      - name: Configure CMake
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
+          -DCMAKE_C_COMPILER=clang-18
+          -DCMAKE_CXX_COMPILER=clang++-18
+          -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+
+      # 保存 vcpkg 缓存（Configure 后、Build 前，仅在缓存未命中时保存）
+      - name: Save vcpkg cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true' && matrix.build_type == 'Release'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLED_DIR }}
+          key: vcpkg-installed-linux-x64-linux-${{ hashFiles('vcpkg.json') }}
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }}
+
+      # Strip Release 二进制（先 strip 再 UPX，效果更好）
+      - name: Strip binary
+        if: matrix.build_type == 'Release'
+        run: strip --strip-all build/release/iot-manager
+
+      # UPX 压缩 Release 二进制（最优压缩）
+      - name: Compress with UPX
+        if: matrix.build_type == 'Release'
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: latest
+          files: build/release/iot-manager
+          args: --best --lzma
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iot-manager-linux-${{ matrix.build_type }}
+          path: build/${{ matrix.build_type == 'Release' && 'release' || 'debug' }}/
+
+  agent-armv7l:
+    runs-on: ubuntu-latest
+    name: agent - armv7l Release
+
+    env:
+      VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
+      MUSL_TOOLCHAIN_URL: https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/x86_64-arm-linux-musleabihf.tar.xz
+      MUSL_TOOLCHAIN_DIR: ${{ github.workspace }}/arm-linux-musleabihf-cross
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache musl toolchain
+        id: cache-musl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MUSL_TOOLCHAIN_DIR }}
+          key: musl-arm-linux-musleabihf-v2
+
+      - name: Download musl cross-compilation toolchain
+        if: steps.cache-musl.outputs.cache-hit != 'true'
+        run: |
+          wget --retry-connrefused --waitretry=3 --tries=5 -O /tmp/musl-cross.tar.xz ${{ env.MUSL_TOOLCHAIN_URL }}
+          mkdir -p ${{ env.MUSL_TOOLCHAIN_DIR }}
+          tar xf /tmp/musl-cross.tar.xz -C ${{ env.MUSL_TOOLCHAIN_DIR }} --strip-components=1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf autoconf-archive automake libtool
+          echo "${{ env.MUSL_TOOLCHAIN_DIR }}/bin" >> $GITHUB_PATH
+
+      - name: Restore vcpkg cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLED_DIR }}
+          key: vcpkg-installed-arm-linux-${{ hashFiles('vcpkg.json') }}
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 66c0373dc7fca549e5803087b9487edfe3aca0a1
+
+      - name: Configure CMake
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
+          -DVCPKG_TARGET_TRIPLET=arm-linux
+          -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/triplets
+          -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${{ github.workspace }}/cmake/toolchain-armv7l.cmake
+          -DBUILD_FRONTEND=OFF
+
+      - name: Save vcpkg cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLED_DIR }}
+          key: vcpkg-installed-arm-linux-${{ hashFiles('vcpkg.json') }}
+
+      - name: Build agent
+        run: cmake --build build --config Release --target iot-agent
+
+      - name: Strip binary
+        run: arm-linux-musleabihf-strip --strip-all build/release/iot-agent
+
+      - name: Compress with UPX
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: latest
+          files: build/release/iot-agent
+          args: --best --lzma
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iot-agent-armv7l-Release
+          path: build/release/
+
+  l2config-windows:
+    runs-on: windows-latest
+    name: l2config - Windows Release
+
+    env:
+      VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore vcpkg cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLED_DIR }}
+          key: vcpkg-installed-windows-x64-static-${{ hashFiles('vcpkg.json') }}
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 66c0373dc7fca549e5803087b9487edfe3aca0a1
+
+      - name: Download Npcap SDK
+        run: |
+          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.16.zip" -OutFile npcap-sdk.zip
+          Expand-Archive -Path npcap-sdk.zip -DestinationPath third_party/npcap-sdk
+        shell: pwsh
+
+      - name: Configure CMake
+        run: >
+          cmake -B build
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DBUILD_FRONTEND=OFF
+          -DBUILD_L2CONFIG=ON
+
+      - name: Save vcpkg cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLED_DIR }}
+          key: vcpkg-installed-windows-x64-static-${{ hashFiles('vcpkg.json') }}
+
+      - name: Build l2config
+        run: cmake --build build --config Release --target l2config
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2config-windows-Release
+          path: build/release/l2config.exe
+
+  cleanup:
+    needs: [build, agent-armv7l, l2config-windows]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          retain_days: 0
+          keep_minimum_runs: 1

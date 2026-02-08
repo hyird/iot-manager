@@ -1,0 +1,7 @@
+{
+  "agent": {
+    "code": "agent-arm-001",
+    "name": "ARM采集节点001",
+    "platform_url": "https://iot.a-z.xin"
+  }
+}

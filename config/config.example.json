@@ -1,0 +1,43 @@
+{
+  "listeners": [{ "address": "0.0.0.0", "port": 3000 }],
+  "app": {
+    "number_of_threads": 0,
+    "document_root": "./web",
+    "home_page": "index.html"
+  },
+  "db_clients": [
+    {
+      "name": "default",
+      "rdbms": "postgresql",
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "postgres",
+      "passwd": "YOUR_DB_PASSWORD",
+      "dbname": "iot-manager",
+      "is_fast": true,
+      "timeout": 10
+    }
+  ],
+  "redis_clients": [
+    {
+      "name": "default",
+      "host": "127.0.0.1",
+      "port": 6379,
+      "username": "",
+      "passwd": "",
+      "db": 0,
+      "is_fast": true,
+      "timeout": 10
+    }
+  ],
+  "custom_config": {
+    "log_level": "INFO",
+    "console_log": true,
+    "jwt": {
+      "secret": "YOUR_ACCESS_SECRET",
+      "access_token_expires_in": 86400,
+      "refresh_token_secret": "YOUR_REFRESH_SECRET",
+      "refresh_token_expires_in": 2592000
+    }
+  }
+}

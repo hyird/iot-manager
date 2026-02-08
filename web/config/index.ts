@@ -1,0 +1,18 @@
+export {
+  getComponentLoaderMap,
+  getPageConfig,
+  getPagesByModule,
+  getPermissionConfig,
+  getPermissionsByModule,
+  getPermissionsByResource,
+  getRegisteredPages,
+  getRegisteredPermissions,
+  type ModuleConfig,
+  type PageConfig,
+  type PermissionConfig,
+  registerModule,
+  registerPage,
+  registerPages,
+  registerPermission,
+  registerPermissions,
+} from "./registry";
