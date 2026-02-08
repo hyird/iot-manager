@@ -37,17 +37,17 @@ export function remove(id: number) {
 
 /** 获取设备选项列表 */
 export function getOptions() {
-  return request.get<Device.Option[]>(ENDPOINTS.OPTIONS);
+  return request.get<PaginatedResult<Device.Option>>(ENDPOINTS.OPTIONS);
 }
 
 /** 获取设备静态数据列表（支持 ETag 缓存） */
 export function getStatic() {
-  return request.get<{ list: Device.StaticData[] }>(ENDPOINTS.BASE);
+  return request.get<PaginatedResult<Device.StaticData>>(ENDPOINTS.BASE);
 }
 
 /** 获取设备实时数据列表（用于轮询） */
 export function getRealtime() {
-  return request.get<{ list: Device.Realtime[] }>(ENDPOINTS.REALTIME);
+  return request.get<PaginatedResult<Device.Realtime>>(ENDPOINTS.REALTIME);
 }
 
 /**
@@ -55,7 +55,7 @@ export function getRealtime() {
  * @deprecated 请使用 getStatic() + getRealtime() 组合
  */
 export function getList() {
-  return request.get<{ list: Device.RealTimeData[] }>(ENDPOINTS.BASE);
+  return request.get<PaginatedResult<Device.RealTimeData>>(ENDPOINTS.BASE);
 }
 
 /** 获取设备历史数据（支持多层查询） */

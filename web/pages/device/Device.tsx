@@ -94,7 +94,8 @@ const DevicePage = () => {
     enabled: canQuery,
     pollingInterval: wsConnected ? false : 3000,
   });
-  const { data: linkOptions = [] } = useLinkOptions({ enabled: canQuery });
+  const { data: linkOptionsData } = useLinkOptions({ enabled: canQuery });
+  const linkOptions = linkOptionsData?.list ?? [];
 
   const saveMutation = useDeviceSave();
   const deleteMutation = useDeviceDelete();
@@ -283,6 +284,12 @@ const DevicePage = () => {
         <div className="flex items-center justify-between flex-wrap gap-2">
           <h3 className="text-base font-medium m-0">设备管理</h3>
           <Space wrap>
+            <DeviceGroupPanel
+              selectedGroupId={selectedGroupId}
+              onSelect={setSelectedGroupId}
+              canManageGroup={canManageGroup}
+              ungroupedCount={deviceList.filter((d) => !d.group_id).length}
+            />
             <Search
               allowClear
               placeholder="设备名称 / 编码 / 类型"
@@ -385,16 +392,8 @@ const DevicePage = () => {
         </Card>
       </Flex>
 
-      {/* 左树右表 */}
-      <div className="flex gap-3">
-        <DeviceGroupPanel
-          selectedGroupId={selectedGroupId}
-          onSelect={setSelectedGroupId}
-          canManageGroup={canManageGroup}
-          ungroupedCount={deviceList.filter((d) => !d.group_id).length}
-        />
-        <div className="flex-1 min-w-0">
-          <div className="grid gap-3" style={gridCols}>
+      {/* 设备卡片网格 */}
+      <div className="grid gap-3" style={gridCols}>
             {isLoading && filteredDeviceList.length === 0 ? (
               renderSkeletons()
             ) : filteredDeviceList.length === 0 ? (
@@ -574,8 +573,6 @@ const DevicePage = () => {
                 );
               })
             )}
-          </div>
-        </div>
       </div>
 
       {/* 图片预览 */}

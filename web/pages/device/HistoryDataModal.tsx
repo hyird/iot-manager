@@ -2,7 +2,19 @@
  * 历史数据弹窗组件
  */
 
-import { Button, Checkbox, DatePicker, Form, Image, Modal, Space, Table, Tabs, Tag } from "antd";
+import {
+  Button,
+  Checkbox,
+  DatePicker,
+  Form,
+  Image,
+  Modal,
+  Space,
+  Spin,
+  Table,
+  Tabs,
+  Tag,
+} from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { LineChart } from "echarts/charts";
@@ -20,7 +32,8 @@ import { getDefaultTimeRange, makeRecordKey, resolveElementDisplay } from "./uti
 
 const { RangePicker } = DatePicker;
 
-const timePresets = [
+/** 每次调用时生成新鲜的时间预设（避免模块加载时 dayjs() 固化） */
+const getTimePresets = () => [
   {
     label: "最近1小时",
     value: [dayjs().subtract(1, "hour"), dayjs()] as [dayjs.Dayjs, dayjs.Dayjs],
@@ -109,9 +122,39 @@ const renderElementValue = (el: Device.Element | undefined) => {
   return result.value;
 };
 
+// ========== Raw JSONB 透传适配 ==========
+
+/** 后端非分页查询返回的 Raw 格式（JSONB 原样透传） */
+interface RawElementRecord {
+  reportTime: string;
+  data: Record<string, { name: string; value: string | number | null; unit?: string }>;
+}
+
+/** 将 Raw JSONB 格式转换为图表消费的 HistoryElement 格式 */
+const convertRawToElements = (list: unknown[]): Device.HistoryElement[] =>
+  (list as RawElementRecord[]).map((r) => ({
+    reportTime: r.reportTime,
+    elements: Object.values(r.data || {}).map((e) => ({
+      name: e.name,
+      value: e.value,
+      unit: e.unit,
+    })),
+  }));
+
 // ========== 组件 ==========
 
 const MODBUS_FUNC_CODE = "MODBUS_READ";
+
+/** 基于 HSL 色轮均匀分布生成 N 个高辨识度颜色（黄金角偏移避免相邻色相近） */
+const generateChartColors = (count: number): string[] => {
+  const colors: string[] = [];
+  const goldenAngle = 137.508;
+  for (let i = 0; i < count; i++) {
+    const hue = (i * goldenAngle) % 360;
+    colors.push(`hsl(${Math.round(hue)}, 70%, 50%)`);
+  }
+  return colors;
+};
 
 const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
   const [historyForm] = Form.useForm();
@@ -120,6 +163,8 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
   const [recordMap, setRecordMap] = useState<Record<string, RecordState>>({});
   const [activeTab, setActiveTab] = useState<"table" | "chart">("table");
   const [selectedElements, setSelectedElements] = useState<string[]>([]);
+  const [chartRecords, setChartRecords] = useState<Device.HistoryElement[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
 
   const isModbus = device?.protocol_type === "Modbus";
 
@@ -281,6 +326,46 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
     [fetchFuncRecords]
   );
 
+  /** 获取图表数据（限制单次返回条数，避免大范围查询卡顿） */
+  const fetchChartRecords = useCallback(async () => {
+    if (!device) return;
+    setChartLoading(true);
+    setSelectedElements([]);
+    try {
+      const { startTime, endTime } = getTimeRangeParams();
+      if (isModbus) {
+        const res = await deviceApi.getHistoryData({
+          deviceId: device.id,
+          funcCode: MODBUS_FUNC_CODE,
+          dataType: "ELEMENT",
+          startTime,
+          endTime,
+        });
+        setChartRecords(convertRawToElements(res.list || []));
+      } else {
+        const state = funcMap[device.device_code ?? ""];
+        const funcs = state?.list ?? [];
+        const elementFunc = funcs.find((f) => f.dataType === "ELEMENT");
+        if (!elementFunc) {
+          setChartRecords([]);
+          return;
+        }
+        const res = await deviceApi.getHistoryData({
+          code: device.device_code ?? "",
+          funcCode: elementFunc.funcCode,
+          dataType: "ELEMENT",
+          startTime,
+          endTime,
+        });
+        setChartRecords(convertRawToElements(res.list || []));
+      }
+    } catch {
+      setChartRecords([]);
+    } finally {
+      setChartLoading(false);
+    }
+  }, [device, isModbus, getTimeRangeParams, funcMap]);
+
   // 打开弹窗时初始化
   const handleAfterOpen = useCallback(
     (isOpen: boolean) => {
@@ -288,6 +373,8 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
         setFuncMap({});
         setRecordMap({});
         setExpandedFuncKeys([]);
+        setChartRecords([]);
+        setActiveTab("table");
         historyForm.setFieldsValue({ timeRange: getDefaultTimeRange() });
         if (isModbus) {
           fetchModbusRecords(device.id);
@@ -602,21 +689,10 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
   // ========== 图表数据准备 ==========
 
   const chartData = useMemo(() => {
-    if (!device) return null;
-    const key = isModbus
-      ? makeRecordKey(String(device.id), MODBUS_FUNC_CODE, "ELEMENT")
-      : expandedFuncKeys.length > 0
-        ? String(expandedFuncKeys[0])
-        : null;
+    if (!device || chartRecords.length === 0) return null;
 
-    if (!key) return null;
-
-    const rs = recordMap[key];
-    const records = (rs?.list as Device.HistoryElement[]) || [];
-
-    // 提取所有测点名称
     const elementNameSet = new Set<string>();
-    for (const r of records) {
+    for (const r of chartRecords) {
       for (const e of r.elements) {
         elementNameSet.add(e.name);
       }
@@ -630,14 +706,21 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
     }
 
     return {
-      records,
+      records: chartRecords,
       elementNames,
     };
-  }, [device, isModbus, recordMap, expandedFuncKeys, selectedElements.length]);
+  }, [device, chartRecords, selectedElements.length]);
 
   // ========== 图表渲染 ==========
 
   const renderChart = () => {
+    if (chartLoading) {
+      return (
+        <div className="flex items-center justify-center h-full">
+          <Spin />
+        </div>
+      );
+    }
     if (!chartData || chartData.records.length === 0) {
       return <div className="flex items-center justify-center h-full text-gray-400">暂无数据</div>;
     }
@@ -646,43 +729,42 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
 
     // 使用选中的测点（已在 useMemo 中初始化为全选）
     const displayElements = selectedElements;
+    const chartColors = generateChartColors(chartData.elementNames.length);
 
-    // 准备时间轴数据
-    const timeData = records.map((r) => new Date(r.reportTime).toLocaleString("zh-CN"));
-
-    // 准备每个测点的数据系列
-    const series = displayElements.map((name, index) => {
-      const data = records.map((r) => {
+    // 准备每个测点的数据系列（时间轴模式：[timestamp, value]）
+    const series = displayElements.map((name, index) => ({
+      name,
+      type: "line",
+      smooth: true,
+      showSymbol: false,
+      data: records.map((r) => {
         const el = r.elements.find((e) => e.name === name);
-        if (!el || !el.value) return null;
-        // 尝试转换为数字
-        const numValue = Number.parseFloat(String(el.value));
-        return Number.isNaN(numValue) ? null : numValue;
-      });
-
-      const colors = ["#1677ff", "#52c41a", "#faad14", "#ff4d4f", "#722ed1", "#13c2c2"];
-
-      return {
-        name,
-        type: "line",
-        smooth: true,
-        data,
-        itemStyle: {
-          color: colors[index % colors.length],
-        },
-      };
-    });
+        const numValue = el?.value != null ? Number.parseFloat(String(el.value)) : Number.NaN;
+        return [new Date(r.reportTime).getTime(), Number.isNaN(numValue) ? null : numValue];
+      }),
+      itemStyle: { color: chartColors[index % chartColors.length] },
+    }));
 
     return (
-      <div className="space-y-4">
+      <div className="flex flex-col h-full">
         {/* 测点选择器 */}
-        <div className="p-3 bg-gray-50 rounded">
-          <div className="text-sm text-gray-600 mb-2">选择要显示的测点（默认全选）：</div>
+        <div className="p-3 bg-gray-50 rounded shrink-0">
           <Checkbox.Group
-            options={chartData.elementNames.map((name) => ({ label: name, value: name }))}
             value={selectedElements}
             onChange={(values) => setSelectedElements(values as string[])}
-          />
+          >
+            <Space wrap>
+              {chartData.elementNames.map((name, i) => (
+                <Checkbox key={name} value={name}>
+                  <span
+                    className="inline-block w-3 h-3 rounded mr-1 align-middle"
+                    style={{ backgroundColor: chartColors[i % chartColors.length] }}
+                  />
+                  {name}
+                </Checkbox>
+              ))}
+            </Space>
+          </Checkbox.Group>
         </div>
 
         {/* 图表 */}
@@ -691,46 +773,32 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
           option={{
             tooltip: {
               trigger: "axis",
-              axisPointer: {
-                type: "cross",
-              },
+              axisPointer: { type: "cross" },
             },
             grid: {
               left: "3%",
               right: "4%",
-              bottom: "3%",
-              top: "10%",
+              bottom: 50,
+              top: "8%",
               containLabel: true,
             },
             xAxis: {
-              type: "category",
-              data: timeData,
-              axisLabel: {
-                rotate: 45,
-                fontSize: 10,
-              },
+              type: "time",
+              axisLabel: { fontSize: 10 },
             },
             yAxis: {
               type: "value",
-              axisLabel: {
-                fontSize: 11,
-              },
+              axisLabel: { fontSize: 11 },
             },
             series,
             dataZoom: [
-              {
-                type: "inside",
-                start: 0,
-                end: 100,
-              },
-              {
-                start: 0,
-                end: 100,
-              },
+              { type: "inside", start: 0, end: 100 },
+              { start: 0, end: 100 },
             ],
           }}
-          style={{ height: "500px" }}
+          style={{ height: "100%", minHeight: "300px" }}
           opts={{ renderer: "svg" }}
+          className="flex-1"
         />
       </div>
     );
@@ -755,8 +823,12 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
         className="mb-4 shrink-0"
         onFinish={() => {
           if (!device) return;
-          if (isModbus) fetchModbusRecords(device.id);
-          else fetchFuncList(device.device_code ?? "", 1);
+          if (activeTab === "chart") {
+            fetchChartRecords();
+          } else {
+            if (isModbus) fetchModbusRecords(device.id);
+            else fetchFuncList(device.device_code ?? "", 1);
+          }
         }}
       >
         <Form.Item
@@ -764,7 +836,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
           name="timeRange"
           rules={[{ required: true, message: "请选择时间范围" }]}
         >
-          <RangePicker showTime presets={timePresets} className="!w-[340px]" />
+          <RangePicker showTime presets={getTimePresets()} className="!w-[340px]" />
         </Form.Item>
         <Form.Item>
           <Space>
@@ -775,8 +847,12 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
               onClick={() => {
                 historyForm.setFieldsValue({ timeRange: getDefaultTimeRange() });
                 if (!device) return;
-                if (isModbus) fetchModbusRecords(device.id);
-                else fetchFuncList(device.device_code ?? "", 1);
+                if (activeTab === "chart") {
+                  fetchChartRecords();
+                } else {
+                  if (isModbus) fetchModbusRecords(device.id);
+                  else fetchFuncList(device.device_code ?? "", 1);
+                }
               }}
             >
               重置
@@ -787,7 +863,11 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
 
       <Tabs
         activeKey={activeTab}
-        onChange={(key) => setActiveTab(key as "table" | "chart")}
+        onChange={(key) => {
+          const tab = key as "table" | "chart";
+          setActiveTab(tab);
+          if (tab === "chart") fetchChartRecords();
+        }}
         className="flex-1 overflow-hidden"
         items={[
           {
@@ -803,7 +883,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
             key: "chart",
             label: "数据图表",
             children: (
-              <div className="overflow-auto p-4" style={{ height: "calc(75vh - 150px)" }}>
+              <div className="flex flex-col" style={{ height: "calc(75vh - 150px)" }}>
                 {renderChart()}
               </div>
             ),

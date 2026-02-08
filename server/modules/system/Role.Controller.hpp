@@ -70,16 +70,19 @@ public:
     }
 
     Task<HttpResponsePtr> all(HttpRequestPtr req) {
-        // 权限检查优先，防止未授权用户通过 ETag 探测资源变更
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:role:query"});
 
-        // ETag 检查
-        if (auto notModified = ETagUtils::checkETag(req, "role")) {
+        auto page = Pagination::fromRequest(req);
+
+        std::string params = std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "role", params)) {
             co_return notModified;
         }
 
-        auto resp = Response::ok(co_await service_.all());
-        ETagUtils::addETag(resp, "role");
+        auto items = co_await service_.all();
+        auto [pagedItems, total] = Pagination::paginate(items, page);
+        auto resp = Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
+        ETagUtils::addParamETag(resp, "role", params);
         co_return resp;
     }
 

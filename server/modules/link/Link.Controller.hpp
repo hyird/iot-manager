@@ -133,17 +133,22 @@ public:
     }
 
     /**
-     * @brief 获取链路选项（下拉列表，支持 ETag 缓存）
+     * @brief 获取链路选项（下拉列表，支持 ETag 缓存 + 可选分页）
      */
     Task<HttpResponsePtr> options(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:query"});
 
-        if (auto notModified = ETagUtils::checkETag(req, "link")) {
+        auto page = Pagination::fromRequest(req);
+
+        std::string params = std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "link", params)) {
             co_return notModified;
         }
 
-        auto resp = Response::ok(co_await service_.options());
-        ETagUtils::addETag(resp, "link");
+        auto items = co_await service_.options();
+        auto [pagedItems, total] = Pagination::paginate(items, page);
+        auto resp = Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
+        ETagUtils::addParamETag(resp, "link", params);
         co_return resp;
     }
 

@@ -2,6 +2,7 @@
 
 #include "common/database/DatabaseService.hpp"
 #include "common/utils/AppException.hpp"
+#include "common/utils/JsonHelper.hpp"
 
 /**
  * @brief 告警记录辅助类
@@ -69,9 +70,11 @@ public:
             "SELECT COUNT(*) AS count FROM alert_record r" + where, countParams);
         int total = countResult.empty() ? 0 : countResult[0]["count"].as<int>();
 
-        // 分页查询（JOIN 设备名和规则名）
+        // 分页查询（JOIN 设备名和规则名，显式列名避免取无用字段）
         std::string sql = R"(
-            SELECT r.*, d.name AS device_name, ar.name AS rule_name
+            SELECT r.id, r.rule_id, r.device_id, r.severity, r.status, r.message,
+                   r.detail, r.triggered_at, r.acknowledged_at, r.acknowledged_by, r.resolved_at,
+                   d.name AS device_name, ar.name AS rule_name
             FROM alert_record r
             LEFT JOIN device d ON r.device_id = d.id
             LEFT JOIN alert_rule ar ON r.rule_id = ar.id
@@ -96,13 +99,8 @@ public:
             item["status"] = row["status"].as<std::string>();
             item["message"] = row["message"].as<std::string>();
 
-            // 解析 detail JSONB
-            Json::CharReaderBuilder builder;
-            Json::Value detailJson;
-            std::string detailStr = row["detail"].as<std::string>();
-            std::istringstream stream(detailStr);
-            Json::parseFromStream(builder, stream, &detailJson, nullptr);
-            item["detail"] = detailJson;
+            // JSONB 透传：detail 原样传递到响应
+            item["detail"] = JsonHelper::parse(row["detail"].as<std::string>());
 
             item["triggered_at"] = row["triggered_at"].as<std::string>();
             item["acknowledged_at"] = row["acknowledged_at"].isNull() ? Json::nullValue

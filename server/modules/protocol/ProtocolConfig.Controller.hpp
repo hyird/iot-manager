@@ -219,7 +219,7 @@ public:
     }
 
     /**
-     * @brief 获取指定协议的配置选项（用于下拉选择，支持 ETag 缓存）
+     * @brief 获取指定协议的配置选项（用于下拉选择，支持 ETag 缓存 + 可选分页）
      */
     Task<HttpResponsePtr> options(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:protocol:query"});
@@ -229,17 +229,17 @@ public:
             co_return Response::badRequest("协议类型不能为空");
         }
 
-        // 使用 "protocol" 作为 ETag key，任何协议配置变更都会失效
-        if (auto notModified = ETagUtils::checkETag(req, "protocol")) {
+        auto page = Pagination::fromRequest(req);
+
+        std::string params = protocol + ":" + std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "protocol", params)) {
             co_return notModified;
         }
 
-        auto data = co_await service_.options(protocol);
-        Json::Value result;
-        result["list"] = data;
-
-        auto resp = Response::ok(result);
-        ETagUtils::addETag(resp, "protocol");
+        auto items = co_await service_.options(protocol);
+        auto [pagedItems, total] = Pagination::paginate(items, page);
+        auto resp = Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
+        ETagUtils::addParamETag(resp, "protocol", params);
         co_return resp;
     }
 };

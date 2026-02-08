@@ -254,11 +254,8 @@ private:
         deviceId_ = row["device_id"].as<int>();
         severity_ = row["severity"].as<std::string>();
 
-        // 解析 conditions JSONB
-        Json::CharReaderBuilder builder;
-        std::string condStr = row["conditions"].as<std::string>();
-        std::istringstream stream(condStr);
-        Json::parseFromStream(builder, stream, &conditions_, nullptr);
+        // JSONB → Json::Value
+        conditions_ = JsonHelper::parse(row["conditions"].as<std::string>());
 
         logic_ = row["logic"].as<std::string>();
         silenceDuration_ = row["silence_duration"].as<int>();

@@ -2,7 +2,7 @@
 
 /**
  * @brief 分页参数结构
- * 不传 pageSize 时获取全部数据
+ * page 和 pageSize 都传才分页，任意一个没传则返回全部数据
  */
 struct Pagination {
     using HttpRequestPtr = drogon::HttpRequestPtr;
@@ -20,8 +20,11 @@ struct Pagination {
     static Pagination fromRequest(const HttpRequestPtr& req) {
         Pagination p;
 
+        auto pageStr = req->getParameter("page");
         auto pageSizeStr = req->getParameter("pageSize");
-        if (!pageSizeStr.empty()) {
+
+        // 只有 page 和 pageSize 都传了才分页
+        if (!pageStr.empty() && !pageSizeStr.empty()) {
             try {
                 p.pageSize = std::stoi(pageSizeStr);
                 if (p.pageSize < 1) p.pageSize = 10;
@@ -30,14 +33,11 @@ struct Pagination {
                 p.pageSize = 10;
             }
 
-            auto pageStr = req->getParameter("page");
-            if (!pageStr.empty()) {
-                try {
-                    p.page = std::stoi(pageStr);
-                    if (p.page < 1) p.page = 1;
-                } catch (...) {
-                    p.page = 1;
-                }
+            try {
+                p.page = std::stoi(pageStr);
+                if (p.page < 1) p.page = 1;
+            } catch (...) {
+                p.page = 1;
             }
 
             p.offset = (p.page - 1) * p.pageSize;
@@ -45,6 +45,25 @@ struct Pagination {
 
         p.keyword = req->getParameter("keyword");
         return p;
+    }
+
+    /**
+     * @brief 对 Json 数组进行内存分页
+     * @return {分页后的数组, 总数}
+     */
+    static std::pair<Json::Value, int> paginate(const Json::Value& items, const Pagination& page) {
+        int total = items.isArray() ? static_cast<int>(items.size()) : 0;
+
+        if (!page.isPaged() || total == 0) {
+            return {items, total};
+        }
+
+        Json::Value pagedItems(Json::arrayValue);
+        int end = std::min(page.offset + page.pageSize, total);
+        for (int i = page.offset; i < end; ++i) {
+            pagedItems.append(items[i]);
+        }
+        return {pagedItems, total};
     }
 
     static HttpResponsePtr buildResponse(const Json::Value& items,

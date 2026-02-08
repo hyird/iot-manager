@@ -6,6 +6,7 @@ import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import type { TreeSelectProps } from "antd";
 import { useMemo } from "react";
 import type { Department } from "@/types";
+import type { PaginatedResult } from "../common";
 import * as api from "./api";
 import { departmentQueryKeys } from "./keys";
 
@@ -14,7 +15,7 @@ import { departmentQueryKeys } from "./keys";
  */
 export function useDepartmentList(
   params?: Department.Query,
-  options?: Omit<UseQueryOptions<Department.Item[]>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<PaginatedResult<Department.Item>>, "queryKey" | "queryFn">
 ) {
   return useQuery({
     queryKey: departmentQueryKeys.list(params),

@@ -8,12 +8,13 @@ export interface PaginationParams {
   pageSize?: number;
 }
 
-/** 分页响应 */
+/** 分页响应（page/pageSize 仅在传了分页参数时返回） */
 export interface PaginatedResult<T> {
   list: T[];
   total: number;
-  page: number;
-  pageSize: number;
+  page?: number;
+  pageSize?: number;
+  totalPages?: number;
 }
 
 /** 通用查询参数 */

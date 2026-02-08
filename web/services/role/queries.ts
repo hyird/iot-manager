@@ -43,7 +43,7 @@ export function useRoleDetail(
  * 获取所有启用角色（用于下拉选择）
  */
 export function useRoleOptions(
-  options?: Omit<UseQueryOptions<Role.Option[]>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<PaginatedResult<Role.Option>>, "queryKey" | "queryFn">
 ) {
   return useQuery({
     queryKey: roleQueryKeys.options(),

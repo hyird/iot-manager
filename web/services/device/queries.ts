@@ -24,7 +24,7 @@ export function useDeviceDetail(
 
 /** 设备选项列表 Query */
 export function useDeviceOptions(
-  options?: Omit<UseQueryOptions<Device.Option[]>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<PaginatedResult<Device.Option>>, "queryKey" | "queryFn">
 ) {
   return useQuery({
     queryKey: deviceKeys.options(),
@@ -35,7 +35,7 @@ export function useDeviceOptions(
 
 /** 设备静态数据 Query（支持 ETag 缓存，不轮询） */
 export function useDeviceStatic(
-  options?: Omit<UseQueryOptions<{ list: Device.StaticData[] }>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<PaginatedResult<Device.StaticData>>, "queryKey" | "queryFn">
 ) {
   return useQuery({
     queryKey: deviceKeys.static(),
@@ -47,7 +47,7 @@ export function useDeviceStatic(
 
 /** 设备实时数据 Query（轮询获取） */
 export function useDeviceRealtime(
-  options?: Omit<UseQueryOptions<{ list: Device.Realtime[] }>, "queryKey" | "queryFn"> & {
+  options?: Omit<UseQueryOptions<PaginatedResult<Device.Realtime>>, "queryKey" | "queryFn"> & {
     /** 轮询间隔（毫秒），默认 3000ms，设为 false 禁用轮询 */
     pollingInterval?: number | false;
   }

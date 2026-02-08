@@ -12,6 +12,15 @@ public:
     using HttpStatusCode = drogon::HttpStatusCode;
     using enum drogon::HttpStatusCode;
 
+    /** 直接返回预构建的 JSON 字符串（零 Json::Value 开销） */
+    static HttpResponsePtr rawJson(std::string body) {
+        auto resp = HttpResponse::newHttpResponse();
+        resp->setStatusCode(k200OK);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        resp->setBody(std::move(body));
+        return resp;
+    }
+
     static HttpResponsePtr ok(const Json::Value &data = Json::Value::null,
                                const std::string &message = "Success") {
         Json::Value json;

@@ -2,6 +2,7 @@
 
 #include "Department.Service.hpp"
 #include "common/utils/Response.hpp"
+#include "common/utils/Pagination.hpp"
 #include "common/utils/ControllerMacros.hpp"
 #include "common/utils/ValidatorHelper.hpp"
 #include "common/cache/ResourceVersion.hpp"
@@ -32,14 +33,21 @@ public:
     Task<HttpResponsePtr> list(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:dept:query"});
 
-        // ETag 检查（部门数据变化不频繁）
-        if (auto notModified = ETagUtils::checkETag(req, "department")) {
+        auto page = Pagination::fromRequest(req);
+        std::string keyword = req->getParameter("keyword");
+        std::string status = req->getParameter("status");
+
+        // 参数化 ETag 检查
+        std::string params = keyword + ":" + status + ":" +
+                             std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "department", params)) {
             co_return notModified;
         }
 
-        auto items = co_await service_.list(req->getParameter("keyword"), req->getParameter("status"));
-        auto resp = Response::ok(items);
-        ETagUtils::addETag(resp, "department");
+        auto items = co_await service_.list(keyword, status);
+        auto [pagedItems, total] = Pagination::paginate(items, page);
+        auto resp = Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
+        ETagUtils::addParamETag(resp, "department", params);
         co_return resp;
     }
 

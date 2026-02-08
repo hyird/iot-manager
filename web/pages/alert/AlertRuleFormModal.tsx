@@ -35,7 +35,8 @@ export function AlertRuleFormModal({
   const [conditions, setConditions] = useState<Alert.Condition[]>([]);
   const queryClient = useQueryClient();
 
-  const { data: deviceOptions = [] } = useDeviceOptions({ enabled: open });
+  const { data: deviceOptionsData } = useDeviceOptions({ enabled: open });
+  const deviceOptions = deviceOptionsData?.list ?? [];
 
   // 监听选中的设备 ID
   const selectedDeviceId = Form.useWatch("device_id", form);

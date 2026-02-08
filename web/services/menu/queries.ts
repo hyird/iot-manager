@@ -6,6 +6,7 @@ import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import type { TreeSelectProps } from "antd";
 import { useMemo } from "react";
 import type { Menu } from "@/types";
+import type { PaginatedResult } from "../common";
 import * as api from "./api";
 import { menuQueryKeys } from "./keys";
 
@@ -14,7 +15,7 @@ import { menuQueryKeys } from "./keys";
  */
 export function useMenuList(
   params?: Menu.Query,
-  options?: Omit<UseQueryOptions<Menu.Item[]>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<PaginatedResult<Menu.Item>>, "queryKey" | "queryFn">
 ) {
   return useQuery({
     queryKey: menuQueryKeys.list(params),

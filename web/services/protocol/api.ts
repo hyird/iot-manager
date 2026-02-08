@@ -39,7 +39,7 @@ export function remove(id: number) {
 
 /** 获取指定协议的配置选项列表 */
 export function getOptions(protocol: Protocol.Type) {
-  return request.get<{ list: Protocol.Option[] }>(ENDPOINTS.OPTIONS, {
+  return request.get<PaginatedResult<Protocol.Option>>(ENDPOINTS.OPTIONS, {
     params: { protocol },
   });
 }

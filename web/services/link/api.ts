@@ -41,7 +41,7 @@ export function remove(id: number) {
 
 /** 获取链路选项列表 */
 export function getOptions() {
-  return request.get<Link.Option[]>(ENDPOINTS.OPTIONS);
+  return request.get<PaginatedResult<Link.Option>>(ENDPOINTS.OPTIONS);
 }
 
 /** 获取链路枚举值（模式和协议列表） */

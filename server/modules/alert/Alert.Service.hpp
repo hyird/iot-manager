@@ -62,10 +62,10 @@ public:
 
     // ==================== 告警记录 ====================
 
-    Task<std::pair<Json::Value, int>> listRecords(int page, int pageSize,
+    Task<std::pair<Json::Value, int>> listRecords(const Pagination& page,
         int deviceId = 0, int ruleId = 0,
         const std::string& status = "", const std::string& severity = "") {
-        co_return co_await AlertRecord::list(page, pageSize, deviceId, ruleId, status, severity);
+        co_return co_await AlertRecord::list(page.page, page.pageSize, deviceId, ruleId, status, severity);
     }
 
     Task<void> acknowledgeRecord(int64_t id, int userId) {
@@ -183,28 +183,20 @@ public:
         detail["description"] = row["description"].isNull() ? "" : row["description"].as<std::string>();
         detail["severity"] = row["severity"].as<std::string>();
 
-        // 解析 JSONB 字段
-        Json::CharReaderBuilder builder;
-        Json::Value condJson, protocolJson;
-        std::string condStr = row["conditions"].as<std::string>();
-        std::string protocolStr = row["applicable_protocols"].as<std::string>();
-        std::istringstream condStream(condStr), protocolStream(protocolStr);
-        Json::parseFromStream(builder, condStream, &condJson, nullptr);
-        Json::parseFromStream(builder, protocolStream, &protocolJson, nullptr);
-
-        detail["conditions"] = condJson;
+        // JSONB 透传
+        detail["conditions"] = JsonHelper::parse(row["conditions"].as<std::string>());
         detail["logic"] = row["logic"].as<std::string>();
         detail["silence_duration"] = row["silence_duration"].as<int>();
         detail["recovery_condition"] = row["recovery_condition"].isNull() ? "reverse" : row["recovery_condition"].as<std::string>();
         detail["recovery_wait_seconds"] = row["recovery_wait_seconds"].isNull() ? 60 : row["recovery_wait_seconds"].as<int>();
-        detail["applicable_protocols"] = protocolJson;
+        detail["applicable_protocols"] = JsonHelper::parse(row["applicable_protocols"].as<std::string>());
         detail["created_by"] = row["created_by"].as<int>();
         detail["created_at"] = row["created_at"].as<std::string>();
 
         co_return detail;
     }
 
-    Task<Json::Value> listTemplates(const Pagination& page, const std::string& category = "") {
+    Task<std::pair<Json::Value, int>> listTemplates(const Pagination& page, const std::string& category = "") {
         DatabaseService db;
         std::string where = " WHERE deleted_at IS NULL";
         std::vector<std::string> params;
@@ -219,10 +211,9 @@ public:
             "SELECT COUNT(*) AS count FROM alert_rule_template" + where, params);
         int total = countResult.empty() ? 0 : countResult[0]["count"].as<int>();
 
-        // 分页查询
+        // 查询（使用 limitClause 支持可选分页）
         std::string sql = "SELECT * FROM alert_rule_template" + where +
-            " ORDER BY created_at DESC LIMIT " + std::to_string(page.pageSize) +
-            " OFFSET " + std::to_string((page.page - 1) * page.pageSize);
+            " ORDER BY created_at DESC" + page.limitClause();
 
         auto result = co_await db.execSqlCoro(sql, params);
 
@@ -240,14 +231,7 @@ public:
             list.append(item);
         }
 
-        Json::Value response;
-        response["list"] = list;
-        response["total"] = total;
-        response["page"] = page.page;
-        response["pageSize"] = page.pageSize;
-        response["totalPages"] = page.pageSize > 0 ? static_cast<int>(std::ceil(static_cast<double>(total) / page.pageSize)) : 0;
-
-        co_return response;
+        co_return std::make_pair(list, total);
     }
 
     // ==================== 批量操作 ====================
@@ -404,8 +388,11 @@ public:
             params.push_back(status);
         }
 
+        // 显式列名：不取 detail JSONB 列，减少数据传输
         std::string sql = R"(
-            SELECT r.*, d.name AS device_name, ar.name AS rule_name
+            SELECT r.id, r.severity, r.status, r.message,
+                   r.triggered_at, r.acknowledged_at,
+                   d.name AS device_name, ar.name AS rule_name
             FROM alert_record r
             LEFT JOIN device d ON r.device_id = d.id
             LEFT JOIN alert_rule ar ON r.rule_id = ar.id

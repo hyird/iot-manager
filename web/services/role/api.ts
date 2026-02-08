@@ -24,7 +24,7 @@ export function getDetail(id: number) {
 
 /** 获取所有启用角色（下拉用） */
 export function getAll() {
-  return request.get<Role.Option[]>(ENDPOINTS.ALL);
+  return request.get<PaginatedResult<Role.Option>>(ENDPOINTS.ALL);
 }
 
 /** 创建角色 */

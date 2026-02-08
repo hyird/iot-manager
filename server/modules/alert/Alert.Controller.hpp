@@ -50,24 +50,21 @@ public:
     Task<HttpResponsePtr> listRules(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:query"});
 
-        if (auto notModified = ETagUtils::checkETag(req, "alert")) {
+        auto page = Pagination::fromRequest(req);
+        int deviceId = ValidatorHelper::getIntParam(req, "deviceId", 0);
+        std::string severity = req->getParameter("severity");
+
+        // 参数化 ETag 检查
+        std::string params = std::to_string(deviceId) + ":" + severity + ":" +
+                             std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "alert", params)) {
             co_return notModified;
         }
-
-        auto page = Pagination::fromRequest(req);
-        int deviceId = 0;
-        std::string severity;
-
-        auto deviceIdStr = req->getParameter("deviceId");
-        if (!deviceIdStr.empty()) {
-            try { deviceId = std::stoi(deviceIdStr); } catch (...) {}
-        }
-        severity = req->getParameter("severity");
 
         auto result = co_await service_.listRules(page, deviceId, severity);
 
         auto resp = Response::ok(result.toJson());
-        ETagUtils::addETag(resp, "alert");
+        ETagUtils::addParamETag(resp, "alert", params);
         co_return resp;
     }
 
@@ -115,35 +112,14 @@ public:
     Task<HttpResponsePtr> listRecords(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:query"});
 
-        int page = 1, pageSize = 20;
-        int deviceId = 0, ruleId = 0;
-        std::string status, severity;
+        auto page = Pagination::fromRequest(req);
+        int deviceId = ValidatorHelper::getIntParam(req, "deviceId", 0);
+        int ruleId = ValidatorHelper::getIntParam(req, "ruleId", 0);
+        std::string status = req->getParameter("status");
+        std::string severity = req->getParameter("severity");
 
-        auto pageStr = req->getParameter("page");
-        if (!pageStr.empty()) { try { page = std::stoi(pageStr); } catch (...) {} }
-        auto pageSizeStr = req->getParameter("pageSize");
-        if (!pageSizeStr.empty()) { try { pageSize = std::stoi(pageSizeStr); } catch (...) {} }
-        auto deviceIdStr = req->getParameter("deviceId");
-        if (!deviceIdStr.empty()) { try { deviceId = std::stoi(deviceIdStr); } catch (...) {} }
-        auto ruleIdStr = req->getParameter("ruleId");
-        if (!ruleIdStr.empty()) { try { ruleId = std::stoi(ruleIdStr); } catch (...) {} }
-        status = req->getParameter("status");
-        severity = req->getParameter("severity");
-
-        if (pageSize < 1) pageSize = 20;
-        if (pageSize > 100) pageSize = 100;
-        if (page < 1) page = 1;
-
-        auto [list, total] = co_await service_.listRecords(page, pageSize, deviceId, ruleId, status, severity);
-
-        Json::Value data;
-        data["list"] = list;
-        data["total"] = total;
-        data["page"] = page;
-        data["pageSize"] = pageSize;
-        data["totalPages"] = pageSize > 0 ? static_cast<int>(std::ceil(static_cast<double>(total) / pageSize)) : 0;
-
-        co_return Response::ok(data);
+        auto [items, total] = co_await service_.listRecords(page, deviceId, ruleId, status, severity);
+        co_return Pagination::buildResponse(items, total, page.page, page.pageSize);
     }
 
     Task<HttpResponsePtr> acknowledgeRecord(HttpRequestPtr req, int id) {
@@ -191,7 +167,8 @@ public:
         auto page = Pagination::fromRequest(req);
         std::string category = req->getParameter("category");
 
-        co_return Response::ok(co_await service_.listTemplates(page, category));
+        auto [items, total] = co_await service_.listTemplates(page, category);
+        co_return Pagination::buildResponse(items, total, page.page, page.pageSize);
     }
 
     Task<HttpResponsePtr> createTemplate(HttpRequestPtr req) {
@@ -282,6 +259,8 @@ public:
     Task<HttpResponsePtr> getGroupedRecords(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:query"});
 
+        auto page = Pagination::fromRequest(req);
+
         int days = 7;
         auto daysStr = req->getParameter("days");
         if (!daysStr.empty()) {
@@ -291,17 +270,22 @@ public:
         if (days < 1) days = 1;
         if (days > 90) days = 90;
 
-        co_return Response::ok(co_await service_.getGroupedRecords(days));
+        auto items = co_await service_.getGroupedRecords(days);
+        auto [pagedItems, total] = Pagination::paginate(items, page);
+        co_return Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
     }
 
     Task<HttpResponsePtr> exportRecords(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:query"});
 
+        auto page = Pagination::fromRequest(req);
         std::string startTime = req->getParameter("startTime");
         std::string endTime = req->getParameter("endTime");
         std::string severity = req->getParameter("severity");
         std::string status = req->getParameter("status");
 
-        co_return Response::ok(co_await service_.exportRecords(startTime, endTime, severity, status));
+        auto items = co_await service_.exportRecords(startTime, endTime, severity, status);
+        auto [pagedItems, total] = Pagination::paginate(items, page);
+        co_return Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
     }
 };

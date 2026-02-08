@@ -3,7 +3,7 @@
  */
 
 import type { Department } from "@/types";
-import { request } from "../common";
+import { type PaginatedResult, request } from "../common";
 
 /** API 端点 */
 const ENDPOINTS = {
@@ -14,7 +14,7 @@ const ENDPOINTS = {
 
 /** 获取部门列表 */
 export function getList(params?: Department.Query) {
-  return request.get<Department.Item[]>(ENDPOINTS.BASE, { params });
+  return request.get<PaginatedResult<Department.Item>>(ENDPOINTS.BASE, { params });
 }
 
 /** 获取部门树 */

@@ -36,7 +36,7 @@ export function useProtocolConfigDetail(
 /** 获取指定协议的配置选项 */
 export function useProtocolConfigOptions(
   protocol: Protocol.Type,
-  options?: Omit<UseQueryOptions<{ list: Protocol.Option[] }>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<PaginatedResult<Protocol.Option>>, "queryKey" | "queryFn">
 ) {
   return useQuery({
     queryKey: protocolQueryKeys.options(protocol),

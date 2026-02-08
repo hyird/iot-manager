@@ -33,35 +33,36 @@ public:
     METHOD_LIST_END
 
     /**
-     * @brief 获取设备静态数据列表（支持 ETag 缓存）
-     * 异常由全局异常处理器统一处理
+     * @brief 获取设备静态数据列表（支持 ETag 缓存 + 可选分页）
      */
     Task<HttpResponsePtr> list(HttpRequestPtr req) {
-        // 权限检查优先，防止未授权用户通过 ETag 探测资源变更
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
 
-        // ETag 检查
-        if (auto notModified = ETagUtils::checkETag(req, "device")) {
+        auto page = Pagination::fromRequest(req);
+
+        // 参数化 ETag 检查
+        std::string params = std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "device", params)) {
             co_return notModified;
         }
 
-        Json::Value result;
-        result["list"] = co_await service_.listStatic();
-
-        auto resp = Response::ok(result);
-        ETagUtils::addETag(resp, "device");
+        auto items = co_await service_.listStatic();
+        auto [pagedItems, total] = Pagination::paginate(items, page);
+        auto resp = Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
+        ETagUtils::addParamETag(resp, "device", params);
         co_return resp;
     }
 
     /**
-     * @brief 获取设备实时数据（不缓存，用于轮询）
+     * @brief 获取设备实时数据（不缓存，用于轮询，支持可选分页）
      */
     Task<HttpResponsePtr> realtime(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
 
-        Json::Value result;
-        result["list"] = co_await service_.listRealtime();
-        co_return Response::ok(result);
+        auto page = Pagination::fromRequest(req);
+        auto items = co_await service_.listRealtime();
+        auto [pagedItems, total] = Pagination::paginate(items, page);
+        co_return Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
     }
 
     /**
@@ -115,25 +116,27 @@ public:
     }
 
     /**
-     * @brief 获取设备选项（下拉列表，支持 ETag 缓存）
+     * @brief 获取设备选项（下拉列表，支持 ETag 缓存 + 可选分页）
      */
     Task<HttpResponsePtr> options(HttpRequestPtr req) {
-        // 权限检查优先
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
 
-        // ETag 检查
-        if (auto notModified = ETagUtils::checkETag(req, "device")) {
+        auto page = Pagination::fromRequest(req);
+
+        std::string params = std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        if (auto notModified = ETagUtils::checkParamETag(req, "device", params)) {
             co_return notModified;
         }
 
-        auto resp = Response::ok(co_await service_.options());
-        ETagUtils::addETag(resp, "device");
+        auto items = co_await service_.options();
+        auto [pagedItems, total] = Pagination::paginate(items, page);
+        auto resp = Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
+        ETagUtils::addParamETag(resp, "device", params);
         co_return resp;
     }
 
     /**
-     * @brief 查询设备历史数据（支持 ETag 缓存）
-     * ETag 基于参数哈希 + 设备数据版本号生成
+     * @brief 查询设备历史数据（支持 ETag 缓存 + 可选分页）
      */
     Task<HttpResponsePtr> history(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
@@ -146,9 +149,7 @@ public:
         std::string startTime = req->getParameter("startTime");
         std::string endTime = req->getParameter("endTime");
 
-        // 使用安全的参数解析
-        int page = ValidatorHelper::getIntParam(req, "page", 1);
-        int pageSize = ValidatorHelper::getIntParam(req, "pageSize", 10);
+        auto page = Pagination::fromRequest(req);
 
         if (code.empty() && deviceId <= 0) {
             co_return Response::badRequest("设备编码或设备ID不能为空");
@@ -163,23 +164,26 @@ public:
         std::string identifier = deviceId > 0 ? std::to_string(deviceId) : code;
         std::string params = identifier + ":" + funcCode + ":" + dataType + ":" +
                              startTime + ":" + endTime + ":" +
-                             std::to_string(page) + ":" + std::to_string(pageSize);
+                             std::to_string(page.page) + ":" + std::to_string(page.pageSize);
         if (auto notModified = ETagUtils::checkParamETag(req, "device", params)) {
             co_return notModified;
         }
 
-        auto queryResult = co_await service_.queryHistory(
-            code, funcCode, dataType, startTime, endTime, page, pageSize, deviceId
+        // 非分页要素查询：Raw JSONB 透传（图表场景，零 JSON 解析）
+        if (!page.isPaged() && !funcCode.empty() && dataType != "IMAGE") {
+            auto rawBody = co_await service_.queryHistoryRaw(
+                code, funcCode, startTime, endTime, deviceId
+            );
+            auto resp = Response::rawJson(std::move(rawBody));
+            ETagUtils::addParamETag(resp, "device", params);
+            co_return resp;
+        }
+
+        auto [items, total] = co_await service_.queryHistory(
+            code, funcCode, dataType, startTime, endTime, page.page, page.pageSize, deviceId
         );
-        auto [list, total] = queryResult;
 
-        Json::Value result;
-        result["list"] = list;
-        result["total"] = total;
-        result["page"] = page;
-        result["pageSize"] = pageSize;
-
-        auto resp = Response::ok(result);
+        auto resp = Pagination::buildResponse(items, total, page.page, page.pageSize);
         ETagUtils::addParamETag(resp, "device", params);
         co_return resp;
     }

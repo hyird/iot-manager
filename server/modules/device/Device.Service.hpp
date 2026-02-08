@@ -11,6 +11,7 @@
 #include "common/protocol/ProtocolDispatcher.hpp"
 #include "common/cache/ResourceVersion.hpp"
 #include "common/utils/SqlHelper.hpp"
+#include "common/utils/JsonHelper.hpp"
 
 // 类型别名，简化代码
 using ElementData = DeviceDataTransformer::ElementData;
@@ -121,113 +122,7 @@ public:
             .save();
     }
 
-    // ==================== 复杂查询（保留原有实现）====================
-
-    /**
-     * @brief 获取设备列表（包含实时数据和管理信息）
-     * 优化版：使用缓存获取设备基本信息，只查询实时数据
-     */
-    Task<Json::Value> listWithRealtime() {
-        // 1. 从缓存获取设备基本信息（包含协议配置）
-        auto cachedDevices = co_await DeviceCache::instance().getDevices();
-
-        if (cachedDevices.empty()) {
-            co_return Json::Value(Json::arrayValue);
-        }
-
-        // 2. 构建设备 ID 列表，批量查询实时数据
-        std::vector<int> deviceIds;
-        deviceIds.reserve(cachedDevices.size());
-        for (const auto& d : cachedDevices) {
-            deviceIds.push_back(d.id);
-        }
-        std::string idList = SqlHelper::buildInClause(deviceIds);
-
-        // 3. 优化的 SQL：使用 DISTINCT ON 获取每个设备每个功能码的最新数据
-        std::string sql =
-            "SELECT device_id, data, report_time, data->>'funcCode' as func_code "
-            "FROM ( "
-            "  SELECT DISTINCT ON (device_id, data->>'funcCode') "
-            "         device_id, data, report_time "
-            "  FROM device_data "
-            "  WHERE device_id IN (" + idList + ") "
-            "    AND report_time >= NOW() - INTERVAL '" + std::to_string(Constants::DEVICE_DATA_LOOKBACK_DAYS) + " days' "
-            "  ORDER BY device_id, data->>'funcCode', report_time DESC NULLS LAST "
-            ") sub";
-
-        auto result = co_await dbService_.execSqlCoro(sql);
-
-        // 4. 按设备 ID 组织实时数据
-        std::map<int, std::map<std::string, std::pair<Json::Value, std::string>>> deviceDataMap;
-        std::map<int, std::string> deviceLatestTime;
-
-        Json::CharReaderBuilder readerBuilder;
-
-        for (const auto& row : result) {
-            int deviceId = FieldHelper::getInt(row["device_id"]);
-            std::string funcCode = FieldHelper::getString(row["func_code"], "");
-            std::string reportTime = FieldHelper::getString(row["report_time"], "");
-            std::string dataStr = FieldHelper::getString(row["data"], "");
-
-            Json::Value dataJson;
-            std::string errs;
-            std::istringstream iss(dataStr);
-            if (Json::parseFromStream(readerBuilder, iss, &dataJson, &errs)) {
-                deviceDataMap[deviceId][funcCode] = {dataJson, reportTime};
-
-                if (deviceLatestTime.find(deviceId) == deviceLatestTime.end() ||
-                    reportTime > deviceLatestTime[deviceId]) {
-                    deviceLatestTime[deviceId] = reportTime;
-                }
-            }
-        }
-
-        // 5. 合并缓存的设备信息和实时数据
-        Json::Value items(Json::arrayValue);
-
-        for (const auto& device : cachedDevices) {
-            Json::Value item = DeviceDataTransformer::buildDeviceBaseInfo(device);
-
-            // 实时数据时间
-            item["lastHeartbeatTime"] = Json::nullValue;
-            auto latestIt = deviceLatestTime.find(device.id);
-            item["reportTime"] = (latestIt != deviceLatestTime.end()) ? Json::Value(latestIt->second) : Json::nullValue;
-            item["image"] = Json::nullValue;
-
-            // 解析实时数据
-            std::map<std::string, ElementData> realtimeValues;
-            std::map<std::string, Json::Value> funcDataMap;
-
-            auto deviceDataIt = deviceDataMap.find(device.id);
-            if (deviceDataIt != deviceDataMap.end()) {
-                realtimeValues = DeviceDataTransformer::parseRealtimeValues(deviceDataIt->second);
-                for (const auto& [funcCode, dataPair] : deviceDataIt->second) {
-                    funcDataMap[funcCode] = dataPair.first;
-                }
-            }
-
-            // 使用 Transformer 解析协议配置
-            Json::Value elements, downFuncs, imageFuncs;
-            DeviceDataTransformer::parseProtocolFuncs(
-                device, realtimeValues, funcDataMap,
-                elements, downFuncs, imageFuncs
-            );
-
-            item["elements"] = elements;
-
-            // 按协议类型返回各自的配置字段
-            if (device.protocolType == Constants::PROTOCOL_SL651) {
-                item["downFuncs"] = downFuncs;
-                item["imageFuncs"] = imageFuncs;
-            } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
-                item["downFuncs"] = downFuncs;
-            }
-
-            items.append(item);
-        }
-
-        co_return items;
-    }
+    // ==================== 查询接口 ====================
 
     /**
      * @brief 获取设备静态数据列表（用于 ETag 缓存）
@@ -453,7 +348,11 @@ public:
                     GROUP BY data->>'funcCode'
                 ) sub
                 ORDER BY fc
-                LIMIT )" + std::to_string(pageSize) + " OFFSET " + std::to_string((page - 1) * pageSize);
+            )";
+
+            if (pageSize > 0) {
+                sql += " LIMIT " + std::to_string(pageSize) + " OFFSET " + std::to_string((page - 1) * pageSize);
+            }
 
             auto countResult = co_await dbService_.execSqlCoro(countSql, countParams);
             auto result = co_await dbService_.execSqlCoro(sql, queryParams);
@@ -479,7 +378,6 @@ public:
 
         // 获取协议配置以获取字典配置（dictConfig）
         std::map<std::string, Json::Value> elementDictConfigs;  // guideHex -> dictConfig
-        std::map<std::string, std::string> userNameCache;  // userId -> userName
 
         if (!isImage) {
             // 查询设备的协议配置
@@ -490,12 +388,9 @@ public:
             )", {deviceIdStr});
 
             if (!configResult.empty() && !configResult[0]["config"].isNull()) {
-                std::string configStr = configResult[0]["config"].as<std::string>();
-                Json::Value config;
-                std::istringstream configStream(configStr);
-                std::string errs;
-                Json::CharReaderBuilder readerBuilder;
-                if (Json::parseFromStream(readerBuilder, configStream, &config, &errs)) {
+                try {
+                auto config = JsonHelper::parse(configResult[0]["config"].as<std::string>());
+                {
                     // Modbus：从 registers[] 中按 "registerType_address" 构建 dictConfig 映射
                     if (config.isMember("registers") && config["registers"].isArray()) {
                         for (const auto& reg : config["registers"]) {
@@ -532,11 +427,18 @@ public:
                         }
                     }
                 }
+                } catch (...) {}
             }
         }
 
+        auto t0 = std::chrono::steady_clock::now();
+
         std::vector<std::string> countParams = {deviceIdStr, funcCode};
         std::string timeCondition = buildTimeCondition(countParams);
+        const bool isPaged = pageSize > 0;
+        const int normalizedPage = page > 0 ? page : 1;
+        const int effectivePageSize = isPaged ? pageSize : Constants::MAX_UNPAGED_ROWS;
+        const int effectiveOffset = isPaged ? ((normalizedPage - 1) * pageSize) : 0;
 
         // COUNT 查询也不需要 JOIN
         std::string countSql = R"(
@@ -549,216 +451,337 @@ public:
         std::vector<std::string> queryParams = {deviceIdStr, funcCode};
         buildTimeCondition(queryParams);
 
-        // 主查询：利用 idx_device_data_history (device_id, funcCode表达式, report_time DESC) 索引
-        std::string sql = R"(
-            SELECT report_time, data
+        // 内层查询：SQL 层提取 JSONB 标量字段
+        std::string innerSql = R"(
+            SELECT id, report_time,
+                   data->>'direction' AS direction,
+                   data->>'userId' AS user_id_str,
+                   data->>'responseId' AS response_id_str,
+                   data->>'status' AS status,
+                   data->>'failReason' AS fail_reason,
+                   data->'image'->>'data' AS image_data,
+                   data->'image'->>'size' AS image_size_str,
+                   data->'data' AS elements_data
             FROM )" + tableName + R"(
             WHERE device_id = ?
               AND data->>'funcCode' = ?
         )" + timeCondition + filterEmptyData + R"(
             ORDER BY report_time DESC
-            LIMIT )" + std::to_string(pageSize) + " OFFSET " + std::to_string((page - 1) * pageSize);
+        )";
 
-        auto countResult = co_await dbService_.execSqlCoro(countSql, countParams);
+        if (effectivePageSize > 0) {
+            innerSql += " LIMIT " + std::to_string(effectivePageSize);
+            if (effectiveOffset > 0) {
+                innerSql += " OFFSET " + std::to_string(effectiveOffset);
+            }
+        }
+
+        // 外层查询：JOIN sys_user/device_data + jsonb_each 展开要素，消除预扫描和全部 C++ JSON 解析
+        std::string sql;
+        if (isImage) {
+            sql = innerSql;
+        } else {
+            sql = R"(
+                SELECT d.id AS record_id, d.report_time, d.direction,
+                       d.user_id_str, d.response_id_str, d.status, d.fail_reason,
+                       u.username AS user_name,
+                       resp.data->'data' AS resp_elements_data,
+                       e.key AS elem_key,
+                       e.value->>'name' AS elem_name,
+                       e.value->'value' AS elem_value,
+                       e.value->>'unit' AS elem_unit
+                FROM ()" + innerSql + R"() d
+                LEFT JOIN LATERAL jsonb_each(d.elements_data) AS e(key, value) ON true
+                LEFT JOIN sys_user u ON d.user_id_str IS NOT NULL AND u.id = (d.user_id_str)::int
+                LEFT JOIN device_data resp ON d.response_id_str IS NOT NULL AND resp.id = (d.response_id_str)::bigint
+                ORDER BY d.report_time DESC, d.id DESC
+            )";
+        }
+
+        // 不分页时跳过 COUNT 查询
+        int total = 0;
+        if (isPaged) {
+            auto countResult = co_await dbService_.execSqlCoro(countSql, countParams);
+            total = countResult.empty() ? 0 : FieldHelper::getInt(countResult[0]["cnt"]);
+        }
+
         auto result = co_await dbService_.execSqlCoro(sql, queryParams);
 
-        int total = countResult.empty() ? 0 : FieldHelper::getInt(countResult[0]["cnt"]);
+        auto t1 = std::chrono::steady_clock::now();
+        LOG_INFO << "[queryHistory] SQL execution: "
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
+                 << "ms, rows=" << result.size();
 
         Json::Value items(Json::arrayValue);
-        Json::CharReaderBuilder readerBuilder;
 
-        // 预扫描：收集所有 userId 和 responseId，批量查询（避免 N+1）
-        std::map<int64_t, std::string> responseDataCache;  // responseId -> data JSON string
-        if (!isImage) {
-            std::set<int> userIdSet;
-            std::set<int64_t> responseIdSet;
+        // JSONB 单值解析器：将 PostgreSQL 返回的 JSONB 文本转为 Json::Value（无需 JSON 库解析）
+        auto parseJsonbValue = [](const std::string& v) -> Json::Value {
+            if (v.empty() || v == "null") return Json::nullValue;
+            if (v == "true") return Json::Value(true);
+            if (v == "false") return Json::Value(false);
+            if (v.front() == '"' && v.size() >= 2) return v.substr(1, v.size() - 2);
+            try {
+                if (v.find('.') != std::string::npos || v.find('e') != std::string::npos
+                    || v.find('E') != std::string::npos) {
+                    return std::stod(v);
+                }
+                return static_cast<Json::Int64>(std::stoll(v));
+            } catch (...) {
+                return Json::Value(v);
+            }
+        };
+
+        auto t2 = std::chrono::steady_clock::now();
+
+        if (isImage) {
+            // 图片数据：直接从 SQL 列读取（零 JSON 解析）
             for (const auto& row : result) {
-                if (row["data"].isNull()) continue;
-                std::string dataStr = row["data"].as<std::string>();
-                Json::Value parsedData;
-                std::istringstream iss(dataStr);
-                std::string errs;
-                if (Json::parseFromStream(readerBuilder, iss, &parsedData, &errs)) {
-                    if (parsedData.isMember("userId") && parsedData["userId"].isInt()) {
-                        userIdSet.insert(parsedData["userId"].asInt());
-                    }
-                    // 收集 responseId 用于批量预加载
-                    if (parsedData.isMember("responseId")) {
-                        int64_t rid = 0;
-                        if (parsedData["responseId"].isInt64()) {
-                            rid = parsedData["responseId"].asInt64();
-                        } else if (parsedData["responseId"].isString()) {
-                            try { rid = std::stoll(parsedData["responseId"].asString()); } catch (...) {}
-                        }
-                        if (rid > 0) responseIdSet.insert(rid);
+                Json::Value item;
+                item["reportTime"] = FieldHelper::getString(row["report_time"], "");
+                if (!row["image_data"].isNull()) {
+                    item["data"] = row["image_data"].as<std::string>();
+                    if (!row["image_size_str"].isNull()) {
+                        try { item["size"] = std::stoi(row["image_size_str"].as<std::string>()); }
+                        catch (...) { item["size"] = 0; }
                     }
                 }
+                items.append(item);
             }
-            if (!userIdSet.empty()) {
-                std::vector<int> userIds(userIdSet.begin(), userIdSet.end());
-                std::string userIdList = SqlHelper::buildInClause(userIds);
-                auto userResult = co_await dbService_.execSqlCoro(
-                    "SELECT id, username FROM sys_user WHERE id IN (" + userIdList + ")"
-                );
-                for (const auto& uRow : userResult) {
-                    std::string uid = std::to_string(FieldHelper::getInt(uRow["id"]));
-                    userNameCache[uid] = FieldHelper::getString(uRow["username"], "");
-                }
-            }
-            // 批量预加载所有应答报文数据（N+1 → 1 次查询）
-            if (!responseIdSet.empty()) {
-                std::vector<int64_t> rids(responseIdSet.begin(), responseIdSet.end());
-                std::string ridList = SqlHelper::buildInClause(rids);
-                auto respResult = co_await dbService_.execSqlCoro(
-                    "SELECT id, data FROM device_data WHERE id IN (" + ridList + ")"
-                );
-                for (const auto& rRow : respResult) {
-                    int64_t rid = rRow["id"].as<int64_t>();
-                    if (!rRow["data"].isNull()) {
-                        responseDataCache[rid] = rRow["data"].as<std::string>();
-                    }
-                }
-            }
-        }
-
-        for (const auto& row : result) {
+        } else {
+            // 要素数据：按 record_id 分组，全部字段从 SQL 列读取
+            int64_t prevRecordId = -1;
             Json::Value item;
-            item["reportTime"] = FieldHelper::getString(row["report_time"], "");
+            Json::Value elements(Json::arrayValue);
 
-            if (isImage) {
-                // 图片数据：从 data->'data' 中提取图片
-                if (!row["data"].isNull()) {
-                    std::string dataStr = row["data"].as<std::string>();
-                    Json::Value parsedData;
-                    std::istringstream stream(dataStr);
-                    std::string errs;
-                    if (Json::parseFromStream(readerBuilder, stream, &parsedData, &errs)) {
-                        if (parsedData.isMember("image")) {
-                            item["data"] = parsedData["image"].get("data", "").asString();
-                            item["size"] = parsedData["image"].get("size", 0).asInt();
-                        }
+            for (const auto& row : result) {
+                int64_t recordId = row["record_id"].as<int64_t>();
+
+                if (recordId != prevRecordId) {
+                    // 写入上一条记录
+                    if (prevRecordId >= 0) {
+                        item["elements"] = std::move(elements);
+                        items.append(std::move(item));
+                        elements = Json::Value(Json::arrayValue);
                     }
-                }
-                items.append(item);
-            } else {
-                // 要素数据：从 data->'data' 中提取要素
-                Json::Value elements(Json::arrayValue);
-                if (!row["data"].isNull()) {
-                    std::string dataStr = row["data"].as<std::string>();
-                    Json::Value parsedData;
-                    std::istringstream stream(dataStr);
-                    std::string errs;
-                    if (Json::parseFromStream(readerBuilder, stream, &parsedData, &errs)) {
-                        // 提取方向、应答ID、用户ID、状态、失败原因
-                        if (parsedData.isMember("direction")) {
-                            item["direction"] = parsedData["direction"].asString();
-                        }
-                        int64_t responseIdValue = 0;
-                        if (parsedData.isMember("responseId")) {
-                            // 兼容字符串和整数类型
-                            if (parsedData["responseId"].isInt64()) {
-                                responseIdValue = parsedData["responseId"].asInt64();
-                                item["responseId"] = responseIdValue;
-                            } else if (parsedData["responseId"].isString()) {
-                                std::string responseIdStr = parsedData["responseId"].asString();
-                                try {
-                                    responseIdValue = std::stoll(responseIdStr);
-                                    item["responseId"] = responseIdValue;
-                                } catch (...) {
-                                    // 解析失败，忽略
-                                }
-                            }
-                        }
-                        if (parsedData.isMember("status")) {
-                            item["status"] = parsedData["status"].asString();
-                        }
-                        if (parsedData.isMember("failReason")) {
-                            item["failReason"] = parsedData["failReason"].asString();
-                        }
-                        if (parsedData.isMember("userId") && parsedData["userId"].isInt()) {
-                            int userId = parsedData["userId"].asInt();
-                            item["userId"] = userId;
-                            // 从预加载的缓存中查找用户名
-                            std::string userIdStr = std::to_string(userId);
-                            auto nameIt = userNameCache.find(userIdStr);
-                            if (nameIt != userNameCache.end() && !nameIt->second.empty()) {
-                                item["userName"] = nameIt->second;
-                            }
-                        }
+                    prevRecordId = recordId;
 
-                        // 如果有应答报文，从预加载缓存中获取（批量查询已在上方完成）
-                        if (responseIdValue > 0) {
-                            auto respCacheIt = responseDataCache.find(responseIdValue);
-                            if (respCacheIt != responseDataCache.end()) {
-                                std::string respDataStr = respCacheIt->second;
-                                Json::Value respParsedData;
-                                std::istringstream respStream(respDataStr);
-                                std::string respErrs;
-                                if (Json::parseFromStream(readerBuilder, respStream, &respParsedData, &respErrs)) {
-                                    if (respParsedData.isMember("data") && respParsedData["data"].isObject()) {
-                                        Json::Value responseElements(Json::arrayValue);
-                                        const auto& respDataObj = respParsedData["data"];
-                                        for (const auto& respKey : respDataObj.getMemberNames()) {
-                                            Json::Value respEl;
-                                            const auto& respElemData = respDataObj[respKey];
-                                            respEl["name"] = respElemData.get("name", "").asString();
-                                            respEl["value"] = respElemData.get("value", Json::nullValue);
-                                            if (respElemData.isMember("unit")) {
-                                                respEl["unit"] = respElemData["unit"];
-                                            }
-                                            // 附加 dictConfig
-                                            size_t respUnderscorePos = respKey.find('_');
-                                            if (respUnderscorePos != std::string::npos) {
-                                                std::string respGuideHex = respKey.substr(respUnderscorePos + 1);
-                                                auto dictIt = elementDictConfigs.find(respGuideHex);
-                                                if (dictIt != elementDictConfigs.end()) {
-                                                    respEl["dictConfig"] = dictIt->second;
-                                                }
-                                            }
-                                            responseElements.append(respEl);
-                                        }
-                                        item["responseElements"] = responseElements;
+                    // 标量字段：直接从 SQL 列读取
+                    item = Json::Value();
+                    item["reportTime"] = FieldHelper::getString(row["report_time"], "");
+                    if (!row["direction"].isNull()) {
+                        item["direction"] = row["direction"].as<std::string>();
+                    }
+                    int64_t responseIdValue = 0;
+                    if (!row["response_id_str"].isNull()) {
+                        try {
+                            responseIdValue = std::stoll(row["response_id_str"].as<std::string>());
+                            item["responseId"] = responseIdValue;
+                        } catch (...) {}
+                    }
+                    if (!row["status"].isNull()) {
+                        item["status"] = row["status"].as<std::string>();
+                    }
+                    if (!row["fail_reason"].isNull()) {
+                        item["failReason"] = row["fail_reason"].as<std::string>();
+                    }
+                    // 用户名：直接从 JOIN 结果读取
+                    if (!row["user_id_str"].isNull()) {
+                        try {
+                            item["userId"] = std::stoi(row["user_id_str"].as<std::string>());
+                        } catch (...) {}
+                    }
+                    if (!row["user_name"].isNull()) {
+                        item["userName"] = row["user_name"].as<std::string>();
+                    }
+
+                    // 应答报文要素：从 JOIN 的 resp_elements_data 解析（仅每条记录一次，体积小）
+                    if (responseIdValue > 0 && !row["resp_elements_data"].isNull()) {
+                        try {
+                        auto respData = JsonHelper::parse(row["resp_elements_data"].as<std::string>());
+                        if (respData.isObject()) {
+                            Json::Value responseElements(Json::arrayValue);
+                            for (const auto& respKey : respData.getMemberNames()) {
+                                Json::Value respEl;
+                                const auto& respElemData = respData[respKey];
+                                respEl["name"] = respElemData.get("name", "").asString();
+                                respEl["value"] = respElemData.get("value", Json::nullValue);
+                                if (respElemData.isMember("unit")) {
+                                    respEl["unit"] = respElemData["unit"];
+                                }
+                                size_t respUnderscorePos = respKey.find('_');
+                                if (respUnderscorePos != std::string::npos) {
+                                    std::string respGuideHex = respKey.substr(respUnderscorePos + 1);
+                                    auto dictIt = elementDictConfigs.find(respGuideHex);
+                                    if (dictIt != elementDictConfigs.end()) {
+                                        respEl["dictConfig"] = dictIt->second;
                                     }
                                 }
-                            }  // end respCacheIt
-                        }
-
-                        if (parsedData.isMember("data") && parsedData["data"].isObject()) {
-                            const auto& dataObj = parsedData["data"];
-                            // data 格式为 { "funcCode_guideHex": { "name": ..., "value": ..., "unit": ... }, ... }
-                            for (const auto& key : dataObj.getMemberNames()) {
-                                Json::Value el;
-                                const auto& elemData = dataObj[key];
-                                el["name"] = elemData.get("name", "").asString();
-                                el["value"] = elemData.get("value", Json::nullValue);
-                                if (elemData.isMember("unit")) {
-                                    el["unit"] = elemData["unit"];
-                                }
-
-                                // 附加 dictConfig：先尝试完整 key（Modbus: HOLDING_REGISTER_100）
-                                auto dictIt = elementDictConfigs.find(key);
-                                if (dictIt == elementDictConfigs.end()) {
-                                    // 回退：从 key（SL651: funcCode_guideHex）中提取 guideHex
-                                    size_t underscorePos = key.find('_');
-                                    if (underscorePos != std::string::npos) {
-                                        dictIt = elementDictConfigs.find(key.substr(underscorePos + 1));
-                                    }
-                                }
-                                if (dictIt != elementDictConfigs.end()) {
-                                    el["dictConfig"] = dictIt->second;
-                                }
-
-                                elements.append(el);
+                                responseElements.append(respEl);
                             }
+                            item["responseElements"] = responseElements;
                         }
+                        } catch (...) {}
                     }
                 }
-                item["elements"] = elements;
-                items.append(item);
+
+                // 要素字段：每行一个要素，直接从 SQL 列读取
+                if (!row["elem_key"].isNull()) {
+                    Json::Value el;
+                    std::string elemKey = row["elem_key"].as<std::string>();
+                    el["name"] = row["elem_name"].isNull() ? "" : row["elem_name"].as<std::string>();
+                    if (!row["elem_value"].isNull()) {
+                        el["value"] = parseJsonbValue(row["elem_value"].as<std::string>());
+                    } else {
+                        el["value"] = Json::nullValue;
+                    }
+                    if (!row["elem_unit"].isNull()) {
+                        el["unit"] = row["elem_unit"].as<std::string>();
+                    }
+
+                    // 附加 dictConfig
+                    auto dictIt = elementDictConfigs.find(elemKey);
+                    if (dictIt == elementDictConfigs.end()) {
+                        size_t pos = elemKey.find('_');
+                        if (pos != std::string::npos) {
+                            dictIt = elementDictConfigs.find(elemKey.substr(pos + 1));
+                        }
+                    }
+                    if (dictIt != elementDictConfigs.end()) {
+                        el["dictConfig"] = dictIt->second;
+                    }
+
+                    elements.append(std::move(el));
+                }
+            }
+
+            // 写入最后一条记录
+            if (prevRecordId >= 0) {
+                item["elements"] = std::move(elements);
+                items.append(std::move(item));
             }
         }
+
+        auto t3 = std::chrono::steady_clock::now();
+        LOG_INFO << "[queryHistory] Format loop: "
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count() << "ms";
+
+        // 不分页时 total 用实际数量
+        if (!isPaged) {
+            total = static_cast<int>(items.size());
+            if (total >= Constants::MAX_UNPAGED_ROWS) {
+                LOG_WARN << "[queryHistory] Unpaged request hit safety limit: "
+                         << Constants::MAX_UNPAGED_ROWS
+                         << ", please use pagination for full-range exports";
+            }
+        }
+
+        LOG_INFO << "[queryHistory] Total: "
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count()
+                 << "ms, items=" << items.size();
 
         co_return std::make_tuple(items, total);
+    }
+
+    /**
+     * @brief 查询历史数据 - Raw JSONB 透传模式（零 C++ JSON 解析）
+     *
+     * 用于图表等非分页场景：直接从 PostgreSQL 取 JSONB 原文，
+     * 通过字符串拼接构建响应体，完全跳过 jsoncpp。
+     *
+     * @return 完整的 JSON 响应字符串，可直接用于 Response::rawJson()
+     */
+    Task<std::string> queryHistoryRaw(
+        const std::string& code,
+        const std::string& funcCode,
+        const std::string& startTime,
+        const std::string& endTime,
+        int deviceIdParam = 0
+    ) {
+        int deviceId = deviceIdParam;
+
+        if (deviceId <= 0) {
+            auto deviceResult = co_await dbService_.execSqlCoro(
+                "SELECT id FROM device WHERE protocol_params->>'device_code' = ? AND deleted_at IS NULL",
+                {code}
+            );
+            if (deviceResult.empty()) {
+                co_return R"({"code":0,"message":"Success","data":{"list":[],"total":0}})";
+            }
+            deviceId = FieldHelper::getInt(deviceResult[0]["id"]);
+        }
+
+        std::string deviceIdStr = std::to_string(deviceId);
+
+        // 判断是否需要查询归档数据
+        bool needArchive = false;
+        try {
+            auto now = std::chrono::system_clock::now();
+            auto archiveThreshold = now - std::chrono::hours(Constants::ARCHIVE_THRESHOLD_DAYS * 24);
+            auto tt = std::chrono::system_clock::to_time_t(archiveThreshold);
+            std::tm tm{};
+            #ifdef _WIN32
+            gmtime_s(&tm, &tt);
+            #else
+            gmtime_r(&tt, &tm);
+            #endif
+            char buf[32];
+            std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+            if (startTime < std::string(buf)) {
+                needArchive = true;
+            }
+        } catch (...) {}
+
+        std::string tableName = needArchive ? "device_data_all" : "device_data";
+
+        // 极简 SQL：只取 report_time 和 data->'data'（JSONB 原样输出）
+        std::vector<std::string> params = {deviceIdStr, funcCode, startTime, endTime};
+        std::string sql = R"(
+            SELECT report_time, data->'data' AS elements_data
+            FROM )" + tableName + R"(
+            WHERE device_id = ?
+              AND data->>'funcCode' = ?
+              AND report_time >= ?::timestamptz
+              AND report_time <= ?::timestamptz
+              AND (data->'data' IS NOT NULL AND data->'data' <> '{}'::jsonb)
+            ORDER BY report_time DESC
+        )";
+
+        auto t0 = std::chrono::steady_clock::now();
+        auto result = co_await dbService_.execSqlCoro(sql, params);
+        auto t1 = std::chrono::steady_clock::now();
+
+        LOG_INFO << "[queryHistoryRaw] SQL: "
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
+                 << "ms, rows=" << result.size();
+
+        // 直接拼接 JSON 字符串，完全跳过 jsoncpp
+        std::string body;
+        body.reserve(result.size() * 300 + 256);
+        body += R"({"code":0,"message":"Success","data":{"list":[)";
+
+        for (size_t i = 0; i < result.size(); ++i) {
+            if (i > 0) body += ',';
+            body += R"({"reportTime":")";
+            body += result[i]["report_time"].as<std::string>();
+            body += R"(","data":)";
+            if (!result[i]["elements_data"].isNull()) {
+                body += result[i]["elements_data"].as<std::string>();
+            } else {
+                body += "{}";
+            }
+            body += '}';
+        }
+
+        body += R"(],"total":)";
+        body += std::to_string(result.size());
+        body += "}}";
+
+        auto t2 = std::chrono::steady_clock::now();
+        LOG_INFO << "[queryHistoryRaw] String concat: "
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()
+                 << "ms, body=" << body.size() << " bytes";
+
+        co_return body;
     }
 
     // ==================== 指令下发 ====================

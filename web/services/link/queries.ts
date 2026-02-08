@@ -45,7 +45,7 @@ export function useLinkDetail(
  * 获取链路选项列表
  */
 export function useLinkOptions(
-  options?: Omit<UseQueryOptions<Link.Option[]>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<PaginatedResult<Link.Option>>, "queryKey" | "queryFn">
 ) {
   return useQuery({
     queryKey: linkQueryKeys.options(),

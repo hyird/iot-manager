@@ -55,6 +55,9 @@ inline constexpr int HISTORY_DEFAULT_QUERY_DAYS = 30;
 /** 归档数据阈值天数 */
 inline constexpr int ARCHIVE_THRESHOLD_DAYS = 365;
 
+/** 非分页查询最大返回行数（图表等场景的安全上限） */
+inline constexpr int MAX_UNPAGED_ROWS = 2000;
+
 // ==================== 链路模式 ====================
 
 /** TCP 服务端模式 */

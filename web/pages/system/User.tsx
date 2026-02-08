@@ -74,7 +74,8 @@ const SystemUserPage = () => {
   const { treeData: departmentTreeData, departmentMap } = useDepartmentTreeSelect("enabled");
 
   // 角色选项
-  const { data: roleOptions = [] } = useRoleOptions({ enabled: canAdd || canEdit });
+  const { data: roleOptionsData } = useRoleOptions({ enabled: canAdd || canEdit });
+  const roleOptions = roleOptionsData?.list ?? [];
 
   // 缓存角色选择器选项，避免每次渲染重新创建
   const roleSelectOptions = useMemo(
