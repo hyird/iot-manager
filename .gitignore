@@ -1,0 +1,47 @@
+# 编辑器和 IDE
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志
+*.log
+logs/
+
+# 临时文件
+*.tmp
+*.temp
+.cache/
+
+# 环境配置
+.env
+.env.local
+config/config.json
+config/config.local.json
+
+# Claude Code
+.claude/
+
+# Node.js
+node_modules/
+
+# 构建产物 (前端 dist/web, 后端 dist/<config>)
+dist/
+
+# C++ 编译中间文件
+build/
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.pdb
+*.ilk
+*.exp
+
+# vcpkg
+vcpkg_installed/
