@@ -1,9 +1,5 @@
 #pragma once
 
-#include <string>
-#include <optional>
-#include <json/json.h>
-
 /**
  * @brief 协议解析后的标准化结果（线程间传递）
  *

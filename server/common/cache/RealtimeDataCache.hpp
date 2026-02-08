@@ -7,8 +7,6 @@
 #include "common/utils/JsonHelper.hpp"
 #include "common/utils/SqlHelper.hpp"
 
-#include <mutex>
-
 /**
  * @brief 实时数据缓存服务（纯 Redis 版本）
  *
@@ -421,30 +419,31 @@ private:
             size_t end = std::min(start + SUB_BATCH, deviceIds.size());
 
             // 构建 EVAL 命令：
-            // EVAL "lua" numkeys key1 key2 ... deviceId1 deviceId2 ...
+            // EVAL script numkeys key1 key2 ... deviceId1 deviceId2 ...
             // Lua 返回扁平数组: [deviceId, fieldCount, f1, v1, f2, v2, ..., deviceId, ...]
-            std::ostringstream cmd;
-            cmd << "EVAL "
-                << "\"local r={} "
-                << "for i=1,#KEYS do "
-                << "  local d=redis.call('HGETALL',KEYS[i]) "
-                << "  r[#r+1]=ARGV[i] r[#r+1]=tostring(#d) "
-                << "  for _,v in ipairs(d) do r[#r+1]=v end "
-                << "end "
-                << "return r\" "
-                << (end - start);  // numkeys
+            // 注意：Lua 脚本必须通过 %s 传递，否则 hiredis 会按空格拆分脚本内容
+            static const std::string luaScript =
+                "local r={} "
+                "for i=1,#KEYS do "
+                "  local d=redis.call('HGETALL',KEYS[i]) "
+                "  r[#r+1]=ARGV[i] r[#r+1]=tostring(#d) "
+                "  for _,v in ipairs(d) do r[#r+1]=v end "
+                "end "
+                "return r";
 
+            std::ostringstream fmt;
+            fmt << "EVAL %s " << (end - start);  // numkeys
             // KEYS: Redis 键
             for (size_t i = start; i < end; ++i) {
-                cmd << " " << REDIS_KEY_PREFIX << deviceIds[i];
+                fmt << " " << REDIS_KEY_PREFIX << deviceIds[i];
             }
             // ARGV: deviceId（用于结果映射）
             for (size_t i = start; i < end; ++i) {
-                cmd << " " << deviceIds[i];
+                fmt << " " << deviceIds[i];
             }
 
             try {
-                auto evalResult = co_await client->execCommandCoro(cmd.str().c_str());
+                auto evalResult = co_await client->execCommandCoro(fmt.str().c_str(), luaScript.c_str());
 
                 if (evalResult.isNil() || evalResult.type() != drogon::nosql::RedisResultType::kArray) continue;
 

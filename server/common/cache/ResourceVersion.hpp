@@ -179,6 +179,33 @@ namespace ETagUtils {
     }
 
     /**
+     * @brief 检查并处理 ETag（多资源组合模式）
+     * 将多个资源版本号拼接生成组合 ETag
+     */
+    inline HttpResponsePtr checkETag(const HttpRequestPtr& req,
+                                     std::initializer_list<std::string> resourceKeys) {
+        if (req->method() != Get) return nullptr;
+
+        std::string ifNoneMatch = req->getHeader("If-None-Match");
+        if (ifNoneMatch.empty()) return nullptr;
+
+        std::string combined;
+        for (const auto& key : resourceKeys) {
+            if (!combined.empty()) combined += "|";
+            combined += ResourceVersion::instance().getVersion(key);
+        }
+        std::string etag = "\"" + combined + "\"";
+
+        if (ifNoneMatch == etag) {
+            LOG_DEBUG << "[ETag] 304 for " << req->path() << " (combined)";
+            auto resp = HttpResponse::newHttpResponse();
+            resp->setStatusCode(k304NotModified);
+            return resp;
+        }
+        return nullptr;
+    }
+
+    /**
      * @brief 检查并处理参数化 ETag（在 Controller 方法开头调用）
      * @param req HTTP 请求
      * @param resourceKey 资源 key
@@ -208,6 +235,19 @@ namespace ETagUtils {
      */
     inline void addETag(const HttpResponsePtr& resp, const std::string& resourceKey) {
         resp->addHeader("ETag", ResourceVersion::instance().makeETag(resourceKey));
+    }
+
+    /**
+     * @brief 为响应添加 ETag header（多资源组合模式）
+     */
+    inline void addETag(const HttpResponsePtr& resp,
+                        std::initializer_list<std::string> resourceKeys) {
+        std::string combined;
+        for (const auto& key : resourceKeys) {
+            if (!combined.empty()) combined += "|";
+            combined += ResourceVersion::instance().getVersion(key);
+        }
+        resp->addHeader("ETag", "\"" + combined + "\"");
     }
 
     /**

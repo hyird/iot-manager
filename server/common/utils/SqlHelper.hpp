@@ -1,10 +1,5 @@
 #pragma once
 
-#include <sstream>
-#include <string>
-#include <utility>
-#include <vector>
-
 /**
  * @brief SQL 构建辅助工具
  *

@@ -41,9 +41,15 @@
 // 其他
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <cmath>
 #include <ctime>
 #include <algorithm>
+#include <numeric>
+#include <bit>
+#include <utility>
+#include <deque>
 #include <cctype>
 #include <exception>
 #include <stdexcept>

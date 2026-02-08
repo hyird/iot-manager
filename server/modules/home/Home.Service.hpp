@@ -15,7 +15,6 @@
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
 #else
-#include <fstream>
 #include <sys/statvfs.h>
 #include <sys/utsname.h>
 #include <unistd.h>
