@@ -47,7 +47,10 @@ let refreshSubscribers: Array<{
   onError: (error: Error) => void;
 }> = [];
 
-function subscribeTokenRefresh(onSuccess: (token: string) => void, onError: (error: Error) => void) {
+function subscribeTokenRefresh(
+  onSuccess: (token: string) => void,
+  onError: (error: Error) => void
+) {
   refreshSubscribers.push({ onSuccess, onError });
 }
 

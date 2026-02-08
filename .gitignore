@@ -26,11 +26,9 @@ config/config.local.json
 # Node.js
 node_modules/
 
-# 构建产物 (前端 dist/web, 后端 dist/<config>)
-dist/
-
-# C++ 编译中间文件
+# 构建产物 (前端 build/web, 后端 build/<config>)
 build/
+dist/
 *.exe
 *.obj
 *.o

@@ -194,11 +194,7 @@ export function LoginPage() {
           <Title level={3} style={titleStyle}>
             登录
           </Title>
-          <Form<Auth.LoginRequest>
-            form={form}
-            layout="vertical"
-            onFinish={onFinish}
-          >
+          <Form<Auth.LoginRequest> form={form} layout="vertical" onFinish={onFinish}>
             <Form.Item
               label="用户名"
               name="username"

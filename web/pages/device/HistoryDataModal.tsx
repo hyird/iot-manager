@@ -5,8 +5,15 @@
 import { Button, Checkbox, DatePicker, Form, Image, Modal, Space, Table, Tabs, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import ReactECharts from "echarts-for-react";
+import { LineChart } from "echarts/charts";
+import { DataZoomComponent, GridComponent, TooltipComponent } from "echarts/components";
+import * as echarts from "echarts/core";
+import { SVGRenderer } from "echarts/renderers";
+import ReactEChartsCore from "echarts-for-react/lib/core";
 import { useCallback, useMemo, useState } from "react";
+
+echarts.use([LineChart, GridComponent, TooltipComponent, DataZoomComponent, SVGRenderer]);
+
 import { deviceApi } from "@/services";
 import type { Device, HistoryDataType } from "@/types";
 import { getDefaultTimeRange, makeRecordKey, resolveElementDisplay } from "./utils";
@@ -679,7 +686,8 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
         </div>
 
         {/* 图表 */}
-        <ReactECharts
+        <ReactEChartsCore
+          echarts={echarts}
           option={{
             tooltip: {
               trigger: "axis",

@@ -116,7 +116,7 @@ if(BUILD_FRONTEND)
         )
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${PROJECT_SOURCE_DIR}/dist/web"
+                "${PROJECT_SOURCE_DIR}/build/web"
                 "$<TARGET_FILE_DIR:${PROJECT_NAME}>/web"
             COMMENT "Copying frontend build to output directory..."
         )

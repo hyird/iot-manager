@@ -21,7 +21,12 @@ interface DeviceGroupPanelProps {
 
 type TreeKey = string | number;
 
-const DeviceGroupPanel = ({ selectedGroupId, onSelect, canManageGroup, ungroupedCount }: DeviceGroupPanelProps) => {
+const DeviceGroupPanel = ({
+  selectedGroupId,
+  onSelect,
+  canManageGroup,
+  ungroupedCount,
+}: DeviceGroupPanelProps) => {
   const { modal } = App.useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [formModalVisible, setFormModalVisible] = useState(false);

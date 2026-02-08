@@ -38,8 +38,15 @@ import {
   Tag,
   Typography,
 } from "antd";
-import ReactECharts from "echarts-for-react";
+import { LineChart } from "echarts/charts";
+import { GridComponent, TooltipComponent } from "echarts/components";
+import * as echarts from "echarts/core";
+import { SVGRenderer } from "echarts/renderers";
+import ReactEChartsCore from "echarts-for-react/lib/core";
 import { memo, type ReactNode } from "react";
+
+echarts.use([LineChart, GridComponent, TooltipComponent, SVGRenderer]);
+
 import type { HomeStats, MonitorData, SystemInfo } from "@/services/home/types";
 import {
   formatBytes,
@@ -921,7 +928,8 @@ export const DataTrendCard = memo(function DataTrendCard({
               <Text type="secondary" className="text-xs block mb-2">
                 近7天数据量趋势
               </Text>
-              <ReactECharts
+              <ReactEChartsCore
+                echarts={echarts}
                 option={trendChartOption}
                 style={{ height: "180px" }}
                 opts={{ renderer: "svg" }}

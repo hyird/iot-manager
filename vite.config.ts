@@ -1,11 +1,14 @@
-import { defineConfig } from "vite";
-import tailwindcss from "@tailwindcss/vite";
-import react from "@vitejs/plugin-react";
-import cssInjectedByJs from "vite-plugin-css-injected-by-js";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+import cssInjectedByJs from "vite-plugin-css-injected-by-js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const buildId = crypto.randomUUID();
 
 export default defineConfig({
   root: "web",
@@ -29,15 +32,15 @@ export default defineConfig({
     },
   },
   build: {
-    target: "es6",
-    outDir: "../dist/web",
+    target: "es2020",
+    outDir: "../build/web",
     emptyOutDir: true,
-    chunkSizeWarningLimit: 1500,
+    sourcemap: true,
+    chunkSizeWarningLimit: 4000,
     rollupOptions: {
       output: {
-        entryFileNames: "assets/[name]-[hash].js",
-        chunkFileNames: "assets/[name]-[hash].js",
-        assetFileNames: "assets/[name]-[hash][extname]",
+        entryFileNames: `assets/app-${buildId}.js`,
+        inlineDynamicImports: true,
       },
     },
   },
