@@ -732,18 +732,21 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
     const chartColors = generateChartColors(chartData.elementNames.length);
 
     // 准备每个测点的数据系列（时间轴模式：[timestamp, value]）
-    const series = displayElements.map((name, index) => ({
-      name,
-      type: "line",
-      smooth: true,
-      showSymbol: false,
-      data: records.map((r) => {
-        const el = r.elements.find((e) => e.name === name);
-        const numValue = el?.value != null ? Number.parseFloat(String(el.value)) : Number.NaN;
-        return [new Date(r.reportTime).getTime(), Number.isNaN(numValue) ? null : numValue];
-      }),
-      itemStyle: { color: chartColors[index % chartColors.length] },
-    }));
+    const series = displayElements.map((name) => {
+      const colorIndex = chartData.elementNames.indexOf(name);
+      return {
+        name,
+        type: "line",
+        smooth: true,
+        showSymbol: false,
+        data: records.map((r) => {
+          const el = r.elements.find((e) => e.name === name);
+          const numValue = el?.value != null ? Number.parseFloat(String(el.value)) : Number.NaN;
+          return [new Date(r.reportTime).getTime(), Number.isNaN(numValue) ? null : numValue];
+        }),
+        itemStyle: { color: chartColors[colorIndex % chartColors.length] },
+      };
+    });
 
     return (
       <div className="flex flex-col h-full">
@@ -756,11 +759,13 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
             <Space wrap>
               {chartData.elementNames.map((name, i) => (
                 <Checkbox key={name} value={name}>
-                  <span
-                    className="inline-block w-3 h-3 rounded mr-1 align-middle"
-                    style={{ backgroundColor: chartColors[i % chartColors.length] }}
-                  />
-                  {name}
+                  <span className="inline-flex items-center">
+                    <span
+                      className="w-2.5 h-2.5 rounded-sm mr-1.5 shrink-0"
+                      style={{ backgroundColor: chartColors[i % chartColors.length] }}
+                    />
+                    {name}
+                  </span>
                 </Checkbox>
               ))}
             </Space>
@@ -770,6 +775,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
         {/* 图表 */}
         <ReactEChartsCore
           echarts={echarts}
+          notMerge
           option={{
             tooltip: {
               trigger: "axis",
