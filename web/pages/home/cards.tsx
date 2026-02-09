@@ -200,19 +200,19 @@ export const AlertCenterCard = memo(function AlertCenterCard({
             <Space direction="vertical" className="w-full">
               <div className="flex items-center justify-between">
                 <Tag color="red" icon={<WarningOutlined />}>
-                  Critical
+                  严重
                 </Tag>
                 <Text strong>{stats?.criticalAlertCount ?? 0}</Text>
               </div>
               <div className="flex items-center justify-between">
                 <Tag color="orange" icon={<AlertOutlined />}>
-                  Warning
+                  警告
                 </Tag>
                 <Text strong>{stats?.warningAlertCount ?? 0}</Text>
               </div>
               <div className="flex items-center justify-between">
                 <Tag color="blue" icon={<SafetyOutlined />}>
-                  Info
+                  信息
                 </Tag>
                 <Text strong>{stats?.infoAlertCount ?? 0}</Text>
               </div>
@@ -449,26 +449,6 @@ export const ServiceHealthCard = memo(function ServiceHealthCard({
               value={`${monitor?.postgres.activeConnections ?? 0} / ${monitor?.postgres.idleConnections ?? 0}`}
             />
             <InfoRow label="数据库大小" value={monitor?.postgres.databaseSize ?? "-"} />
-            {monitor?.postgres.slowQueryCount != null && (
-              <InfoRow
-                label="慢查询 (>1s)"
-                icon={
-                  monitor.postgres.slowQueryCount > 0 ? (
-                    <WarningOutlined className="text-orange-500" />
-                  ) : undefined
-                }
-                value={
-                  <Text
-                    strong
-                    style={{
-                      color: monitor.postgres.slowQueryCount > 10 ? "#ff4d4f" : undefined,
-                    }}
-                  >
-                    {monitor.postgres.slowQueryCount}
-                  </Text>
-                }
-              />
-            )}
           </div>
         </div>
       )}

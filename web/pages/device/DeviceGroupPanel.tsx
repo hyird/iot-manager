@@ -131,7 +131,7 @@ const DeviceGroupPanel = ({
       items.push(
         { key: "addChild", label: "新增子分组", icon: <PlusOutlined /> },
         { key: "edit", label: "编辑", icon: <EditOutlined /> },
-        { key: "delete", label: "删除", icon: <DeleteOutlined />, danger: true },
+        { key: "delete", label: "删除", icon: <DeleteOutlined />, danger: true }
       );
     }
     return items;

@@ -45,11 +45,15 @@ export function useMutationWithFeedback<TData = void, TVariables = void>(
       options.onSuccess?.(data, variables);
     },
     onError: (error: Error, variables) => {
-      const msg =
-        typeof options.errorMessage === "function"
-          ? options.errorMessage(error)
-          : options.errorMessage || error.message || "操作失败";
-      message.error(msg);
+      // 自定义错误提示覆盖拦截器的默认提示
+      if (options.errorMessage) {
+        const msg =
+          typeof options.errorMessage === "function"
+            ? options.errorMessage(error)
+            : options.errorMessage;
+        message.error(msg);
+      }
+      // 未设置 errorMessage 时，由 Axios 拦截器统一处理错误提示
 
       options.onError?.(error, variables);
     },

@@ -1,75 +1,69 @@
 import { PlusOutlined } from "@ant-design/icons";
 import { type UseMutationResult, useQueryClient } from "@tanstack/react-query";
-import { Button, Form, Input, InputNumber, Modal, Select, Spin } from "antd";
+import { AutoComplete, Button, Form, Input, InputNumber, Modal, Select, Spin } from "antd";
 import { useEffect, useMemo, useState } from "react";
-import { useDeviceStatic, useProtocolConfigDetail } from "@/services";
+import { useProtocolConfigDetail, useProtocolConfigOptions } from "@/services";
 import type { Alert, Modbus, Protocol, SL651 } from "@/types";
 import { ConditionEditor } from "./ConditionEditor";
+
+interface TemplateFormValues {
+  id?: number;
+  name: string;
+  category?: string;
+  description?: string;
+  severity: Alert.Severity;
+  logic: "and" | "or";
+  silence_duration: number;
+  recovery_condition: string;
+  recovery_wait_seconds: number;
+  protocol_config_id?: number;
+}
+
+interface AlertTemplateFormModalProps {
+  open: boolean;
+  editing: Alert.TemplateItem | null;
+  editingDetail?: Alert.TemplateDetail | null;
+  saveMutation: UseMutationResult<void, Error, Alert.TemplateDto & { id?: number }, unknown>;
+  onClose: () => void;
+}
 
 const PROTOCOL_TYPE_OPTIONS = [
   { label: "SL651", value: "SL651" },
   { label: "Modbus", value: "Modbus" },
 ];
 
-interface AlertRuleFormValues {
-  id?: number;
-  name: string;
-  device_id: number;
-  severity: Alert.Severity;
-  conditions: Alert.Condition[];
-  logic: "and" | "or";
-  silence_duration: number;
-  recovery_condition: string;
-  recovery_wait_seconds: number;
-  status: "enabled" | "disabled";
-  remark?: string;
-}
-
-interface AlertRuleFormModalProps {
-  open: boolean;
-  editing: Alert.RuleItem | null;
-  saveMutation: UseMutationResult<void, Error, Alert.RuleDto & { id?: number }, unknown>;
-  onClose: () => void;
-}
-
-export function AlertRuleFormModal({
+export function AlertTemplateFormModal({
   open,
   editing,
+  editingDetail,
   saveMutation,
   onClose,
-}: AlertRuleFormModalProps) {
-  const [form] = Form.useForm<AlertRuleFormValues>();
+}: AlertTemplateFormModalProps) {
+  const [form] = Form.useForm<TemplateFormValues>();
   const [conditions, setConditions] = useState<Alert.Condition[]>([]);
   const [protocolType, setProtocolType] = useState<Protocol.Type | "">("");
   const queryClient = useQueryClient();
 
-  // 获取带协议类型的设备列表（useMemo 稳定引用，避免 ?? [] 每次创建新数组）
-  const { data: deviceStaticData } = useDeviceStatic({ enabled: open });
-  const allDevices = useMemo(() => deviceStaticData?.list ?? [], [deviceStaticData?.list]);
+  // 根据协议类型获取配置选项列表
+  const { data: configOptionsData } = useProtocolConfigOptions(protocolType as Protocol.Type, {
+    enabled: open && !!protocolType,
+  });
+  const configOptions = configOptionsData?.list ?? [];
 
-  // 按协议类型过滤设备选项
-  const filteredDevices = useMemo(
-    () => (protocolType ? allDevices.filter((d) => d.protocol_type === protocolType) : allDevices),
-    [allDevices, protocolType],
-  );
+  // 监听表单中选中的协议配置 ID
+  const selectedConfigId = Form.useWatch("protocol_config_id", form);
 
-  // 监听选中的设备 ID
-  const selectedDeviceId = Form.useWatch("device_id", form);
-
-  // 从设备静态数据中获取协议配置 ID
-  const selectedDevice = allDevices.find((d) => d.id === selectedDeviceId);
-  const protocolConfigId = selectedDevice?.protocol_config_id ?? 0;
-
+  // 获取协议配置详情以提取要素
   const { data: protocolConfig, isLoading: isLoadingConfig } = useProtocolConfigDetail(
-    protocolConfigId,
-    { enabled: open && protocolConfigId > 0 },
+    selectedConfigId ?? 0,
+    { enabled: open && !!selectedConfigId }
   );
 
   // 从协议配置中提取要素选项
   const elementOptions = useMemo(() => {
     if (!protocolConfig?.config) return [];
 
-    const type = selectedDevice?.protocol_type || protocolConfig.protocol;
+    const type = protocolType || protocolConfig.protocol;
 
     if (type === "SL651") {
       const config = protocolConfig.config as SL651.Config;
@@ -113,27 +107,35 @@ export function AlertRuleFormModal({
     }
 
     return [];
-  }, [protocolConfig, selectedDevice?.protocol_type]);
+  }, [protocolConfig, protocolType]);
 
   useEffect(() => {
     if (open) {
-      if (editing) {
-        // 编辑模式：从已有设备推导协议类型
-        const editDevice = allDevices.find((d) => d.id === editing.device_id);
-        setProtocolType((editDevice?.protocol_type as Protocol.Type) || "");
+      if (editing && editingDetail) {
+        // 编辑模式：从详情中恢复协议类型
+        if (editingDetail.protocol_config_id) {
+          // 协议类型将在 protocolConfig 加载后自动确定
+          // 先尝试从 TemplateItem 的 protocol_type 获取
+          if (editing.protocol_type) {
+            setProtocolType(editing.protocol_type as Protocol.Type);
+          }
+        } else {
+          setProtocolType("");
+        }
+
         form.setFieldsValue({
-          id: editing.id,
-          name: editing.name,
-          device_id: editing.device_id,
-          severity: editing.severity,
-          logic: editing.logic,
-          silence_duration: editing.silence_duration,
-          recovery_condition: editing.recovery_condition,
-          recovery_wait_seconds: editing.recovery_wait_seconds,
-          status: editing.status,
-          remark: editing.remark,
+          id: editingDetail.id,
+          name: editingDetail.name,
+          category: editingDetail.category,
+          description: editingDetail.description,
+          severity: editingDetail.severity,
+          logic: editingDetail.logic,
+          silence_duration: editingDetail.silence_duration,
+          recovery_condition: editingDetail.recovery_condition,
+          recovery_wait_seconds: editingDetail.recovery_wait_seconds,
+          protocol_config_id: editingDetail.protocol_config_id || undefined,
         });
-        setConditions(editing.conditions || []);
+        setConditions(editingDetail.conditions || []);
       } else {
         form.resetFields();
         form.setFieldsValue({
@@ -142,13 +144,12 @@ export function AlertRuleFormModal({
           silence_duration: 300,
           recovery_condition: "reverse",
           recovery_wait_seconds: 60,
-          status: "enabled",
         });
         setConditions([]);
         setProtocolType("");
       }
     }
-  }, [open, editing, form, allDevices]);
+  }, [open, editing, editingDetail, form]);
 
   const addCondition = () => {
     setConditions((prev) => [
@@ -165,9 +166,11 @@ export function AlertRuleFormModal({
     setConditions((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const onFinish = (values: AlertRuleFormValues) => {
+  const onFinish = (values: TemplateFormValues) => {
+    // 从选中的协议配置推导 applicable_protocols
+    const applicableProtocols = protocolType ? [protocolType] : [];
     saveMutation.mutate(
-      { ...values, conditions },
+      { ...values, conditions, applicable_protocols: applicableProtocols },
       {
         onSuccess: () => {
           onClose();
@@ -180,54 +183,68 @@ export function AlertRuleFormModal({
   return (
     <Modal
       open={open}
-      title={editing ? "编辑规则" : "新建规则"}
+      title={editing ? "编辑模板" : "新建模板"}
       onCancel={onClose}
       onOk={() => form.submit()}
       confirmLoading={saveMutation.isPending}
       destroyOnHidden
       width={640}
     >
-      <Form<AlertRuleFormValues> form={form} layout="vertical" onFinish={onFinish}>
+      <Form<TemplateFormValues> form={form} layout="vertical" onFinish={onFinish}>
         <Form.Item name="id" hidden>
           <Input />
         </Form.Item>
 
         <Form.Item
-          label="规则名称"
+          label="模板名称"
           name="name"
-          rules={[{ required: true, message: "请输入规则名称" }]}
+          rules={[{ required: true, message: "请输入模板名称" }]}
         >
-          <Input placeholder="如：水位超高告警" />
+          <Input placeholder="如：高温告警模板" />
         </Form.Item>
 
         <div className="flex gap-4">
-          <Form.Item label="协议类型" className="w-[140px]">
+          <Form.Item label="分类" name="category" className="flex-1">
+            <AutoComplete
+              options={["温度", "水位", "流量", "压力", "湿度", "通用"].map((v) => ({
+                value: v,
+              }))}
+              placeholder="选择或输入分类"
+              filterOption
+            />
+          </Form.Item>
+
+          <Form.Item label="协议类型" className="flex-1">
             <Select
               value={protocolType || undefined}
               onChange={(v) => {
                 setProtocolType(v);
-                form.setFieldValue("device_id", undefined);
+                form.setFieldValue("protocol_config_id", undefined);
               }}
               allowClear
-              placeholder="全部协议"
+              placeholder="选择协议"
               options={PROTOCOL_TYPE_OPTIONS}
             />
           </Form.Item>
-
-          <Form.Item
-            label="关联设备"
-            name="device_id"
-            rules={[{ required: true, message: "请选择关联设备" }]}
-            className="flex-1"
-          >
-            <Select
-              showSearch
-              optionFilterProp="label"
-              placeholder="搜索并选择设备"
-              options={filteredDevices.map((d) => ({ label: d.name, value: d.id }))}
-            />
-          </Form.Item>
         </div>
+
+        <Form.Item
+          label="设备类型（协议配置）"
+          name="protocol_config_id"
+          rules={[{ required: true, message: "请选择设备类型" }]}
+        >
+          <Select
+            showSearch
+            optionFilterProp="label"
+            placeholder={protocolType ? "选择设备类型" : "请先选择协议类型"}
+            disabled={!protocolType}
+            options={configOptions.map((c) => ({ label: c.name, value: c.id }))}
+          />
+        </Form.Item>
+
+        <Form.Item label="描述" name="description">
+          <Input.TextArea rows={2} placeholder="模板描述（可选）" />
+        </Form.Item>
 
         <div className="flex gap-4">
           <Form.Item label="严重级别" name="severity" className="flex-1">
@@ -250,7 +267,7 @@ export function AlertRuleFormModal({
           <div className="flex items-center justify-between mb-2">
             <span className="font-medium">
               告警条件
-              {isLoadingConfig && selectedDeviceId && <Spin size="small" className="ml-2" />}
+              {isLoadingConfig && selectedConfigId && <Spin size="small" className="ml-2" />}
             </span>
             <Button type="dashed" size="small" icon={<PlusOutlined />} onClick={addCondition}>
               添加条件
@@ -258,7 +275,7 @@ export function AlertRuleFormModal({
           </div>
           {conditions.length === 0 && (
             <div className="text-gray-400 text-center py-4 border border-dashed rounded">
-              暂无条件，请点击"添加条件"
+              {selectedConfigId ? '暂无条件，请点击"添加条件"' : "请先选择设备类型，再添加条件"}
             </div>
           )}
           {conditions.map((cond, index) => (
@@ -277,15 +294,6 @@ export function AlertRuleFormModal({
             <InputNumber min={0} max={86400} className="w-full" />
           </Form.Item>
 
-          <Form.Item label="状态" name="status" className="flex-1">
-            <Select>
-              <Select.Option value="enabled">启用</Select.Option>
-              <Select.Option value="disabled">禁用</Select.Option>
-            </Select>
-          </Form.Item>
-        </div>
-
-        <div className="flex gap-4">
           <Form.Item label="恢复策略" name="recovery_condition" className="flex-1">
             <Select>
               <Select.Option value="reverse">条件反向恢复</Select.Option>
@@ -295,14 +303,10 @@ export function AlertRuleFormModal({
               <Select.Option value="auto_3600">自动恢复 (1小时)</Select.Option>
             </Select>
           </Form.Item>
-
-          <Form.Item label="恢复等待(秒)" name="recovery_wait_seconds" className="flex-1">
-            <InputNumber min={0} max={86400} className="w-full" />
-          </Form.Item>
         </div>
 
-        <Form.Item label="备注" name="remark">
-          <Input.TextArea rows={2} placeholder="可选备注" />
+        <Form.Item label="恢复等待(秒)" name="recovery_wait_seconds">
+          <InputNumber min={0} max={86400} className="w-full" />
         </Form.Item>
       </Form>
     </Modal>

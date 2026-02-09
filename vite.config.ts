@@ -32,10 +32,9 @@ export default defineConfig({
     },
   },
   build: {
-    target: "es2020",
+    target: "es6",
     outDir: "../build/web",
     emptyOutDir: true,
-    sourcemap: true,
     chunkSizeWarningLimit: 4000,
     rollupOptions: {
       output: {

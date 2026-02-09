@@ -75,7 +75,6 @@ export interface MonitorData {
     xactCommit?: number;
     xactRollback?: number;
     databaseSize?: string;
-    slowQueryCount?: number; // P0: 性能瓶颈指标
   };
   device: {
     registeredDevices: number;

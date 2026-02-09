@@ -73,11 +73,11 @@ target_precompile_headers(${PROJECT_NAME} PRIVATE
 )
 
 # ============== 输出目录设置 ==============
-# 输出目录为 dist/<config> (如 dist/release, dist/debug)
+# 输出目录为 build/<config> (如 build/release, build/debug)
 set_target_properties(${PROJECT_NAME} PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/dist/$<LOWER_CASE:$<CONFIG>>"
-    LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/dist/$<LOWER_CASE:$<CONFIG>>"
-    ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/dist/$<LOWER_CASE:$<CONFIG>>"
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/build/$<LOWER_CASE:$<CONFIG>>"
+    LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/build/$<LOWER_CASE:$<CONFIG>>"
+    ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/build/$<LOWER_CASE:$<CONFIG>>"
 )
 
 # 添加头文件到项目 (用于 IDE)

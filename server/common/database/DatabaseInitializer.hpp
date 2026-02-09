@@ -373,6 +373,7 @@ private:
                 recovery_condition VARCHAR(50) DEFAULT 'reverse',
                 recovery_wait_seconds INT DEFAULT 60,
                 applicable_protocols JSONB DEFAULT '["SL651", "Modbus"]',
+                protocol_config_id INT,
                 created_by INT NOT NULL,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,

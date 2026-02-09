@@ -47,7 +47,6 @@ export default function HomePage() {
   const handleClearCache = () => {
     clearCacheMutation.mutate(undefined, {
       onSuccess: () => message.success("缓存清理成功"),
-      onError: () => message.error("缓存清理失败"),
     });
   };
 
@@ -115,19 +114,16 @@ export default function HomePage() {
         trigger: "axis" as const,
         formatter: (params: unknown) => {
           const dataItem = (params as Array<{ name: string; value: number }>)[0];
-          const date = new Date(dataItem.name).toLocaleDateString("zh-CN");
-          return `${date}<br/>数据量: ${formatNumber(dataItem.value)}`;
+          return `${dataItem.name}<br/>数据量: ${formatNumber(dataItem.value)}`;
         },
       },
       grid: { left: "3%", right: "4%", bottom: "3%", top: "10%", containLabel: true },
       xAxis: {
         type: "category" as const,
-        data: stats.dataGrowthTrend.map((item) =>
-          new Date(item.date).toLocaleDateString("zh-CN", {
-            month: "short",
-            day: "numeric",
-          })
-        ),
+        data: stats.dataGrowthTrend.map((item) => {
+          const d = new Date(item.date);
+          return `${d.getMonth() + 1}/${d.getDate()}`;
+        }),
         axisLabel: { fontSize: 11 },
       },
       yAxis: {

@@ -118,21 +118,23 @@ public:
             ),
             top_failures AS (
                 SELECT d.name AS device_name,
-                       COUNT(DISTINCT DATE(dd.report_time)) AS online_days
+                       COUNT(DISTINCT DATE(dd.report_time)) AS online_days,
+                       LEAST(30, GREATEST(1, EXTRACT(EPOCH FROM NOW() - d.created_at) / 86400))::int AS total_days
                 FROM device d
                 LEFT JOIN device_data dd ON d.id = dd.device_id
+                  AND dd.report_time >= GREATEST(d.created_at, NOW() - INTERVAL '30 days')
                 WHERE d.deleted_at IS NULL
-                  AND dd.report_time >= NOW() - INTERVAL '30 days'
-                GROUP BY d.id, d.name
+                GROUP BY d.id, d.name, d.created_at
                 HAVING COUNT(dd.id) > 0
-                ORDER BY COUNT(DISTINCT DATE(dd.report_time)) ASC
+                ORDER BY COUNT(DISTINCT DATE(dd.report_time))::float
+                       / LEAST(30, GREATEST(1, EXTRACT(EPOCH FROM NOW() - d.created_at) / 86400)) ASC
                 LIMIT 5
             )
-            SELECT 'device' AS source, device_name AS name, alert_count AS count, 0 AS online_days FROM top_devices
+            SELECT 'device' AS source, device_name AS name, alert_count AS count, 0 AS online_days, 0 AS total_days FROM top_devices
             UNION ALL
-            SELECT 'rule' AS source, rule_name AS name, alert_count AS count, 0 AS online_days FROM top_rules
+            SELECT 'rule' AS source, rule_name AS name, alert_count AS count, 0 AS online_days, 0 AS total_days FROM top_rules
             UNION ALL
-            SELECT 'failure' AS source, device_name AS name, 0 AS count, online_days FROM top_failures
+            SELECT 'failure' AS source, device_name AS name, 0 AS count, online_days, total_days FROM top_failures
         )");
 
         Json::Value topDevices(Json::arrayValue);
@@ -154,8 +156,9 @@ public:
                 Json::Value item;
                 item["deviceName"] = row["name"].as<std::string>();
                 int onlineDays = row["online_days"].as<int>();
+                int totalDays = std::max(1, row["total_days"].as<int>());
                 item["onlineDays"] = onlineDays;
-                item["uptimeRate"] = std::min(100.0, (onlineDays / 30.0) * 100.0);
+                item["uptimeRate"] = std::min(100.0, (static_cast<double>(onlineDays) / totalDays) * 100.0);
                 topFailures.append(item);
             }
         }
@@ -397,18 +400,6 @@ public:
             pg["xactCommit"] = static_cast<Json::Int64>(connResult[0]["xact_commit"].as<int64_t>());
             pg["xactRollback"] = static_cast<Json::Int64>(connResult[0]["xact_rollback"].as<int64_t>());
             pg["databaseSize"] = connResult[0]["db_size"].as<std::string>();
-
-            // P0: 性能瓶颈 - 慢查询统计（> 1000ms）
-            auto slowQueries = co_await db_.execSqlCoro(R"(
-                SELECT COUNT(*) AS slow_query_count
-                FROM pg_stat_statements
-                WHERE mean_exec_time > 1000
-            )");
-            if (!slowQueries.empty()) {
-                pg["slowQueryCount"] = slowQueries[0]["slow_query_count"].as<int>();
-            } else {
-                pg["slowQueryCount"] = 0;  // pg_stat_statements 扩展未启用
-            }
         } catch (...) {
             pgOk = false;
         }
@@ -417,25 +408,43 @@ public:
             pg["activeConnections"] = 0;
             pg["idleConnections"] = 0;
             pg["maxConnections"] = 0;
-            pg["slowQueryCount"] = 0;
         }
         data["postgres"] = pg;
 
         // 5. 设备健康度统计
+        // 来源1: TCP 连接缓存（实时连接状态）→ 映射为 device.id
         auto connStats = DeviceConnectionCache::instance().getStats();
+        std::set<int> onlineIds;
+        {
+            const auto& devArr = connStats["devices"];
+            for (Json::ArrayIndex i = 0; i < devArr.size(); ++i) {
+                auto code = devArr[i]["deviceCode"].asString();
+                if (auto cached = DeviceCache::instance().findByCodeSync(code)) {
+                    onlineIds.insert(cached->id);
+                }
+            }
+        }
+
+        // 来源2: 数据上报（5分钟内有写入 device_data 的设备）
         auto deviceHealthResult = co_await db_.execSqlCoro(R"(
             SELECT
                 (SELECT COUNT(*) FROM device WHERE deleted_at IS NULL) AS total_devices,
                 (SELECT COUNT(DISTINCT device_id) FROM device_data
-                 WHERE report_time >= now() - interval '5 minutes') AS online_devices,
-                (SELECT COUNT(DISTINCT device_id) FROM device_data
                  WHERE report_time < now() - interval '5 minutes'
                    AND report_time >= now() - interval '1 hour') AS timeout_devices
         )");
+        auto dataOnlineResult = co_await db_.execSqlCoro(R"(
+            SELECT DISTINCT device_id FROM device_data
+            WHERE report_time >= now() - interval '5 minutes'
+        )");
+        for (const auto& row : dataOnlineResult) {
+            onlineIds.insert(row["device_id"].as<int>());
+        }
 
+        // 合并两个来源：TCP 连接 ∪ 数据上报 = 在线设备
         int totalDevices = deviceHealthResult[0]["total_devices"].as<int>();
-        int onlineDevices = deviceHealthResult[0]["online_devices"].as<int>();
         int timeoutDevices = deviceHealthResult[0]["timeout_devices"].as<int>();
+        int onlineDevices = static_cast<int>(onlineIds.size());
         int offlineDevices = totalDevices - onlineDevices;
         double onlineRate = totalDevices > 0 ? (static_cast<double>(onlineDevices) / totalDevices * 100.0) : 0.0;
 

@@ -32,9 +32,6 @@ export function useLogin() {
       message.success("登录成功");
       navigate("/", { replace: true });
     },
-    onError: (error: Error) => {
-      message.error(error.message || "登录失败");
-    },
   });
 }
 

@@ -159,6 +159,14 @@ public:
             silenceDuration_ = data["silence_duration"].asInt();
             markDirty();
         }
+        if (data.isMember("recovery_condition")) {
+            recoveryCondition_ = data["recovery_condition"].asString();
+            markDirty();
+        }
+        if (data.isMember("recovery_wait_seconds")) {
+            recoveryWaitSeconds_ = data["recovery_wait_seconds"].asInt();
+            markDirty();
+        }
         if (data.isMember("status")) {
             status_ = data["status"].asString();
             markDirty();
@@ -185,6 +193,8 @@ public:
         json["conditions"] = conditions_;
         json["logic"] = logic_;
         json["silence_duration"] = silenceDuration_;
+        json["recovery_condition"] = recoveryCondition_;
+        json["recovery_wait_seconds"] = recoveryWaitSeconds_;
         json["status"] = status_;
         json["remark"] = remark_;
         json["created_at"] = createdAt_;
@@ -216,6 +226,8 @@ private:
     Json::Value conditions_{Json::arrayValue};
     std::string logic_ = "and";
     int silenceDuration_ = 300;
+    std::string recoveryCondition_ = "reverse";
+    int recoveryWaitSeconds_ = 60;
     std::string status_ = "enabled";
     std::string remark_;
     std::string createdAt_;
@@ -230,6 +242,8 @@ private:
         if (data.isMember("conditions")) conditions_ = data["conditions"];
         logic_ = data.get("logic", "and").asString();
         silenceDuration_ = data.get("silence_duration", 300).asInt();
+        recoveryCondition_ = data.get("recovery_condition", "reverse").asString();
+        recoveryWaitSeconds_ = data.get("recovery_wait_seconds", 60).asInt();
         status_ = data.get("status", "enabled").asString();
         remark_ = data.get("remark", "").asString();
     }
@@ -259,6 +273,8 @@ private:
 
         logic_ = row["logic"].as<std::string>();
         silenceDuration_ = row["silence_duration"].as<int>();
+        recoveryCondition_ = row["recovery_condition"].isNull() ? "reverse" : row["recovery_condition"].as<std::string>();
+        recoveryWaitSeconds_ = row["recovery_wait_seconds"].isNull() ? 60 : row["recovery_wait_seconds"].as<int>();
         status_ = row["status"].as<std::string>();
         remark_ = row["remark"].isNull() ? "" : row["remark"].as<std::string>();
         createdAt_ = row["created_at"].as<std::string>();
@@ -275,12 +291,14 @@ private:
         std::string condJson = JsonHelper::serialize(conditions_);
 
         auto result = co_await tx.execSqlCoro(R"(
-            INSERT INTO alert_rule (name, device_id, severity, conditions, logic, silence_duration, status, remark, created_at)
-            VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?)
+            INSERT INTO alert_rule (name, device_id, severity, conditions, logic, silence_duration,
+                                    recovery_condition, recovery_wait_seconds, status, remark, created_at)
+            VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
         )", {
             name_, std::to_string(deviceId_), severity_,
             condJson, logic_, std::to_string(silenceDuration_),
+            recoveryCondition_, std::to_string(recoveryWaitSeconds_),
             status_, remark_, TimestampHelper::now()
         });
 
@@ -294,11 +312,13 @@ private:
         co_await tx.execSqlCoro(R"(
             UPDATE alert_rule
             SET name = ?, device_id = ?, severity = ?, conditions = ?::jsonb,
-                logic = ?, silence_duration = ?, status = ?, remark = ?, updated_at = ?
+                logic = ?, silence_duration = ?, recovery_condition = ?, recovery_wait_seconds = ?,
+                status = ?, remark = ?, updated_at = ?
             WHERE id = ?
         )", {
             name_, std::to_string(deviceId_), severity_,
             condJson, logic_, std::to_string(silenceDuration_),
+            recoveryCondition_, std::to_string(recoveryWaitSeconds_),
             status_, remark_, TimestampHelper::now(), std::to_string(id())
         });
 

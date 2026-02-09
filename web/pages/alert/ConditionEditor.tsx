@@ -23,9 +23,21 @@ const DIRECTION_OPTIONS = [
   { label: "下降", value: "fall" },
 ];
 
-interface ElementOption {
+/** 字典映射项（简化版，同时适用 SL651 和 Modbus） */
+export interface DictItem {
+  key: string;
+  label: string;
+  /** 触发值（仅 BIT 模式，"0"或"1"） */
+  value?: string;
+}
+
+export interface ElementOption {
   value: string;
   label: string;
+  /** 字典映射类型：BIT=位映射 VALUE=值映射（仅 SL651 DICT 要素） */
+  dictMapType?: "VALUE" | "BIT";
+  /** 字典映射项 */
+  dictItems?: DictItem[];
 }
 
 interface ConditionEditorProps {
@@ -47,6 +59,35 @@ export function ConditionEditor({
 
   const hasElements = elementOptions.length > 0;
 
+  // 当前选中要素的字典信息
+  const selectedElement = elementOptions.find((e) => e.value === value.elementKey);
+  const isBitDict = selectedElement?.dictMapType === "BIT" && !!selectedElement.dictItems?.length;
+  const isValueDict =
+    !!selectedElement?.dictItems?.length && selectedElement.dictMapType !== "BIT";
+
+  // 要素选择器（threshold 和 rate_of_change 共用）
+  const renderElementSelect = (span: number) => (
+    <Col span={span}>
+      {hasElements ? (
+        <Select
+          value={value.elementKey || undefined}
+          onChange={(v: string) => update({ elementKey: v, bitIndex: undefined })}
+          options={elementOptions}
+          showSearch
+          optionFilterProp="label"
+          placeholder="选择要素"
+          className="w-full"
+        />
+      ) : (
+        <Input
+          value={value.elementKey}
+          onChange={(e) => update({ elementKey: e.target.value })}
+          placeholder="要素标识"
+        />
+      )}
+    </Col>
+  );
+
   return (
     <div className="border border-gray-200 rounded-md p-3 mb-2 relative">
       <Button
@@ -59,7 +100,7 @@ export function ConditionEditor({
       />
 
       <Row gutter={[8, 8]}>
-        <Col span={8}>
+        <Col span={5}>
           <Select
             value={value.type}
             onChange={(type: Alert.ConditionType) => {
@@ -79,25 +120,21 @@ export function ConditionEditor({
 
         {value.type === "threshold" && (
           <>
-            <Col span={8}>
-              {hasElements ? (
+            {renderElementSelect(isBitDict ? 5 : 8)}
+            {isBitDict && (
+              <Col span={4}>
                 <Select
-                  value={value.elementKey || undefined}
-                  onChange={(v: string) => update({ elementKey: v })}
-                  options={elementOptions}
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="选择要素"
+                  value={value.bitIndex != null ? String(value.bitIndex) : undefined}
+                  onChange={(v: string) => update({ bitIndex: Number(v) })}
+                  options={selectedElement!.dictItems!.map((d) => ({
+                    value: d.key,
+                    label: `${d.label}(${d.key})`,
+                  }))}
+                  placeholder="选择位"
                   className="w-full"
                 />
-              ) : (
-                <Input
-                  value={value.elementKey}
-                  onChange={(e) => update({ elementKey: e.target.value })}
-                  placeholder="要素标识"
-                />
-              )}
-            </Col>
+              </Col>
+            )}
             <Col span={4}>
               <Select
                 value={value.operator}
@@ -106,18 +143,31 @@ export function ConditionEditor({
                 className="w-full"
               />
             </Col>
-            <Col span={4}>
-              <Input
-                value={value.value}
-                onChange={(e) => update({ value: e.target.value })}
-                placeholder="阈值"
-              />
+            <Col span={isBitDict ? 6 : 7}>
+              {isValueDict ? (
+                <Select
+                  value={value.value || undefined}
+                  onChange={(v: string) => update({ value: v })}
+                  options={selectedElement!.dictItems!.map((d) => ({
+                    value: d.key,
+                    label: d.label,
+                  }))}
+                  placeholder="选择值"
+                  className="w-full"
+                />
+              ) : (
+                <Input
+                  value={value.value}
+                  onChange={(e) => update({ value: e.target.value })}
+                  placeholder="阈值"
+                />
+              )}
             </Col>
           </>
         )}
 
         {value.type === "offline" && (
-          <Col span={16}>
+          <Col span={19}>
             <InputNumber
               value={value.duration}
               onChange={(v) => update({ duration: v ?? 300 })}
@@ -132,33 +182,29 @@ export function ConditionEditor({
 
         {value.type === "rate_of_change" && (
           <>
-            <Col span={8}>
-              {hasElements ? (
+            {renderElementSelect(isBitDict ? 5 : 8)}
+            {isBitDict && (
+              <Col span={4}>
                 <Select
-                  value={value.elementKey || undefined}
-                  onChange={(v: string) => update({ elementKey: v })}
-                  options={elementOptions}
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="选择要素"
+                  value={value.bitIndex != null ? String(value.bitIndex) : undefined}
+                  onChange={(v: string) => update({ bitIndex: Number(v) })}
+                  options={selectedElement!.dictItems!.map((d) => ({
+                    value: d.key,
+                    label: `${d.label}(${d.key})`,
+                  }))}
+                  placeholder="选择位"
                   className="w-full"
                 />
-              ) : (
-                <Input
-                  value={value.elementKey}
-                  onChange={(e) => update({ elementKey: e.target.value })}
-                  placeholder="要素标识"
-                />
-              )}
-            </Col>
-            <Col span={4}>
+              </Col>
+            )}
+            <Col span={5}>
               <Input
                 value={value.changeRate}
                 onChange={(e) => update({ changeRate: e.target.value })}
                 placeholder="变化率%"
               />
             </Col>
-            <Col span={4}>
+            <Col span={isBitDict ? 5 : 6}>
               <Select
                 value={value.changeDirection}
                 onChange={(changeDirection: Alert.ChangeDirection) => update({ changeDirection })}

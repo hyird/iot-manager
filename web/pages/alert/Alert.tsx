@@ -1,19 +1,29 @@
-import { App, Button, Input, Result, Select, Space, Table, Tabs, Tag } from "antd";
+import { useQueryClient } from "@tanstack/react-query";
+import { App, Button, Divider, Input, Modal, Result, Select, Space, Table, Tag } from "antd";
 import type { ColumnsType, TablePaginationConfig } from "antd/es/table";
 import { useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { StatusTag } from "@/components/StatusTag";
 import { useDebounceFn, usePermission } from "@/hooks";
 import {
+  alertApi,
   useAlertAcknowledge,
+  useAlertApplyTemplate,
   useAlertBatchAcknowledge,
   useAlertRecordList,
+  useAlertRuleBatchDelete,
   useAlertRuleDelete,
   useAlertRuleList,
   useAlertRuleSave,
+  useAlertStats,
+  useAlertTemplateDelete,
+  useAlertTemplateList,
+  useAlertTemplateSave,
+  useDeviceOptions,
 } from "@/services";
 import type { Alert } from "@/types";
 import { AlertRuleFormModal } from "./AlertRuleFormModal";
+import { AlertTemplateFormModal } from "./AlertTemplateFormModal";
 
 const { Search } = Input;
 
@@ -49,65 +59,142 @@ const STATUS_LABELS: Record<string, string> = {
   resolved: "已恢复",
 };
 
-// ==================== 告警规则 Tab ====================
+const SEVERITY_LABELS: Record<string, string> = {
+  critical: "严重",
+  warning: "警告",
+  info: "信息",
+};
 
-function RuleTab() {
-  const [keyword, setKeyword] = useState("");
-  const [severity, setSeverity] = useState("");
-  const [pagination, setPagination] = useState({ page: 1, pageSize: 10 });
-  const [modalVisible, setModalVisible] = useState(false);
-  const [editing, setEditing] = useState<Alert.RuleItem | null>(null);
+// ==================== 规则配置弹窗（规则 + 模板上下布局）====================
+
+function RuleConfigModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  // ---- 规则状态 ----
+  const [ruleKeyword, setRuleKeyword] = useState("");
+  const [ruleSeverity, setRuleSeverity] = useState("");
+  const [rulePagination, setRulePagination] = useState({ page: 1, pageSize: 5 });
+  const [ruleFormVisible, setRuleFormVisible] = useState(false);
+  const [ruleEditing, setRuleEditing] = useState<Alert.RuleItem | null>(null);
+  const [ruleSelectedKeys, setRuleSelectedKeys] = useState<number[]>([]);
+
+  // ---- 模板状态 ----
+  const [tplPagination, setTplPagination] = useState({ page: 1, pageSize: 5 });
+  const [tplFormVisible, setTplFormVisible] = useState(false);
+  const [tplEditing, setTplEditing] = useState<Alert.TemplateItem | null>(null);
+  const [tplEditingDetail, setTplEditingDetail] = useState<Alert.TemplateDetail | null>(null);
+  const [applyingTemplate, setApplyingTemplate] = useState<Alert.TemplateItem | null>(null);
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<number[]>([]);
+
   const { modal } = App.useApp();
+  const queryClient = useQueryClient();
 
   const canAdd = usePermission("iot:alert:add");
   const canEdit = usePermission("iot:alert:edit");
   const canDelete = usePermission("iot:alert:delete");
 
-  const doSearch = (value: string) => {
-    setKeyword(value);
-    setPagination((prev) => ({ ...prev, page: 1 }));
+  // ---- 规则数据 ----
+  const doRuleSearch = (value: string) => {
+    setRuleKeyword(value);
+    setRulePagination((prev) => ({ ...prev, page: 1 }));
   };
+  const { run: debouncedRuleSearch } = useDebounceFn(doRuleSearch, 300);
 
-  const { run: debouncedSearch } = useDebounceFn(doSearch, 300);
-
-  const { data: rulePage, isLoading } = useAlertRuleList({
-    page: pagination.page,
-    pageSize: pagination.pageSize,
-    keyword: keyword || undefined,
-    severity: severity || undefined,
+  const { data: rulePage, isLoading: ruleLoading } = useAlertRuleList({
+    page: rulePagination.page,
+    pageSize: rulePagination.pageSize,
+    keyword: ruleKeyword || undefined,
+    severity: ruleSeverity || undefined,
   });
 
-  const saveMutation = useAlertRuleSave();
-  const deleteMutation = useAlertRuleDelete();
+  const ruleSaveMutation = useAlertRuleSave();
+  const ruleDeleteMutation = useAlertRuleDelete();
+  const ruleBatchDeleteMutation = useAlertRuleBatchDelete();
 
-  const openCreateModal = () => {
-    setEditing(null);
-    setModalVisible(true);
+  // ---- 模板数据 ----
+  const { data: templatePage, isLoading: tplLoading } = useAlertTemplateList({
+    page: tplPagination.page,
+    pageSize: tplPagination.pageSize,
+  });
+
+  const tplSaveMutation = useAlertTemplateSave();
+  const tplDeleteMutation = useAlertTemplateDelete();
+  const applyMutation = useAlertApplyTemplate();
+
+  // ---- 规则操作 ----
+  const openRuleCreate = () => {
+    setRuleEditing(null);
+    setRuleFormVisible(true);
   };
-
-  const openEditModal = (record: Alert.RuleItem) => {
-    setEditing(record);
-    setModalVisible(true);
+  const openRuleEdit = (record: Alert.RuleItem) => {
+    setRuleEditing(record);
+    setRuleFormVisible(true);
   };
-
-  const onDelete = (record: Alert.RuleItem) => {
+  const onRuleDelete = (record: Alert.RuleItem) => {
     modal.confirm({
       title: `确认删除规则「${record.name}」吗？`,
       content: "删除后该规则将停止告警检测。此操作不可撤销。",
       okText: "确定删除",
       okButtonProps: { danger: true },
-      onOk: () => deleteMutation.mutate(record.id),
+      onOk: () => ruleDeleteMutation.mutate(record.id),
+    });
+  };
+  const onRuleBatchDelete = () => {
+    if (ruleSelectedKeys.length === 0) return;
+    modal.confirm({
+      title: "批量删除",
+      content: `确认删除选中的 ${ruleSelectedKeys.length} 条规则？此操作不可撤销。`,
+      okText: "确定删除",
+      okButtonProps: { danger: true },
+      onOk: () =>
+        ruleBatchDeleteMutation.mutate(ruleSelectedKeys, {
+          onSuccess: () => setRuleSelectedKeys([]),
+        }),
     });
   };
 
-  const handleTableChange = (paginationConfig: TablePaginationConfig) => {
-    setPagination({
-      page: paginationConfig.current || 1,
-      pageSize: paginationConfig.pageSize || 10,
+  // ---- 模板操作 ----
+  const openTplCreate = () => {
+    setTplEditing(null);
+    setTplEditingDetail(null);
+    setTplFormVisible(true);
+  };
+  const openTplEdit = async (record: Alert.TemplateItem) => {
+    try {
+      const detail = await alertApi.getTemplateDetail(record.id);
+      setTplEditing(record);
+      setTplEditingDetail(detail);
+      setTplFormVisible(true);
+    } catch {
+      // 错误由 axios 拦截器处理
+    }
+  };
+  const onTplDelete = (record: Alert.TemplateItem) => {
+    modal.confirm({
+      title: `确认删除模板「${record.name}」吗？`,
+      content: "此操作不可撤销。",
+      okText: "确定删除",
+      okButtonProps: { danger: true },
+      onOk: () => tplDeleteMutation.mutate(record.id),
     });
   };
+  const openApplyModal = (record: Alert.TemplateItem) => {
+    setApplyingTemplate(record);
+    setSelectedDeviceIds([]);
+  };
+  const onApply = () => {
+    if (!applyingTemplate || selectedDeviceIds.length === 0) return;
+    applyMutation.mutate(
+      { template_id: applyingTemplate.id, device_ids: selectedDeviceIds },
+      {
+        onSuccess: () => {
+          setApplyingTemplate(null);
+          queryClient.invalidateQueries({ queryKey: ["alert"] });
+        },
+      }
+    );
+  };
 
-  const columns: ColumnsType<Alert.RuleItem> = [
+  // ---- 表格列定义 ----
+  const ruleColumns: ColumnsType<Alert.RuleItem> = [
     { title: "规则名称", dataIndex: "name", ellipsis: true },
     { title: "关联设备", dataIndex: "device_name", ellipsis: true },
     {
@@ -115,9 +202,7 @@ function RuleTab() {
       dataIndex: "severity",
       width: 100,
       render: (v: Alert.Severity) => (
-        <Tag color={SEVERITY_COLORS[v]}>
-          {v === "critical" ? "严重" : v === "warning" ? "警告" : "信息"}
-        </Tag>
+        <Tag color={SEVERITY_COLORS[v]}>{SEVERITY_LABELS[v] || v}</Tag>
       ),
     },
     {
@@ -133,12 +218,6 @@ function RuleTab() {
       render: (v: string) => <Tag>{v === "and" ? "全部满足" : "任一满足"}</Tag>,
     },
     {
-      title: "冷却时间",
-      dataIndex: "silence_duration",
-      width: 100,
-      render: (v: number) => `${v}秒`,
-    },
-    {
       title: "状态",
       dataIndex: "status",
       width: 80,
@@ -152,12 +231,66 @@ function RuleTab() {
       render: (_, record) => (
         <Space>
           {canEdit && (
-            <Button type="link" onClick={() => openEditModal(record)}>
+            <Button type="link" onClick={() => openRuleEdit(record)}>
               编辑
             </Button>
           )}
           {canDelete && (
-            <Button type="link" danger onClick={() => onDelete(record)}>
+            <Button type="link" danger onClick={() => onRuleDelete(record)}>
+              删除
+            </Button>
+          )}
+        </Space>
+      ),
+    },
+  ];
+
+  const tplColumns: ColumnsType<Alert.TemplateItem> = [
+    { title: "模板名称", dataIndex: "name", ellipsis: true },
+    {
+      title: "设备类型",
+      dataIndex: "config_name",
+      width: 140,
+      render: (v: string, record) =>
+        v ? (
+          <span>
+            {v}
+            <Tag className="ml-1" bordered={false}>
+              {record.protocol_type}
+            </Tag>
+          </span>
+        ) : (
+          "-"
+        ),
+    },
+    { title: "分类", dataIndex: "category", width: 100 },
+    {
+      title: "严重级别",
+      dataIndex: "severity",
+      width: 100,
+      render: (v: Alert.Severity) => (
+        <Tag color={SEVERITY_COLORS[v]}>{SEVERITY_LABELS[v] || v}</Tag>
+      ),
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 200,
+      fixed: "right" as const,
+      render: (_, record) => (
+        <Space>
+          {canAdd && (
+            <Button type="link" onClick={() => openApplyModal(record)}>
+              应用
+            </Button>
+          )}
+          {canEdit && (
+            <Button type="link" onClick={() => openTplEdit(record)}>
+              编辑
+            </Button>
+          )}
+          {canDelete && (
+            <Button type="link" danger onClick={() => onTplDelete(record)}>
               删除
             </Button>
           )}
@@ -167,84 +300,224 @@ function RuleTab() {
   ];
 
   return (
-    <>
-      <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+    <Modal
+      open={open}
+      title="规则配置"
+      onCancel={onClose}
+      footer={null}
+      width={1000}
+      destroyOnClose
+    >
+      {/* ---- 规则模板 ---- */}
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+        <span className="font-medium text-base">规则模板</span>
+        {canAdd && (
+          <Button type="primary" onClick={openTplCreate}>
+            新建模板
+          </Button>
+        )}
+      </div>
+      <Table<Alert.TemplateItem>
+        rowKey="id"
+        columns={tplColumns}
+        dataSource={templatePage?.list || []}
+        loading={tplLoading}
+        pagination={{
+          current: tplPagination.page,
+          pageSize: tplPagination.pageSize,
+          total: templatePage?.total || 0,
+          showSizeChanger: true,
+          showTotal: (total, range) => `${range[0]}-${range[1]} / 共 ${total} 条`,
+        }}
+        onChange={(p) =>
+          setTplPagination({ page: p.current || 1, pageSize: p.pageSize || 5 })
+        }
+        size="small"
+        scroll={{ x: "max-content" }}
+      />
+
+      <Divider className="my-3" />
+
+      {/* ---- 告警规则 ---- */}
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
         <Space wrap>
+          <span className="font-medium text-base">告警规则</span>
           <Search
             allowClear
             placeholder="规则名称 / 备注"
-            onChange={(e) => debouncedSearch(e.target.value)}
-            onSearch={doSearch}
-            className="w-[220px]"
+            onChange={(e) => debouncedRuleSearch(e.target.value)}
+            onSearch={doRuleSearch}
+            className="w-[200px]"
           />
           <Select
-            value={severity}
+            value={ruleSeverity}
             onChange={(v) => {
-              setSeverity(v);
-              setPagination((prev) => ({ ...prev, page: 1 }));
+              setRuleSeverity(v);
+              setRulePagination((prev) => ({ ...prev, page: 1 }));
             }}
             options={SEVERITY_OPTIONS}
             className="w-[120px]"
           />
         </Space>
-        {canAdd && (
-          <Button type="primary" onClick={openCreateModal}>
-            新建规则
-          </Button>
-        )}
+        <Space>
+          {canDelete && ruleSelectedKeys.length > 0 && (
+            <Button danger onClick={onRuleBatchDelete} loading={ruleBatchDeleteMutation.isPending}>
+              批量删除 ({ruleSelectedKeys.length})
+            </Button>
+          )}
+          {canAdd && (
+            <Button type="primary" onClick={openRuleCreate}>
+              新建规则
+            </Button>
+          )}
+        </Space>
       </div>
-
       <Table<Alert.RuleItem>
         rowKey="id"
-        columns={columns}
+        columns={ruleColumns}
         dataSource={rulePage?.list || []}
-        loading={isLoading}
+        loading={ruleLoading}
+        rowSelection={
+          canDelete
+            ? {
+                selectedRowKeys: ruleSelectedKeys,
+                onChange: (keys) => setRuleSelectedKeys(keys as number[]),
+              }
+            : undefined
+        }
         pagination={{
-          current: pagination.page,
-          pageSize: pagination.pageSize,
+          current: rulePagination.page,
+          pageSize: rulePagination.pageSize,
           total: rulePage?.total || 0,
           showSizeChanger: true,
           showTotal: (total, range) => `${range[0]}-${range[1]} / 共 ${total} 条`,
         }}
-        onChange={handleTableChange}
-        size="middle"
+        onChange={(p) =>
+          setRulePagination({ page: p.current || 1, pageSize: p.pageSize || 5 })
+        }
+        size="small"
         scroll={{ x: "max-content" }}
-        sticky
       />
 
+      {/* 子弹窗 */}
       <AlertRuleFormModal
-        open={modalVisible}
-        editing={editing}
-        saveMutation={saveMutation}
+        open={ruleFormVisible}
+        editing={ruleEditing}
+        saveMutation={ruleSaveMutation}
         onClose={() => {
-          setModalVisible(false);
-          setEditing(null);
+          setRuleFormVisible(false);
+          setRuleEditing(null);
         }}
       />
-    </>
+      <AlertTemplateFormModal
+        open={tplFormVisible}
+        editing={tplEditing}
+        editingDetail={tplEditingDetail}
+        saveMutation={tplSaveMutation}
+        onClose={() => {
+          setTplFormVisible(false);
+          setTplEditing(null);
+          setTplEditingDetail(null);
+        }}
+      />
+      <ApplyTemplateModal
+        open={!!applyingTemplate}
+        templateName={applyingTemplate?.name ?? ""}
+        selectedDeviceIds={selectedDeviceIds}
+        onDeviceIdsChange={setSelectedDeviceIds}
+        onOk={onApply}
+        onCancel={() => setApplyingTemplate(null)}
+        loading={applyMutation.isPending}
+      />
+    </Modal>
   );
 }
 
-// ==================== 告警记录 Tab ====================
+// ==================== 应用模板弹窗 ====================
 
-function RecordTab() {
+function ApplyTemplateModal({
+  open,
+  templateName,
+  selectedDeviceIds,
+  onDeviceIdsChange,
+  onOk,
+  onCancel,
+  loading,
+}: {
+  open: boolean;
+  templateName: string;
+  selectedDeviceIds: number[];
+  onDeviceIdsChange: (ids: number[]) => void;
+  onOk: () => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  const { data: deviceOptionsData } = useDeviceOptions({ enabled: open });
+  const deviceOptions = deviceOptionsData?.list ?? [];
+
+  return (
+    <Modal
+      open={open}
+      title={`应用模板「${templateName}」`}
+      onCancel={onCancel}
+      onOk={onOk}
+      confirmLoading={loading}
+      okButtonProps={{ disabled: selectedDeviceIds.length === 0 }}
+    >
+      <div className="mb-2">选择目标设备：</div>
+      <Select
+        mode="multiple"
+        value={selectedDeviceIds}
+        onChange={onDeviceIdsChange}
+        options={deviceOptions.map((d) => ({ label: d.name, value: d.id }))}
+        showSearch
+        optionFilterProp="label"
+        placeholder="搜索并选择设备"
+        className="w-full"
+        maxTagCount="responsive"
+      />
+      {selectedDeviceIds.length > 0 && (
+        <div className="mt-2 text-gray-500">已选择 {selectedDeviceIds.length} 个设备</div>
+      )}
+    </Modal>
+  );
+}
+
+// ==================== 主页面 ====================
+
+const AlertPage = () => {
+  const canQuery = usePermission("iot:alert:query");
+  const canAck = usePermission("iot:alert:ack");
+
   const [severity, setSeverity] = useState("");
   const [status, setStatus] = useState("");
   const [pagination, setPagination] = useState({ page: 1, pageSize: 20 });
   const [selectedRowKeys, setSelectedRowKeys] = useState<number[]>([]);
+  const [configModalOpen, setConfigModalOpen] = useState(false);
   const { modal } = App.useApp();
 
-  const canAck = usePermission("iot:alert:ack");
+  const { data: stats } = useAlertStats({ enabled: canQuery });
 
-  const { data: recordPage, isLoading } = useAlertRecordList({
-    page: pagination.page,
-    pageSize: pagination.pageSize,
-    severity: severity || undefined,
-    status: status || undefined,
-  });
+  const { data: recordPage, isLoading } = useAlertRecordList(
+    {
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+      severity: severity || undefined,
+      status: status || undefined,
+    },
+    { enabled: canQuery }
+  );
 
   const ackMutation = useAlertAcknowledge();
   const batchAckMutation = useAlertBatchAcknowledge();
+
+  if (!canQuery) {
+    return (
+      <PageContainer>
+        <Result status="403" title="无权限" subTitle="您没有查询告警的权限，请联系管理员" />
+      </PageContainer>
+    );
+  }
 
   const onAcknowledge = (record: Alert.RecordItem) => {
     modal.confirm({
@@ -275,16 +548,14 @@ function RecordTab() {
     });
   };
 
-  const columns: ColumnsType<Alert.RecordItem> = [
+  const recordColumns: ColumnsType<Alert.RecordItem> = [
     { title: "设备", dataIndex: "device_name", ellipsis: true, width: 120 },
     {
       title: "级别",
       dataIndex: "severity",
       width: 80,
       render: (v: Alert.Severity) => (
-        <Tag color={SEVERITY_COLORS[v]}>
-          {v === "critical" ? "严重" : v === "warning" ? "警告" : "信息"}
-        </Tag>
+        <Tag color={SEVERITY_COLORS[v]}>{SEVERITY_LABELS[v] || v}</Tag>
       ),
     },
     { title: "告警消息", dataIndex: "message", ellipsis: true },
@@ -323,7 +594,26 @@ function RecordTab() {
   ];
 
   return (
-    <>
+    <PageContainer>
+      {/* 概要统计 + 管理入口 */}
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+        <Space size="middle" wrap>
+          <span className="font-medium">
+            活跃告警
+            <span className="text-lg font-semibold ml-1">{stats?.total ?? 0}</span>
+          </span>
+          <Tag color="red">严重 {stats?.critical ?? 0}</Tag>
+          <Tag color="orange">警告 {stats?.warning ?? 0}</Tag>
+          <Tag color="blue">信息 {stats?.info ?? 0}</Tag>
+          <Tag color="cyan">已确认 {stats?.acknowledged ?? 0}</Tag>
+          <Tag color="green">今日恢复 {stats?.today_resolved ?? 0}</Tag>
+          <Tag>今日新增 {stats?.today_new ?? 0}</Tag>
+          <Tag>涉及设备 {stats?.affected_devices ?? 0}</Tag>
+        </Space>
+        <Button onClick={() => setConfigModalOpen(true)}>规则配置</Button>
+      </div>
+
+      {/* 记录筛选 + 操作 */}
       <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
         <Space wrap>
           <Select
@@ -345,16 +635,23 @@ function RecordTab() {
             className="w-[120px]"
           />
         </Space>
-        {canAck && selectedRowKeys.length > 0 && (
-          <Button type="primary" onClick={onBatchAcknowledge} loading={batchAckMutation.isPending}>
-            批量确认 ({selectedRowKeys.length})
-          </Button>
-        )}
+        <Space>
+          {canAck && selectedRowKeys.length > 0 && (
+            <Button
+              type="primary"
+              onClick={onBatchAcknowledge}
+              loading={batchAckMutation.isPending}
+            >
+              批量确认 ({selectedRowKeys.length})
+            </Button>
+          )}
+        </Space>
       </div>
 
+      {/* 告警记录表 */}
       <Table<Alert.RecordItem>
         rowKey="id"
-        columns={columns}
+        columns={recordColumns}
         dataSource={recordPage?.list || []}
         loading={isLoading}
         rowSelection={
@@ -380,32 +677,9 @@ function RecordTab() {
         scroll={{ x: "max-content" }}
         sticky
       />
-    </>
-  );
-}
 
-// ==================== 主页面 ====================
-
-const AlertPage = () => {
-  const canQuery = usePermission("iot:alert:query");
-
-  if (!canQuery) {
-    return (
-      <PageContainer>
-        <Result status="403" title="无权限" subTitle="您没有查询告警的权限，请联系管理员" />
-      </PageContainer>
-    );
-  }
-
-  return (
-    <PageContainer>
-      <Tabs
-        defaultActiveKey="rule"
-        items={[
-          { key: "rule", label: "告警规则", children: <RuleTab /> },
-          { key: "record", label: "告警记录", children: <RecordTab /> },
-        ]}
-      />
+      {/* 规则配置弹窗 */}
+      <RuleConfigModal open={configModalOpen} onClose={() => setConfigModalOpen(false)} />
     </PageContainer>
   );
 };

@@ -16,6 +16,8 @@ const ENDPOINTS = {
   RECORD: "/api/alert/record",
   RECORD_ACK: (id: number) => `/api/alert/record/${id}/ack`,
   BATCH_ACK: "/api/alert/record/batch-ack",
+  RECORD_GROUPED: "/api/alert/record/grouped",
+  RECORD_EXPORT: "/api/alert/record/export",
   STATS: "/api/alert/stats",
 } as const;
 
@@ -70,6 +72,23 @@ export function acknowledgeRecord(id: number) {
 /** 批量确认告警 */
 export function batchAcknowledge(ids: number[]) {
   return request.post<void>(ENDPOINTS.BATCH_ACK, { ids });
+}
+
+/** 获取告警记录分组统计 */
+export function getGroupedRecords(params?: { page?: number; pageSize?: number; days?: number }) {
+  return request.get<PaginatedResult<Alert.GroupedRecord>>(ENDPOINTS.RECORD_GROUPED, { params });
+}
+
+/** 导出告警记录 */
+export function exportRecords(params?: {
+  page?: number;
+  pageSize?: number;
+  startTime?: string;
+  endTime?: string;
+  severity?: string;
+  status?: string;
+}) {
+  return request.get<PaginatedResult<Alert.ExportRecord>>(ENDPOINTS.RECORD_EXPORT, { params });
 }
 
 /** 获取活跃告警统计 */

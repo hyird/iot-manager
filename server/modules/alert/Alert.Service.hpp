@@ -88,12 +88,13 @@ public:
         DatabaseService db;
         std::string conditionsStr = data.get("conditions", Json::arrayValue).toStyledString();
         std::string applicableProtocols = data.get("applicable_protocols", Json::Value(Json::arrayValue)).toStyledString();
+        int protocolConfigId = data.get("protocol_config_id", 0).asInt();
 
         co_await db.execSqlCoro(R"(
             INSERT INTO alert_rule_template
             (name, category, description, severity, conditions, logic, silence_duration,
-             recovery_condition, recovery_wait_seconds, applicable_protocols, created_by)
-            VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?::jsonb, ?)
+             recovery_condition, recovery_wait_seconds, applicable_protocols, protocol_config_id, created_by)
+            VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?::jsonb, ?, ?)
         )", {
             data.get("name", "").asString(),
             data.get("category", "").asString(),
@@ -105,6 +106,7 @@ public:
             data.get("recovery_condition", "reverse").asString(),
             std::to_string(data.get("recovery_wait_seconds", 60).asInt()),
             applicableProtocols,
+            std::to_string(protocolConfigId),
             std::to_string(data.get("created_by", 0).asInt())
         });
     }
@@ -141,6 +143,22 @@ public:
         if (data.isMember("silence_duration")) {
             setClauses.push_back("silence_duration = ?");
             params.push_back(std::to_string(data["silence_duration"].asInt()));
+        }
+        if (data.isMember("recovery_condition")) {
+            setClauses.push_back("recovery_condition = ?");
+            params.push_back(data["recovery_condition"].asString());
+        }
+        if (data.isMember("recovery_wait_seconds")) {
+            setClauses.push_back("recovery_wait_seconds = ?");
+            params.push_back(std::to_string(data["recovery_wait_seconds"].asInt()));
+        }
+        if (data.isMember("applicable_protocols")) {
+            setClauses.push_back("applicable_protocols = ?::jsonb");
+            params.push_back(data["applicable_protocols"].toStyledString());
+        }
+        if (data.isMember("protocol_config_id")) {
+            setClauses.push_back("protocol_config_id = ?");
+            params.push_back(std::to_string(data["protocol_config_id"].asInt()));
         }
 
         if (setClauses.empty()) co_return;
@@ -190,6 +208,7 @@ public:
         detail["recovery_condition"] = row["recovery_condition"].isNull() ? "reverse" : row["recovery_condition"].as<std::string>();
         detail["recovery_wait_seconds"] = row["recovery_wait_seconds"].isNull() ? 60 : row["recovery_wait_seconds"].as<int>();
         detail["applicable_protocols"] = JsonHelper::parse(row["applicable_protocols"].as<std::string>());
+        detail["protocol_config_id"] = row["protocol_config_id"].isNull() ? 0 : row["protocol_config_id"].as<int>();
         detail["created_by"] = row["created_by"].as<int>();
         detail["created_at"] = row["created_at"].as<std::string>();
 
@@ -198,22 +217,25 @@ public:
 
     Task<std::pair<Json::Value, int>> listTemplates(const Pagination& page, const std::string& category = "") {
         DatabaseService db;
-        std::string where = " WHERE deleted_at IS NULL";
+        std::string where = " WHERE t.deleted_at IS NULL";
         std::vector<std::string> params;
 
         if (!category.empty()) {
-            where += " AND category = ?";
+            where += " AND t.category = ?";
             params.push_back(category);
         }
 
         // COUNT
         auto countResult = co_await db.execSqlCoro(
-            "SELECT COUNT(*) AS count FROM alert_rule_template" + where, params);
+            "SELECT COUNT(*) AS count FROM alert_rule_template t" + where, params);
         int total = countResult.empty() ? 0 : countResult[0]["count"].as<int>();
 
         // 查询（使用 limitClause 支持可选分页）
-        std::string sql = "SELECT * FROM alert_rule_template" + where +
-            " ORDER BY created_at DESC" + page.limitClause();
+        std::string sql = R"(
+            SELECT t.*, pc.name AS config_name, pc.protocol AS protocol_type
+            FROM alert_rule_template t
+            LEFT JOIN protocol_config pc ON t.protocol_config_id = pc.id
+        )" + where + " ORDER BY t.created_at DESC" + page.limitClause();
 
         auto result = co_await db.execSqlCoro(sql, params);
 
@@ -227,6 +249,9 @@ public:
             item["severity"] = row["severity"].as<std::string>();
             item["logic"] = row["logic"].as<std::string>();
             item["silence_duration"] = row["silence_duration"].as<int>();
+            item["protocol_config_id"] = row["protocol_config_id"].isNull() ? 0 : row["protocol_config_id"].as<int>();
+            item["config_name"] = row["config_name"].isNull() ? "" : row["config_name"].as<std::string>();
+            item["protocol_type"] = row["protocol_type"].isNull() ? "" : row["protocol_type"].as<std::string>();
             item["created_at"] = row["created_at"].as<std::string>();
             list.append(item);
         }
@@ -349,16 +374,16 @@ public:
         Json::Value list(Json::arrayValue);
         for (const auto& row : result) {
             Json::Value item;
-            item["ruleId"] = row["rule_id"].isNull() ? 0 : row["rule_id"].as<int>();
-            item["ruleName"] = row["rule_name"].isNull() ? "" : row["rule_name"].as<std::string>();
-            item["deviceId"] = row["device_id"].isNull() ? 0 : row["device_id"].as<int>();
-            item["deviceName"] = row["device_name"].isNull() ? "" : row["device_name"].as<std::string>();
+            item["rule_id"] = row["rule_id"].isNull() ? 0 : row["rule_id"].as<int>();
+            item["rule_name"] = row["rule_name"].isNull() ? "" : row["rule_name"].as<std::string>();
+            item["device_id"] = row["device_id"].isNull() ? 0 : row["device_id"].as<int>();
+            item["device_name"] = row["device_name"].isNull() ? "" : row["device_name"].as<std::string>();
             item["severity"] = row["severity"].as<std::string>();
-            item["totalCount"] = row["total_count"].as<int>();
-            item["activeCount"] = row["active_count"].as<int>();
-            item["ackedCount"] = row["acked_count"].as<int>();
-            item["resolvedCount"] = row["resolved_count"].as<int>();
-            item["latestTriggerTime"] = row["latest_trigger_time"].as<std::string>();
+            item["total_count"] = row["total_count"].as<int>();
+            item["active_count"] = row["active_count"].as<int>();
+            item["acked_count"] = row["acked_count"].as<int>();
+            item["resolved_count"] = row["resolved_count"].as<int>();
+            item["latest_trigger_time"] = row["latest_trigger_time"].as<std::string>();
             list.append(item);
         }
 
@@ -410,7 +435,8 @@ public:
             item["status"] = row["status"].as<std::string>();
             item["message"] = row["message"].as<std::string>();
             item["triggered_at"] = row["triggered_at"].as<std::string>();
-            item["acknowledged_at"] = row["acknowledged_at"].isNull() ? "" : row["acknowledged_at"].as<std::string>();
+            item["acknowledged_at"] = row["acknowledged_at"].isNull() ? Json::nullValue
+                : Json::Value(row["acknowledged_at"].as<std::string>());
             list.append(item);
         }
 

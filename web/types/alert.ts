@@ -27,6 +27,8 @@ export namespace Alert {
     duration?: number;
     changeRate?: string;
     changeDirection?: ChangeDirection;
+    /** 位索引（仅位映射寄存器） */
+    bitIndex?: number;
   }
 
   /** 告警规则列表项 */
@@ -39,6 +41,8 @@ export namespace Alert {
     conditions: Condition[];
     logic: "and" | "or";
     silence_duration: number;
+    recovery_condition: string;
+    recovery_wait_seconds: number;
     status: "enabled" | "disabled";
     remark: string;
     created_at: string;
@@ -53,6 +57,8 @@ export namespace Alert {
     conditions: Condition[];
     logic: "and" | "or";
     silence_duration: number;
+    recovery_condition?: string;
+    recovery_wait_seconds?: number;
     status?: "enabled" | "disabled";
     remark?: string;
   }
@@ -80,6 +86,10 @@ export namespace Alert {
     critical: number;
     warning: number;
     info: number;
+    today_new: number;
+    acknowledged: number;
+    today_resolved: number;
+    affected_devices: number;
   }
 
   /** 告警规则模板列表项 */
@@ -91,6 +101,9 @@ export namespace Alert {
     severity: Severity;
     logic: "and" | "or";
     silence_duration: number;
+    protocol_config_id: number;
+    config_name: string;
+    protocol_type: string;
     created_at: string;
   }
 
@@ -107,6 +120,7 @@ export namespace Alert {
     recovery_condition: string;
     recovery_wait_seconds: number;
     applicable_protocols: string[];
+    protocol_config_id: number;
     created_by: number;
     created_at: string;
   }
@@ -123,6 +137,33 @@ export namespace Alert {
     recovery_condition?: string;
     recovery_wait_seconds?: number;
     applicable_protocols?: string[];
+    protocol_config_id?: number;
+  }
+
+  /** 告警记录分组统计 */
+  export interface GroupedRecord {
+    rule_id: number;
+    rule_name: string;
+    device_id: number;
+    device_name: string;
+    severity: Severity;
+    total_count: number;
+    active_count: number;
+    acked_count: number;
+    resolved_count: number;
+    latest_trigger_time: string;
+  }
+
+  /** 告警记录导出项 */
+  export interface ExportRecord {
+    id: number;
+    device_name: string;
+    rule_name: string;
+    severity: Severity;
+    status: RecordStatus;
+    message: string;
+    triggered_at: string;
+    acknowledged_at?: string;
   }
 
   /** 模板批量应用请求 */

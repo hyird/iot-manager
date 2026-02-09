@@ -36,7 +36,6 @@ export function useDeviceDelete() {
   return useMutationWithFeedback({
     mutationFn: (id: number) => deviceApi.remove(id),
     successMessage: "删除成功",
-    errorMessage: (e) => e.message || "删除失败",
     invalidateKeys: [deviceKeys.all],
   });
 }
@@ -47,6 +46,5 @@ export function useDeviceCommand() {
     mutationFn: (data: { linkId: number; payload: Device.Command }) =>
       deviceApi.sendCommand(data.linkId, data.payload),
     successMessage: "指令下发成功，设备已应答",
-    errorMessage: (e) => e.message || "指令下发失败",
   });
 }

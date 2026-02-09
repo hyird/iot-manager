@@ -30,7 +30,6 @@ export function useDepartmentDelete() {
   return useMutationWithFeedback({
     mutationFn: api.remove,
     successMessage: "删除成功",
-    errorMessage: (e) => e.message || "删除失败",
     invalidateKeys: [departmentQueryKeys.all],
   });
 }

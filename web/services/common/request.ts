@@ -10,6 +10,7 @@ import axios, {
   type AxiosRequestConfig,
   type InternalAxiosRequestConfig,
 } from "axios";
+import { getAntdMessage } from "@/providers/AntdMessageHolder";
 import { store } from "@/store";
 import { clearAuth, refreshAccessToken } from "@/store/slices/authSlice";
 
@@ -73,7 +74,9 @@ request.interceptors.response.use(
   (response) => {
     const data = response.data;
     if (data.code !== undefined && data.code !== 0) {
-      return Promise.reject(new Error(data.message || "请求失败"));
+      const error = new Error(data.message || "请求失败");
+      getAntdMessage()?.error(error.message);
+      return Promise.reject(error);
     }
     return data.data !== undefined ? data.data : data;
   },
@@ -150,8 +153,9 @@ request.interceptors.response.use(
       notification.error({ message: "服务器错误", description: "服务器遇到问题，请稍后重试" });
     }
 
-    const message = error.response?.data?.message || error.message || "请求失败";
-    return Promise.reject(new Error(message));
+    const errMsg = error.response?.data?.message || error.message || "请求失败";
+    getAntdMessage()?.error(errMsg);
+    return Promise.reject(new Error(errMsg));
   }
 );
 

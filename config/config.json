@@ -18,7 +18,7 @@
       "port": 5432,
       "user": "postgres",
       "passwd": "NvEhrxpQpp2NjbvaXEmfREgKVQumxYHZ",
-      "dbname": "iot-manager",
+      "dbname": "postgres",
       "is_fast": true,
       "timeout": 10
     }

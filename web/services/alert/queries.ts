@@ -45,6 +45,38 @@ export function useAlertRecordList(
   });
 }
 
+/** 告警记录分组统计 Query */
+export function useAlertGroupedRecords(
+  params?: {
+    page?: number;
+    pageSize?: number;
+    days?: number;
+  },
+  options?: Omit<UseQueryOptions<PaginatedResult<Alert.GroupedRecord>>, "queryKey" | "queryFn">
+) {
+  return useQuery({
+    queryKey: alertKeys.grouped(params),
+    queryFn: () => alertApi.getGroupedRecords(params),
+    ...options,
+  });
+}
+
+/** 模板列表 Query */
+export function useAlertTemplateList(
+  params?: {
+    page?: number;
+    pageSize?: number;
+    category?: string;
+  },
+  options?: Omit<UseQueryOptions<PaginatedResult<Alert.TemplateItem>>, "queryKey" | "queryFn">
+) {
+  return useQuery({
+    queryKey: alertKeys.templateList(params),
+    queryFn: () => alertApi.getTemplates(params),
+    ...options,
+  });
+}
+
 /** 活跃告警统计 Query */
 export function useAlertStats(
   options?: Omit<UseQueryOptions<Alert.ActiveStats>, "queryKey" | "queryFn">

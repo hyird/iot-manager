@@ -172,9 +172,19 @@ public:
                 COUNT(*) AS total,
                 COUNT(*) FILTER (WHERE severity = 'critical') AS critical,
                 COUNT(*) FILTER (WHERE severity = 'warning') AS warning,
-                COUNT(*) FILTER (WHERE severity = 'info') AS info
+                COUNT(*) FILTER (WHERE severity = 'info') AS info,
+                COUNT(*) FILTER (WHERE triggered_at >= CURRENT_DATE) AS today_new,
+                COUNT(*) FILTER (WHERE status = 'acknowledged') AS acknowledged,
+                COUNT(DISTINCT device_id) AS affected_devices
             FROM alert_record
-            WHERE status = 'active'
+            WHERE status IN ('active', 'acknowledged')
+        )");
+
+        // 今日已恢复单独查（status='resolved' 不在上面的 WHERE 中）
+        auto resolvedResult = co_await db.execSqlCoro(R"(
+            SELECT COUNT(*) AS today_resolved
+            FROM alert_record
+            WHERE status = 'resolved' AND resolved_at >= CURRENT_DATE
         )");
 
         Json::Value stats;
@@ -183,12 +193,20 @@ public:
             stats["critical"] = result[0]["critical"].as<int>();
             stats["warning"] = result[0]["warning"].as<int>();
             stats["info"] = result[0]["info"].as<int>();
+            stats["today_new"] = result[0]["today_new"].as<int>();
+            stats["acknowledged"] = result[0]["acknowledged"].as<int>();
+            stats["affected_devices"] = result[0]["affected_devices"].as<int>();
         } else {
             stats["total"] = 0;
             stats["critical"] = 0;
             stats["warning"] = 0;
             stats["info"] = 0;
+            stats["today_new"] = 0;
+            stats["acknowledged"] = 0;
+            stats["affected_devices"] = 0;
         }
+        stats["today_resolved"] = (!resolvedResult.empty())
+            ? resolvedResult[0]["today_resolved"].as<int>() : 0;
         co_return stats;
     }
 };
