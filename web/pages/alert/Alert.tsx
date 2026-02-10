@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { App, Button, Divider, Input, Modal, Result, Select, Space, Table, Tag } from "antd";
+import { App, Button, Divider, Input, Modal, Result, Select, Skeleton, Space, Table, Tag } from "antd";
 import type { ColumnsType, TablePaginationConfig } from "antd/es/table";
 import { useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
@@ -496,7 +496,7 @@ const AlertPage = () => {
   const [configModalOpen, setConfigModalOpen] = useState(false);
   const { modal } = App.useApp();
 
-  const { data: stats } = useAlertStats({ enabled: canQuery });
+  const { data: stats, isLoading: statsLoading } = useAlertStats({ enabled: canQuery });
 
   const { data: recordPage, isLoading } = useAlertRecordList(
     {
@@ -597,19 +597,23 @@ const AlertPage = () => {
     <PageContainer>
       {/* 概要统计 + 管理入口 */}
       <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
-        <Space size="middle" wrap>
-          <span className="font-medium">
-            活跃告警
-            <span className="text-lg font-semibold ml-1">{stats?.total ?? 0}</span>
-          </span>
-          <Tag color="red">严重 {stats?.critical ?? 0}</Tag>
-          <Tag color="orange">警告 {stats?.warning ?? 0}</Tag>
-          <Tag color="blue">信息 {stats?.info ?? 0}</Tag>
-          <Tag color="cyan">已确认 {stats?.acknowledged ?? 0}</Tag>
-          <Tag color="green">今日恢复 {stats?.today_resolved ?? 0}</Tag>
-          <Tag>今日新增 {stats?.today_new ?? 0}</Tag>
-          <Tag>涉及设备 {stats?.affected_devices ?? 0}</Tag>
-        </Space>
+        {statsLoading ? (
+          <Skeleton.Input active size="small" style={{ width: 500 }} />
+        ) : (
+          <Space size="middle" wrap>
+            <span className="font-medium">
+              活跃告警
+              <span className="text-lg font-semibold ml-1">{stats?.total ?? 0}</span>
+            </span>
+            <Tag color="red">严重 {stats?.critical ?? 0}</Tag>
+            <Tag color="orange">警告 {stats?.warning ?? 0}</Tag>
+            <Tag color="blue">信息 {stats?.info ?? 0}</Tag>
+            <Tag color="cyan">已确认 {stats?.acknowledged ?? 0}</Tag>
+            <Tag color="green">今日恢复 {stats?.today_resolved ?? 0}</Tag>
+            <Tag>今日新增 {stats?.today_new ?? 0}</Tag>
+            <Tag>涉及设备 {stats?.affected_devices ?? 0}</Tag>
+          </Space>
+        )}
         <Button onClick={() => setConfigModalOpen(true)}>规则配置</Button>
       </div>
 
