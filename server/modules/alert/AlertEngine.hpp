@@ -34,6 +34,7 @@ public:
     Task<void> initialize() {
         try {
             co_await loadRulesFromDb();
+            co_await loadActiveAlertsFromDb();
             LOG_INFO << "[AlertEngine] Initialized with " << ruleCount() << " rules";
         } catch (const std::exception& e) {
             LOG_ERROR << "[AlertEngine] Failed to initialize: " << e.what();
@@ -324,6 +325,43 @@ private:
                     ++it;
                 }
             }
+        }
+    }
+
+    /**
+     * @brief 从数据库加载活跃告警记录到 triggerStates_（服务重启后恢复状态）
+     */
+    Task<void> loadActiveAlertsFromDb() {
+        DatabaseService db;
+        auto result = co_await db.execSqlCoro(R"(
+            SELECT DISTINCT ON (rule_id) rule_id, id, triggered_at
+            FROM alert_record
+            WHERE status IN ('active', 'acknowledged')
+            ORDER BY rule_id, triggered_at DESC
+        )");
+
+        int count = 0;
+        {
+            std::lock_guard lock(triggerStatesMutex_);
+            for (const auto& row : result) {
+                int ruleId = row["rule_id"].as<int>();
+                int recordId = row["id"].as<int>();
+
+                // 仅加载当前还存在的规则
+                if (triggerStates_.find(ruleId) != triggerStates_.end()) continue;
+
+                triggerStates_[ruleId] = {
+                    recordId,
+                    Json::Value{},  // 无历史数据快照
+                    std::chrono::system_clock::now(),
+                    true
+                };
+                ++count;
+            }
+        }
+
+        if (count > 0) {
+            LOG_INFO << "[AlertEngine] Loaded " << count << " active alert states from DB";
         }
     }
 
@@ -682,8 +720,8 @@ private:
     Task<void> triggerRecovery(const CachedRule& rule, int recordId,
                                 const Json::Value& data,
                                 const std::string& reason) {
-        // 更新数据库
-        co_await AlertRecord::resolve(recordId);
+        // 按 rule_id 恢复所有活跃记录（包括孤儿记录）
+        co_await AlertRecord::resolveByRule(rule.id);
 
         // 发布恢复事件
         co_await EventBus::instance().publish(
@@ -691,7 +729,7 @@ private:
         );
 
         LOG_INFO << "[AlertEngine] Alert recovered: rule=" << rule.name
-                 << " recordId=" << recordId << " reason=" << reason;
+                 << " ruleId=" << rule.id << " reason=" << reason;
     }
 
     // ==================== 离线检测 ====================

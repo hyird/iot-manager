@@ -23,13 +23,19 @@ public:
         DatabaseService db;
         std::string detailStr = detail.toStyledString();
 
+        // 条件插入：同一 rule_id 已有 active/acknowledged 记录时不创建（DB 级去重）
         auto result = co_await db.execSqlCoro(R"(
             INSERT INTO alert_record (rule_id, device_id, severity, status, message, detail, triggered_at)
-            VALUES (?, ?, ?, 'active', ?, ?::jsonb, CURRENT_TIMESTAMP)
+            SELECT ?, ?::int, ?, 'active', ?, ?::jsonb, CURRENT_TIMESTAMP
+            WHERE NOT EXISTS (
+                SELECT 1 FROM alert_record
+                WHERE rule_id = ?::int AND status IN ('active', 'acknowledged')
+            )
             RETURNING id
         )", {
             std::to_string(ruleId), std::to_string(deviceId),
-            severity, message, detailStr
+            severity, message, detailStr,
+            std::to_string(ruleId)
         });
 
         co_return result.empty() ? 0 : result[0]["id"].as<int64_t>();
@@ -151,7 +157,7 @@ public:
     }
 
     /**
-     * @brief 恢复告警
+     * @brief 恢复告警（单条）
      */
     static Task<void> resolve(int64_t recordId) {
         DatabaseService db;
@@ -160,6 +166,18 @@ public:
             SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP
             WHERE id = ? AND status != 'resolved'
         )", {std::to_string(recordId)});
+    }
+
+    /**
+     * @brief 按规则 ID 恢复所有活跃/已确认告警
+     */
+    static Task<void> resolveByRule(int ruleId) {
+        DatabaseService db;
+        co_await db.execSqlCoro(R"(
+            UPDATE alert_record
+            SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP
+            WHERE rule_id = ? AND status IN ('active', 'acknowledged')
+        )", {std::to_string(ruleId)});
     }
 
     /**
