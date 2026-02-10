@@ -188,7 +188,7 @@ export function AlertTemplateFormModal({
       onOk={() => form.submit()}
       confirmLoading={saveMutation.isPending}
       destroyOnHidden
-      width={640}
+      width={720}
     >
       <Form<TemplateFormValues> form={form} layout="vertical" onFinish={onFinish}>
         <Form.Item name="id" hidden>

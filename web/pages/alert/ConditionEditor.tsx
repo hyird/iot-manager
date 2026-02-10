@@ -1,5 +1,5 @@
 import { CloseOutlined } from "@ant-design/icons";
-import { Button, Col, Input, InputNumber, Row, Select } from "antd";
+import { Button, Input, InputNumber, Select } from "antd";
 import type { Alert } from "@/types";
 
 const CONDITION_TYPE_OPTIONS = [
@@ -66,8 +66,8 @@ export function ConditionEditor({
     !!selectedElement?.dictItems?.length && selectedElement.dictMapType !== "BIT";
 
   // 要素选择器（threshold 和 rate_of_change 共用）
-  const renderElementSelect = (span: number) => (
-    <Col span={span}>
+  const renderElementSelect = () => (
+    <div className="flex-1 min-w-0">
       {hasElements ? (
         <Select
           value={value.elementKey || undefined}
@@ -85,7 +85,7 @@ export function ConditionEditor({
           placeholder="要素标识"
         />
       )}
-    </Col>
+    </div>
   );
 
   return (
@@ -99,8 +99,8 @@ export function ConditionEditor({
         className="absolute top-1 right-1"
       />
 
-      <Row gutter={[8, 8]}>
-        <Col span={5}>
+      <div className="flex items-start gap-2">
+        <div className="w-[100px] shrink-0">
           <Select
             value={value.type}
             onChange={(type: Alert.ConditionType) => {
@@ -116,13 +116,13 @@ export function ConditionEditor({
             placeholder="条件类型"
             className="w-full"
           />
-        </Col>
+        </div>
 
         {value.type === "threshold" && (
           <>
-            {renderElementSelect(isBitDict ? 5 : 8)}
+            {renderElementSelect()}
             {isBitDict && (
-              <Col span={4}>
+              <div className="w-[120px] shrink-0">
                 <Select
                   value={value.bitIndex != null ? String(value.bitIndex) : undefined}
                   onChange={(v: string) => update({ bitIndex: Number(v) })}
@@ -133,17 +133,17 @@ export function ConditionEditor({
                   placeholder="选择位"
                   className="w-full"
                 />
-              </Col>
+              </div>
             )}
-            <Col span={4}>
+            <div className="w-[70px] shrink-0">
               <Select
                 value={value.operator}
                 onChange={(operator: Alert.Operator) => update({ operator })}
                 options={OPERATOR_OPTIONS}
                 className="w-full"
               />
-            </Col>
-            <Col span={isBitDict ? 6 : 7}>
+            </div>
+            <div className="w-[130px] shrink-0">
               {isValueDict ? (
                 <Select
                   value={value.value || undefined}
@@ -162,12 +162,12 @@ export function ConditionEditor({
                   placeholder="阈值"
                 />
               )}
-            </Col>
+            </div>
           </>
         )}
 
         {value.type === "offline" && (
-          <Col span={19}>
+          <div className="flex-1 min-w-0">
             <InputNumber
               value={value.duration}
               onChange={(v) => update({ duration: v ?? 300 })}
@@ -177,14 +177,14 @@ export function ConditionEditor({
               placeholder="离线超时时间"
               className="w-full"
             />
-          </Col>
+          </div>
         )}
 
         {value.type === "rate_of_change" && (
           <>
-            {renderElementSelect(isBitDict ? 5 : 8)}
+            {renderElementSelect()}
             {isBitDict && (
-              <Col span={4}>
+              <div className="w-[120px] shrink-0">
                 <Select
                   value={value.bitIndex != null ? String(value.bitIndex) : undefined}
                   onChange={(v: string) => update({ bitIndex: Number(v) })}
@@ -195,26 +195,26 @@ export function ConditionEditor({
                   placeholder="选择位"
                   className="w-full"
                 />
-              </Col>
+              </div>
             )}
-            <Col span={5}>
+            <div className="w-[100px] shrink-0">
               <Input
                 value={value.changeRate}
                 onChange={(e) => update({ changeRate: e.target.value })}
                 placeholder="变化率%"
               />
-            </Col>
-            <Col span={isBitDict ? 5 : 6}>
+            </div>
+            <div className="w-[100px] shrink-0">
               <Select
                 value={value.changeDirection}
                 onChange={(changeDirection: Alert.ChangeDirection) => update({ changeDirection })}
                 options={DIRECTION_OPTIONS}
                 className="w-full"
               />
-            </Col>
+            </div>
           </>
         )}
-      </Row>
+      </div>
     </div>
   );
 }

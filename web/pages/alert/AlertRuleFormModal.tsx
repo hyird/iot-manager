@@ -185,7 +185,7 @@ export function AlertRuleFormModal({
       onOk={() => form.submit()}
       confirmLoading={saveMutation.isPending}
       destroyOnHidden
-      width={640}
+      width={720}
     >
       <Form<AlertRuleFormValues> form={form} layout="vertical" onFinish={onFinish}>
         <Form.Item name="id" hidden>
