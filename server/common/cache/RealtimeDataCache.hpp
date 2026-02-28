@@ -532,7 +532,7 @@ private:
 
                 while (idx + 1 < arr.size()) {
                     int deviceId = std::stoi(arr[idx].asString());
-                    int pairCount = std::stoi(arr[idx + 1].asString());  // HGETALL 返回的 field-value 对数
+                    int pairCount = std::stoi(arr[idx + 1].asString()) / 2;  // Lua #d 返回元素总数，÷2 得 field-value 对数
                     idx += 2;
 
                     DeviceRealtimeData deviceData;

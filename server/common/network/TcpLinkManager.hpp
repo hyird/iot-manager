@@ -502,6 +502,43 @@ public:
         return false;
     }
 
+    /**
+     * @brief 向链路的所有 Server 连接广播数据，但排除指定客户端
+     *
+     * 用于 Modbus TCP Server 模式：设备无 DTU 映射时，广播查询但排除已映射到其他设备的客户端，
+     * 避免查询被错误的 DTU 响应导致数据串台。
+     */
+    bool sendDataExcluding(int linkId, const std::string& data, const std::set<std::string>& excludeAddrs) {
+        std::shared_ptr<LinkRuntime> runtime;
+        {
+            std::shared_lock lock(mutex_);
+            auto it = runtimes_.find(linkId);
+            if (it == runtimes_.end()) return false;
+            runtime = it->second;
+        }
+
+        std::lock_guard<std::mutex> connLock(runtime->connMutex);
+
+        if (runtime->server && !runtime->serverConns.empty()) {
+            int sentCount = 0;
+            for (const auto& conn : runtime->serverConns) {
+                if (conn->connected() && excludeAddrs.find(conn->peerAddr().toIpPort()) == excludeAddrs.end()) {
+                    conn->send(data);
+                    ++sentCount;
+                }
+            }
+            if (sentCount > 0) {
+                totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()) * sentCount, std::memory_order_relaxed);
+                totalPacketsTx_.fetch_add(sentCount, std::memory_order_relaxed);
+                LOG_DEBUG << "[Link " << linkId << "] Broadcast " << data.size() << " bytes to "
+                         << sentCount << " clients (excluded " << excludeAddrs.size() << ")";
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     bool sendToClient(int linkId, const std::string& clientAddr, const std::string& data) {
         std::shared_ptr<LinkRuntime> runtime;
         {

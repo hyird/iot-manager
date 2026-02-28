@@ -430,6 +430,47 @@ public:
     }
 
 private:
+    // ==================== 响应匹配 ====================
+
+    /**
+     * @brief 从 pendingRequests_ 中查找与响应匹配的 PendingRequest
+     *
+     * 匹配优先级：transactionId（Modbus TCP）> clientAddr（DeviceConnectionCache 映射）
+     * 必须在 pendingMutex_ 锁内调用。
+     */
+    std::optional<PendingRequest> findAndPopPendingRequest(
+        int linkId, const ModbusResponse& response, const std::string& clientAddr) {
+
+        std::string keyPrefix = std::to_string(linkId) + ":"
+            + std::to_string(response.slaveId) + ":"
+            + std::to_string(response.functionCode) + ":";
+
+        for (auto mapIt = pendingRequests_.begin(); mapIt != pendingRequests_.end(); ++mapIt) {
+            if (mapIt->first.compare(0, keyPrefix.size(), keyPrefix) != 0 || mapIt->second.empty()) continue;
+            auto& queue = mapIt->second;
+            for (auto qIt = queue.begin(); qIt != queue.end(); ++qIt) {
+                bool match = (response.transactionId > 0 && qIt->transactionId == response.transactionId);
+                if (!match && !clientAddr.empty()) {
+                    auto conn = DeviceConnectionCache::instance().getConnection(
+                        "modbus_" + std::to_string(qIt->deviceId));
+                    match = conn && conn->clientAddr == clientAddr;
+                }
+                if (match) {
+                    PendingRequest result = std::move(*qIt);
+                    queue.erase(qIt);
+                    if (queue.empty()) pendingRequests_.erase(mapIt);
+                    return result;
+                }
+            }
+        }
+
+        LOG_WARN << "[Modbus] No matching pending request for response from " << clientAddr
+                 << " (slaveId=" << static_cast<int>(response.slaveId)
+                 << " fc=" << static_cast<int>(response.functionCode)
+                 << " txId=" << response.transactionId << ")";
+        return std::nullopt;
+    }
+
     // ==================== 同步响应处理 ====================
 
     /**
@@ -443,22 +484,12 @@ private:
             return std::nullopt;
         }
 
-        std::string pendingKey = std::to_string(linkId) + ":"
-            + std::to_string(response.slaveId) + ":"
-            + std::to_string(response.functionCode);
-
         PendingRequest pending;
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
-            auto it = pendingRequests_.find(pendingKey);
-            if (it == pendingRequests_.end() || it->second.empty()) {
-                LOG_WARN << "[Modbus] No pending request for key=" << pendingKey
-                         << " (unexpected response or already timed out)";
-                return std::nullopt;
-            }
-            pending = std::move(it->second.front());
-            it->second.pop_front();
-            if (it->second.empty()) pendingRequests_.erase(it);
+            auto result = findAndPopPendingRequest(linkId, response, clientAddr);
+            if (!result) return std::nullopt;
+            pending = std::move(*result);
         }
 
         DeviceContext ctx;
@@ -469,7 +500,7 @@ private:
             ctx = it->second;
         }
 
-        // 建立 deviceId 级别的连接映射（比 slaveId 更精确，支持同 slaveId 多设备场景）
+        // 建立 deviceId 级别的连接映射
         if (!clientAddr.empty()) {
             DeviceConnectionCache::instance().registerConnection(
                 "modbus_" + std::to_string(ctx.deviceId), linkId, clientAddr);
@@ -933,11 +964,47 @@ private:
                 return;
             }
 
-            // 有待应答的读请求
-            for (const auto& [key, q] : pendingRequests_) {
-                if (key.compare(0, slavePrefix.size(), slavePrefix) == 0 && !q.empty()) {
-                    LOG_DEBUG << "[Modbus] " << ctx.deviceName << " read in progress, skip poll";
-                    return;
+            // 有待应答的读请求：
+            // - 当前设备自身有 pending → 跳过
+            // - TCP Client：单连接共享，同链路任何 pending → 串行等待
+            // - TCP Server：同链路其他设备 pending 且共享同一 DTU (clientAddr) → 串行等待
+            //   （同一 TCP 连接必须保持 请求→响应 时序，DTU 串口半双工）
+            // - 不同 DTU → 允许并行轮询
+            {
+                auto myConn = DeviceConnectionCache::instance().getConnection(
+                    "modbus_" + std::to_string(ctx.deviceId));
+                std::string linkPrefix = std::to_string(ctx.linkId) + ":";
+                for (const auto& [key, q] : pendingRequests_) {
+                    if (key.compare(0, linkPrefix.size(), linkPrefix) != 0 || q.empty()) continue;
+                    if (q.front().deviceId == ctx.deviceId) {
+                        LOG_DEBUG << "[Modbus] " << ctx.deviceName << " read in progress, skip poll";
+                        return;
+                    }
+                    // TCP Client: 单连接，所有设备必须串行
+                    if (ctx.linkMode == Constants::LINK_MODE_TCP_CLIENT) {
+                        LOG_DEBUG << "[Modbus] " << ctx.deviceName << " link busy (TCP Client), skip poll";
+                        return;
+                    }
+                    // TCP Server: 仅同一 DTU (同 clientAddr) 需要串行
+                    if (myConn) {
+                        auto otherConn = DeviceConnectionCache::instance().getConnection(
+                            "modbus_" + std::to_string(q.front().deviceId));
+                        if (otherConn && myConn->clientAddr == otherConn->clientAddr) {
+                            LOG_DEBUG << "[Modbus] " << ctx.deviceName
+                                      << " same DTU busy (" << myConn->clientAddr << "), skip poll";
+                            return;
+                        }
+                    } else {
+                        // 当前设备无映射（超时清理后）：若其他设备也无映射，
+                        // 两者都会广播，可能撞同一 DTU，保守串行
+                        auto otherConn = DeviceConnectionCache::instance().getConnection(
+                            "modbus_" + std::to_string(q.front().deviceId));
+                        if (!otherConn) {
+                            LOG_DEBUG << "[Modbus] " << ctx.deviceName
+                                      << " both unmapped, conservatively skip poll";
+                            return;
+                        }
+                    }
                 }
             }
 
@@ -976,6 +1043,8 @@ private:
                     LOG_WARN << "[Modbus] Read request timed out (" << elapsed << "ms): key=" << it->first;
                     // 收集超时设备的连接 key（用 deviceId，避免同 slaveId 多设备误删映射）
                     timedOutConnKeys.push_back("modbus_" + std::to_string(queue.front().deviceId));
+                    // 超时冷却：防止同一设备立即重发，给同 slaveId 的其他设备公平轮询机会
+                    nextAllowedPollTime_[queue.front().deviceId] = now + std::chrono::seconds(1);
                     queue.pop_front();
                 }
                 if (queue.empty()) { it = pendingRequests_.erase(it); } else { ++it; }
@@ -1076,14 +1145,31 @@ private:
                              << " client=" << connOpt->clientAddr << " device=" << ctx.deviceName;
                 }
             } else {
-                // RTU 从站无注册包：向该链路所有客户端广播，收到响应后自动建立映射
-                sent = TcpLinkManager::instance().sendData(ctx.linkId, data);
+                // 无映射：广播查询，但排除已映射到其他设备的客户端，防止数据串台
+                std::set<std::string> excludeAddrs;
+                {
+                    std::lock_guard<std::mutex> lock(contextMutex_);
+                    for (const auto& [devId, devCtx] : deviceContexts_) {
+                        if (devCtx.linkId != ctx.linkId || devId == ctx.deviceId) continue;
+                        auto conn = DeviceConnectionCache::instance().getConnection(
+                            "modbus_" + std::to_string(devId));
+                        if (conn) {
+                            excludeAddrs.insert(conn->clientAddr);
+                        }
+                    }
+                }
+                if (excludeAddrs.empty()) {
+                    sent = TcpLinkManager::instance().sendData(ctx.linkId, data);
+                } else {
+                    sent = TcpLinkManager::instance().sendDataExcluding(ctx.linkId, data, excludeAddrs);
+                }
                 if (sent) {
                     LOG_DEBUG << "[Modbus] Broadcast query for slave=" << static_cast<int>(ctx.slaveId)
-                              << " on link " << ctx.linkId << " (no mapping yet)";
+                              << " on link " << ctx.linkId
+                              << " (excluded " << excludeAddrs.size() << " mapped clients)";
                 } else {
-                    LOG_WARN << "[Modbus] No clients on link " << ctx.linkId
-                             << ", device=" << ctx.deviceName;
+                    LOG_DEBUG << "[Modbus] No unmapped clients on link " << ctx.linkId
+                              << ", device=" << ctx.deviceName << " (waiting for DTU connection)";
                 }
             }
         }
@@ -1096,10 +1182,11 @@ private:
                       << " qty=" << group.totalQuantity
                       << " | " << ModbusUtils::toHexString(frame);
 
-            // 记录待应答请求
+            // 记录待应答请求（per-device key，避免同 slaveId 多设备共享 FIFO 导致串台）
             std::string pendingKey = std::to_string(ctx.linkId) + ":"
                 + std::to_string(ctx.slaveId) + ":"
-                + std::to_string(group.functionCode);
+                + std::to_string(group.functionCode) + ":"
+                + std::to_string(ctx.deviceId);
 
             PendingRequest pending;
             pending.deviceId = ctx.deviceId;
@@ -1125,26 +1212,14 @@ private:
             co_return;
         }
 
-        // 查找对应的 PendingRequest（FIFO：取队列头部）
-        std::string pendingKey = std::to_string(linkId) + ":"
-            + std::to_string(response.slaveId) + ":"
-            + std::to_string(response.functionCode);
-
         PendingRequest pending;
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
-            auto it = pendingRequests_.find(pendingKey);
-            if (it == pendingRequests_.end() || it->second.empty()) {
-                LOG_WARN << "[Modbus] No pending request for key=" << pendingKey
-                         << " (unexpected response or already timed out)";
-                co_return;
-            }
-            pending = std::move(it->second.front());
-            it->second.pop_front();
-            if (it->second.empty()) pendingRequests_.erase(it);
+            auto result = findAndPopPendingRequest(linkId, response, clientAddr);
+            if (!result) co_return;
+            pending = std::move(*result);
         }
 
-        // 获取设备上下文
         DeviceContext ctx;
         {
             std::lock_guard<std::mutex> lock(contextMutex_);
