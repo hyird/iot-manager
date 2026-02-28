@@ -657,11 +657,13 @@ private:
         ctx.linkMode = device.linkMode;
         ctx.slaveId = device.slaveId;
 
-        // 帧模式：TCP Server 固定 RTU（串口透传），TCP Client 可选 TCP/RTU
+        // 帧模式：TCP Client 和 TCP Server 均根据 modbusMode 配置
+        // TCP Client：空字符串默认 TCP（parseFrameMode 行为）
+        // TCP Server：显式配置 "TCP" 时使用 ModbusTCP，否则默认 RTU（兼容 DTU 串口透传设备）
         if (device.linkMode == Constants::LINK_MODE_TCP_CLIENT) {
             ctx.frameMode = parseFrameMode(device.modbusMode);
         } else {
-            ctx.frameMode = FrameMode::RTU;
+            ctx.frameMode = (device.modbusMode == "TCP") ? FrameMode::TCP : FrameMode::RTU;
         }
 
         // 从协议配置解析

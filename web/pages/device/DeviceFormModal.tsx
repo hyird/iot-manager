@@ -70,13 +70,12 @@ const DeviceFormModal = ({
   const [form] = Form.useForm<DeviceFormValues>();
   const { data: groupTree = [] } = useDeviceGroupTree();
   const linkId = Form.useWatch("link_id", form);
-  const modbusMode = Form.useWatch("modbus_mode", form);
 
   const selectedLink = linkOptions.find((opt) => opt.id === linkId);
   const protocolType = toProtocolType(selectedLink?.protocol);
-  // 心跳包/注册包仅 Modbus RTU 需要（TCP Server 隐含 RTU）
-  const isModbusRtu =
-    protocolType === "Modbus" && (selectedLink?.mode === "TCP Server" || modbusMode === "RTU");
+  // 心跳包/注册包仅 TCP Server 模式需要（设备主动连入，需要识别身份）
+  // TCP Client 模式主动连接设备，无需额外识别
+  const isModbusRtu = protocolType === "Modbus" && selectedLink?.mode === "TCP Server";
 
   const { data: protocolOptions } = useProtocolConfigOptions(protocolType!, {
     enabled: !!protocolType,
@@ -213,15 +212,18 @@ const DeviceFormModal = ({
           {({ getFieldValue }) => {
             const currentLinkId = getFieldValue("link_id");
             const currentLink = linkOptions.find((opt) => opt.id === currentLinkId);
-            const showModbusMode =
-              currentLink?.mode === "TCP Client" && currentLink?.protocol === "Modbus";
+            const showModbusMode = currentLink?.protocol === "Modbus";
             if (!showModbusMode) return null;
             return (
               <Form.Item
                 label="Modbus 模式"
                 name="modbus_mode"
                 rules={[{ required: true, message: "请选择 Modbus 模式" }]}
-                extra="TCP Client 模式下需要指定 Modbus 通信模式"
+                extra={
+                  currentLink?.mode === "TCP Server"
+                    ? "TCP Server：选 RTU 表示 DTU 串口透传，选 TCP 表示设备直接以 ModbusTCP 连入"
+                    : "TCP Client：需指定 Modbus 通信模式"
+                }
               >
                 <Select placeholder="选择 Modbus 模式">
                   <Select.Option value="TCP">Modbus TCP</Select.Option>

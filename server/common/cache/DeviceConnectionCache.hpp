@@ -34,8 +34,13 @@ public:
         // 检查是否已有旧连接
         auto it = connections_.find(deviceCode);
         if (it != connections_.end()) {
+            const std::string& oldAddr = it->second.clientAddr;
+            if (oldAddr != clientAddr) {
+                LOG_INFO << "[DeviceConnectionCache] " << deviceCode
+                         << " re-registered: " << oldAddr << " -> " << clientAddr;
+            }
             // 移除旧的反向索引
-            std::string oldKey = std::to_string(it->second.linkId) + ":" + it->second.clientAddr;
+            std::string oldKey = std::to_string(it->second.linkId) + ":" + oldAddr;
             auto& oldDevices = clientDevices_[oldKey];
             oldDevices.erase(deviceCode);
             if (oldDevices.empty()) {
