@@ -317,22 +317,35 @@ private:
         // === 心跳包 / 注册包预处理 ===
         auto devices = DeviceCache::instance().getDevicesByLinkIdSync(linkId);
 
+        // 辅助：注册连接（同时注册 deviceCode key 和 Modbus deviceId key）
+        auto doRegister = [&](const DeviceCache::CachedDevice& dev, bool logInfo, const char* matchType) {
+            DeviceConnectionCache::instance().registerConnection(dev.deviceCode, linkId, clientAddr);
+            // Modbus 设备无 deviceCode，额外注册 "modbus_<id>" key 供 ModbusHandler 路由使用
+            if (dev.protocolType == Constants::PROTOCOL_MODBUS) {
+                DeviceConnectionCache::instance().registerConnection(
+                    "modbus_" + std::to_string(dev.id), linkId, clientAddr);
+            }
+            if (logInfo) {
+                LOG_INFO << "[Link " << linkId << "] " << matchType << " matched device "
+                         << (dev.deviceCode.empty() ? dev.name : dev.deviceCode) << " from " << clientAddr;
+            } else {
+                LOG_DEBUG << "[Link " << linkId << "] " << matchType << " matched device "
+                          << (dev.deviceCode.empty() ? dev.name : dev.deviceCode) << " from " << clientAddr;
+            }
+        };
+
         // 1. 注册包匹配（ON 模式：智能判断完整匹配或前缀匹配）
         for (const auto& dev : devices) {
             if (dev.registrationMode != "OFF" && !dev.registrationBytes.empty()) {
                 if (bytes == dev.registrationBytes) {
                     // 完整匹配：整包就是注册包
-                    DeviceConnectionCache::instance().registerConnection(dev.deviceCode, linkId, clientAddr);
-                    LOG_INFO << "[Link " << linkId << "] Registration matched device "
-                             << dev.deviceCode << " from " << clientAddr;
+                    doRegister(dev, true, "Registration");
                     return;  // 注册包不传给协议解析器
                 }
                 if (bytes.size() > dev.registrationBytes.size() &&
                     std::equal(dev.registrationBytes.begin(), dev.registrationBytes.end(), bytes.begin())) {
                     // 前缀匹配：数据以注册包开头
-                    DeviceConnectionCache::instance().registerConnection(dev.deviceCode, linkId, clientAddr);
-                    LOG_INFO << "[Link " << linkId << "] Registration prefix matched device "
-                             << dev.deviceCode << " from " << clientAddr;
+                    doRegister(dev, true, "Registration prefix");
                     // 剥离前缀，继续协议解析
                     bytes.erase(bytes.begin(), bytes.begin() + static_cast<ptrdiff_t>(dev.registrationBytes.size()));
                     break;
@@ -344,9 +357,7 @@ private:
         for (const auto& dev : devices) {
             if (dev.heartbeatMode != "OFF" && !dev.heartbeatBytes.empty()) {
                 if (bytes == dev.heartbeatBytes) {
-                    DeviceConnectionCache::instance().registerConnection(dev.deviceCode, linkId, clientAddr);
-                    LOG_DEBUG << "[Link " << linkId << "] Heartbeat matched device "
-                              << dev.deviceCode << " from " << clientAddr;
+                    doRegister(dev, false, "Heartbeat");
                     return;  // 心跳包不传给协议解析器
                 }
             }

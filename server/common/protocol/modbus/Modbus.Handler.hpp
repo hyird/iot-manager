@@ -27,7 +27,7 @@ inline constexpr int MERGE_GAP = 10;
 inline constexpr int DEFAULT_READ_INTERVAL = 1;
 
 /** Modbus 请求超时（毫秒） */
-inline constexpr int RESPONSE_TIMEOUT_MS = 10000;
+inline constexpr int RESPONSE_TIMEOUT_MS = 20000;
 
 /** 接收缓冲区上限（字节），超过则清空防止内存泄漏 */
 inline constexpr size_t MAX_BUFFER_SIZE = 1024;
@@ -111,17 +111,34 @@ public:
      * @param connected 连接/断开
      */
     void onConnectionChanged(int linkId, const std::string& clientAddr, bool connected) {
-        // 连接变化时清理缓冲区和待处理状态
-        {
-            std::lock_guard<std::mutex> lock(bufferMutex_);
-            buffers_.erase(linkId);
-        }
-        clearPendingStateForLink(linkId);
-
         if (connected) {
+            // TCP Client 重连时清理缓冲区和旧的 pending 状态；
+            // TCP Server 新客户端接入时不清理——其他客户端的请求仍在进行中
+            bool isTcpClient = false;
+            {
+                std::lock_guard<std::mutex> lock(contextMutex_);
+                for (const auto& [id, ctx] : deviceContexts_) {
+                    if (ctx.linkId == linkId && ctx.linkMode == Constants::LINK_MODE_TCP_CLIENT) {
+                        isTcpClient = true;
+                        break;
+                    }
+                }
+            }
+            if (isTcpClient) {
+                std::lock_guard<std::mutex> lock(bufferMutex_);
+                buffers_.erase(linkId);
+                clearPendingStateForLink(linkId);
+            }
             LOG_INFO << "[Modbus] Link " << linkId << " connected, starting poll";
             startPollingForLink(linkId);
         } else {
+            // 断开时统一清理缓冲区和 pending 状态
+            {
+                std::lock_guard<std::mutex> lock(bufferMutex_);
+                buffers_.erase(linkId);
+            }
+            clearPendingStateForLink(linkId);
+
             bool isTcpClient = false;
             {
                 std::lock_guard<std::mutex> lock(contextMutex_);
@@ -341,11 +358,7 @@ public:
         auto parsedFrames = appendAndParseFrames(linkId, data);
 
         for (auto& response : parsedFrames) {
-            if (!clientAddr.empty()) {
-                std::string connKey = "modbus_" + std::to_string(response.slaveId);
-                DeviceConnectionCache::instance().registerConnection(connKey, linkId, clientAddr);
-            }
-
+            // 不在此处按 slaveId 注册连接——deviceId 级别的注册在 processResponse 匹配后执行
             if (response.isException) {
                 totalExceptions_.fetch_add(1, std::memory_order_relaxed);
                 LOG_WARN << "[Modbus] Exception: slave=" << static_cast<int>(response.slaveId)
@@ -374,11 +387,7 @@ public:
         auto parsedFrames = appendAndParseFrames(linkId, data);
 
         for (auto& response : parsedFrames) {
-            if (!clientAddr.empty()) {
-                std::string connKey = "modbus_" + std::to_string(response.slaveId);
-                DeviceConnectionCache::instance().registerConnection(connKey, linkId, clientAddr);
-            }
-
+            // 不在此处按 slaveId 注册连接——deviceId 级别的注册在 processResponseSync 匹配后执行
             if (response.isException) {
                 totalExceptions_.fetch_add(1, std::memory_order_relaxed);
                 LOG_WARN << "[Modbus] Exception: slave=" << static_cast<int>(response.slaveId)
@@ -426,7 +435,7 @@ private:
     /**
      * @brief 同步处理 Modbus 响应，返回 ParsedFrameResult（不涉及 DB 操作）
      */
-    std::optional<ParsedFrameResult> processResponseSync(int linkId, const std::string& /*clientAddr*/,
+    std::optional<ParsedFrameResult> processResponseSync(int linkId, const std::string& clientAddr,
                                                           const ModbusResponse& response) {
         // 写回显：通知成功，不生成 ParsedFrameResult
         if (isWriteFunctionCode(response.functionCode)) {
@@ -458,6 +467,12 @@ private:
             auto it = deviceContexts_.find(pending.deviceId);
             if (it == deviceContexts_.end()) return std::nullopt;
             ctx = it->second;
+        }
+
+        // 建立 deviceId 级别的连接映射（比 slaveId 更精确，支持同 slaveId 多设备场景）
+        if (!clientAddr.empty()) {
+            DeviceConnectionCache::instance().registerConnection(
+                "modbus_" + std::to_string(ctx.deviceId), linkId, clientAddr);
         }
 
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -959,12 +974,8 @@ private:
                     if (elapsed < RESPONSE_TIMEOUT_MS) break;
                     totalTimeouts_.fetch_add(1, std::memory_order_relaxed);
                     LOG_WARN << "[Modbus] Read request timed out (" << elapsed << "ms): key=" << it->first;
-                    // 收集超时从站的连接 key，锁释放后清理 DTU 映射
-                    auto secondColon = it->first.find(':', prefix.size());
-                    if (secondColon != std::string::npos) {
-                        timedOutConnKeys.push_back(
-                            "modbus_" + it->first.substr(prefix.size(), secondColon - prefix.size()));
-                    }
+                    // 收集超时设备的连接 key（用 deviceId，避免同 slaveId 多设备误删映射）
+                    timedOutConnKeys.push_back("modbus_" + std::to_string(queue.front().deviceId));
                     queue.pop_front();
                 }
                 if (queue.empty()) { it = pendingRequests_.erase(it); } else { ++it; }
@@ -1053,8 +1064,8 @@ private:
                 LOG_WARN << "[Modbus] sendData failed: linkId=" << ctx.linkId << " device=" << ctx.deviceName;
             }
         } else {
-            // TCP Server 模式：通过设备连接映射定向发送
-            std::string connKey = "modbus_" + std::to_string(ctx.slaveId);
+            // TCP Server 模式：通过设备连接映射定向发送（key = deviceId，避免同 slaveId 多设备冲突）
+            std::string connKey = "modbus_" + std::to_string(ctx.deviceId);
             auto connOpt = DeviceConnectionCache::instance().getConnection(connKey);
             std::string data(frame.begin(), frame.end());
             if (connOpt) {
@@ -1107,7 +1118,7 @@ private:
     /**
      * @brief 处理解析后的 Modbus 响应
      */
-    Task<void> processResponse(int linkId, [[maybe_unused]] const std::string& clientAddr, const ModbusResponse& response) {
+    Task<void> processResponse(int linkId, const std::string& clientAddr, const ModbusResponse& response) {
         // 写回显：通知成功，不保存数据
         if (isWriteFunctionCode(response.functionCode)) {
             handleWriteResponse(linkId, response, true);
@@ -1140,6 +1151,12 @@ private:
             auto it = deviceContexts_.find(pending.deviceId);
             if (it == deviceContexts_.end()) co_return;
             ctx = it->second;
+        }
+
+        // 建立 deviceId 级别的连接映射
+        if (!clientAddr.empty()) {
+            DeviceConnectionCache::instance().registerConnection(
+                "modbus_" + std::to_string(ctx.deviceId), linkId, clientAddr);
         }
 
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1363,7 +1380,7 @@ private:
             for (const auto& [deviceId, ctx] : deviceContexts_) {
                 if (ctx.linkId != linkId) continue;
 
-                std::string connKey = "modbus_" + std::to_string(ctx.slaveId);
+                std::string connKey = "modbus_" + std::to_string(ctx.deviceId);
                 auto connOpt = DeviceConnectionCache::instance().getConnection(connKey);
                 if (connOpt && connOpt->linkId == linkId && connOpt->clientAddr == clientAddr) {
                     RealtimeDataCache::instance().clearLatestTime(deviceId);
@@ -1739,14 +1756,13 @@ private:
             std::string data(qf.frame.begin(), qf.frame.end());
             sent = TcpLinkManager::instance().sendData(qf.linkId, data);
         } else {
-            std::string connKey = "modbus_" + std::to_string(qf.slaveId);
+            std::string connKey = "modbus_" + std::to_string(qf.deviceId);
             auto connOpt = DeviceConnectionCache::instance().getConnection(connKey);
             if (connOpt) {
                 std::string data(qf.frame.begin(), qf.frame.end());
                 sent = TcpLinkManager::instance().sendToClient(connOpt->linkId, connOpt->clientAddr, data);
             } else {
-                LOG_WARN << "[Modbus] writeRegister: no connection for slave="
-                         << static_cast<int>(qf.slaveId);
+                LOG_WARN << "[Modbus] writeRegister: no connection for device=" << qf.deviceName;
             }
         }
 
