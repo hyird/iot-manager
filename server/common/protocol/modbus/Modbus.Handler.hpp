@@ -508,10 +508,12 @@ private:
 
         result.data = jsonData;
 
-        // 串行轮询：当前组响应完成后发送下一组
+        // 串行轮询：当前组响应完成后发送下一组；全部完成后启动延迟的写操作
         size_t nextIdx = pending.groupIndex + 1;
         if (nextIdx < ctx.readGroups.size()) {
             sendReadRequest(ctx, ctx.readGroups[nextIdx], nextIdx);
+        } else {
+            tryStartPendingWrite(ctx.linkId, ctx.slaveId);
         }
 
         // 生成 UTC 时间
@@ -888,16 +890,25 @@ private:
 
         if (ctx.readGroups.empty()) return;
 
-        // 串行轮询：当前设备仍有待应答的读请求时跳过本次触发
-        // 等超时清理后下次 tick 才重新开始，避免并发乱序
+        // 串行轮询：读/写任一进行中时跳过，等下次 tick 重试
         {
             std::string slavePrefix = std::to_string(ctx.linkId) + ":" + std::to_string(ctx.slaveId) + ":";
+            std::string writeKey = makeWriteQueueKey(ctx.linkId, ctx.slaveId);
             std::lock_guard<std::mutex> lock(pendingMutex_);
-            for (const auto& [key, queue] : pendingRequests_) {
-                if (key.compare(0, slavePrefix.size(), slavePrefix) == 0 && !queue.empty()) {
-                    LOG_DEBUG << "[Modbus] " << ctx.deviceName << " prev poll in progress, skip";
+
+            // 有待应答的读请求
+            for (const auto& [key, q] : pendingRequests_) {
+                if (key.compare(0, slavePrefix.size(), slavePrefix) == 0 && !q.empty()) {
+                    LOG_DEBUG << "[Modbus] " << ctx.deviceName << " read in progress, skip poll";
                     return;
                 }
+            }
+
+            // 有写操作正在执行或排队
+            auto wit = writeQueues_.find(writeKey);
+            if (wit != writeQueues_.end() && (wit->second.sending || !wit->second.frames.empty())) {
+                LOG_DEBUG << "[Modbus] " << ctx.deviceName << " write pending, skip poll";
+                return;
             }
         }
 
@@ -1133,10 +1144,12 @@ private:
                   << " → " << formatRegisterValues(registerValues);
         co_await saveData(ctx, registerValues);
 
-        // 串行轮询：当前组响应完成后发送下一组
+        // 串行轮询：当前组响应完成后发送下一组；全部完成后启动延迟的写操作
         size_t nextIdx = pending.groupIndex + 1;
         if (nextIdx < ctx.readGroups.size()) {
             sendReadRequest(ctx, ctx.readGroups[nextIdx], nextIdx);
+        } else {
+            tryStartPendingWrite(ctx.linkId, ctx.slaveId);
         }
     }
 
@@ -1516,7 +1529,10 @@ private:
     }
 
     /**
-     * @brief 将帧加入写入队列，若当前无活跃写操作则立即发送第一帧
+     * @brief 将帧加入写入队列
+     *
+     * 若当前无读/写操作进行中则立即发送第一帧；
+     * 若读操作正在进行则仅入队，等读周期最后一组完成后由 tryStartPendingWrite 触发。
      */
     void enqueueWrites(const std::string& queueKey, std::vector<QueuedWriteFrame> frames) {
         QueuedWriteFrame frameToSend;
@@ -1531,10 +1547,26 @@ private:
             }
 
             if (!queue.sending) {
-                queue.sending = true;
-                frameToSend = std::move(queue.frames.front());
-                queue.frames.pop_front();
-                shouldSend = true;
+                // 检查是否有读操作正在进行（读周期未结束，写需等待）
+                std::string readPrefix = queueKey + ":";  // "linkId:slaveId:"
+                bool readInProgress = false;
+                for (const auto& [key, q] : pendingRequests_) {
+                    if (key.compare(0, readPrefix.size(), readPrefix) == 0 && !q.empty()) {
+                        readInProgress = true;
+                        break;
+                    }
+                }
+
+                if (!readInProgress) {
+                    queue.sending = true;
+                    frameToSend = std::move(queue.frames.front());
+                    queue.frames.pop_front();
+                    shouldSend = true;
+                } else {
+                    LOG_INFO << "[Modbus] Write deferred (read in progress): "
+                             << queue.frames.back().deviceName
+                             << " queued=" << queue.frames.size() << " frame(s)";
+                }
             } else {
                 LOG_INFO << "[Modbus] Write queued: " << queue.frames.back().deviceName
                          << " pending=" << queue.frames.size() << " frame(s)";
@@ -1542,6 +1574,34 @@ private:
         }
 
         if (shouldSend) {
+            sendSingleWriteFrame(frameToSend);
+        }
+    }
+
+    /**
+     * @brief 读周期完成后检查并启动延迟的写操作
+     *
+     * 在读周期最后一组的响应处理完成后调用（nextIdx >= readGroups.size()），
+     * 此时 pendingRequests_ 已清空，可以安全启动写队列。
+     */
+    void tryStartPendingWrite(int linkId, uint8_t slaveId) {
+        std::string queueKey = makeWriteQueueKey(linkId, slaveId);
+        QueuedWriteFrame frameToSend;
+        bool shouldSend = false;
+
+        {
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            auto it = writeQueues_.find(queueKey);
+            if (it == writeQueues_.end() || it->second.sending || it->second.frames.empty()) return;
+
+            it->second.sending = true;
+            frameToSend = std::move(it->second.frames.front());
+            it->second.frames.pop_front();
+            shouldSend = true;
+        }
+
+        if (shouldSend) {
+            LOG_INFO << "[Modbus] Starting deferred write after read cycle: " << frameToSend.deviceName;
             sendSingleWriteFrame(frameToSend);
         }
     }
