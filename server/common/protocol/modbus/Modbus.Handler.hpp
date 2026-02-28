@@ -882,6 +882,7 @@ private:
         auto now = std::chrono::steady_clock::now();
         std::string prefix = std::to_string(linkId) + ":";
         std::vector<std::pair<int, uint8_t>> unstickQueues;
+        std::vector<std::string> timedOutConnKeys;  // 锁内收集，锁外清理（避免锁序反转）
 
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
@@ -895,6 +896,12 @@ private:
                     if (elapsed < RESPONSE_TIMEOUT_MS) break;
                     totalTimeouts_.fetch_add(1, std::memory_order_relaxed);
                     LOG_WARN << "[Modbus] Read request timed out (" << elapsed << "ms): key=" << it->first;
+                    // 收集超时从站的连接 key，锁释放后清理 DTU 映射
+                    auto secondColon = it->first.find(':', prefix.size());
+                    if (secondColon != std::string::npos) {
+                        timedOutConnKeys.push_back(
+                            "modbus_" + it->first.substr(prefix.size(), secondColon - prefix.size()));
+                    }
                     queue.pop_front();
                 }
                 if (queue.empty()) { it = pendingRequests_.erase(it); } else { ++it; }
@@ -941,6 +948,15 @@ private:
                         } catch (...) {}
                     }
                 }
+            }
+        }
+
+        // 锁释放后清理 DTU 连接映射：超时的从站下次轮询改为广播，等待重新注册
+        for (const auto& connKey : timedOutConnKeys) {
+            if (DeviceConnectionCache::instance().getConnection(connKey)) {
+                DeviceConnectionCache::instance().removeConnection(connKey);
+                LOG_INFO << "[Modbus] Timeout: cleared DTU mapping for " << connKey
+                         << ", next poll will broadcast";
             }
         }
 
