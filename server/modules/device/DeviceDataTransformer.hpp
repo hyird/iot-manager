@@ -418,15 +418,28 @@ public:
             std::string unit = reg.get("unit", "").asString();
             if (!unit.empty()) funcEl["unit"] = unit;
 
-            // COIL 类型添加预设值选项
+            // COIL 类型添加预设值选项，优先使用寄存器配置的 0/1 值显示标签
             if (regType == "COIL") {
+                std::string label1 = "ON";
+                std::string label0 = "OFF";
+                if (reg.isMember("dictConfig") && reg["dictConfig"].isMember("items")
+                    && reg["dictConfig"]["items"].isArray()) {
+                    for (const auto& item : reg["dictConfig"]["items"]) {
+                        std::string key = item.get("key", "").asString();
+                        std::string lbl = item.get("label", "").asString();
+                        if (!lbl.empty()) {
+                            if (key == "1") label1 = lbl;
+                            else if (key == "0") label0 = lbl;
+                        }
+                    }
+                }
                 Json::Value options(Json::arrayValue);
                 Json::Value optOn;
-                optOn["label"] = "ON";
+                optOn["label"] = label1;
                 optOn["value"] = "1";
                 options.append(optOn);
                 Json::Value optOff;
-                optOff["label"] = "OFF";
+                optOff["label"] = label0;
                 optOff["value"] = "0";
                 options.append(optOff);
                 funcEl["options"] = options;
