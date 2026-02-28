@@ -27,7 +27,7 @@ inline constexpr int MERGE_GAP = 10;
 inline constexpr int DEFAULT_READ_INTERVAL = 1;
 
 /** Modbus 请求超时（毫秒） */
-inline constexpr int RESPONSE_TIMEOUT_MS = 5000;
+inline constexpr int RESPONSE_TIMEOUT_MS = 10000;
 
 /** 接收缓冲区上限（字节），超过则清空防止内存泄漏 */
 inline constexpr size_t MAX_BUFFER_SIZE = 1024;
@@ -513,7 +513,10 @@ private:
         if (nextIdx < ctx.readGroups.size()) {
             sendReadRequest(ctx, ctx.readGroups[nextIdx], nextIdx);
         } else {
-            tryStartPendingWrite(ctx.linkId, ctx.slaveId);
+            bool writeStarted = tryStartPendingWrite(ctx.linkId, ctx.slaveId);
+            if (!writeStarted) {
+                onReadCycleComplete(ctx.deviceId);
+            }
         }
 
         // 生成 UTC 时间
@@ -890,11 +893,19 @@ private:
 
         if (ctx.readGroups.empty()) return;
 
-        // 串行轮询：读/写任一进行中时跳过，等下次 tick 重试
+        // 串行轮询：读/写任一进行中，或距离上次周期结束未满间隔时，跳过
         {
+            auto now = std::chrono::steady_clock::now();
             std::string slavePrefix = std::to_string(ctx.linkId) + ":" + std::to_string(ctx.slaveId) + ":";
             std::string writeKey = makeWriteQueueKey(ctx.linkId, ctx.slaveId);
             std::lock_guard<std::mutex> lock(pendingMutex_);
+
+            // 上次周期完成后的等待间隔尚未到期
+            auto timeIt = nextAllowedPollTime_.find(ctx.deviceId);
+            if (timeIt != nextAllowedPollTime_.end() && now < timeIt->second) {
+                LOG_DEBUG << "[Modbus] " << ctx.deviceName << " interval not elapsed, skip poll";
+                return;
+            }
 
             // 有待应答的读请求
             for (const auto& [key, q] : pendingRequests_) {
@@ -1149,7 +1160,10 @@ private:
         if (nextIdx < ctx.readGroups.size()) {
             sendReadRequest(ctx, ctx.readGroups[nextIdx], nextIdx);
         } else {
-            tryStartPendingWrite(ctx.linkId, ctx.slaveId);
+            bool writeStarted = tryStartPendingWrite(ctx.linkId, ctx.slaveId);
+            if (!writeStarted) {
+                onReadCycleComplete(ctx.deviceId);
+            }
         }
     }
 
@@ -1584,7 +1598,8 @@ private:
      * 在读周期最后一组的响应处理完成后调用（nextIdx >= readGroups.size()），
      * 此时 pendingRequests_ 已清空，可以安全启动写队列。
      */
-    void tryStartPendingWrite(int linkId, uint8_t slaveId) {
+    // 返回 true 表示启动了写操作，false 表示无写操作待执行（读周期真正完成）
+    bool tryStartPendingWrite(int linkId, uint8_t slaveId) {
         std::string queueKey = makeWriteQueueKey(linkId, slaveId);
         QueuedWriteFrame frameToSend;
         bool shouldSend = false;
@@ -1592,7 +1607,7 @@ private:
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
             auto it = writeQueues_.find(queueKey);
-            if (it == writeQueues_.end() || it->second.sending || it->second.frames.empty()) return;
+            if (it == writeQueues_.end() || it->second.sending || it->second.frames.empty()) return false;
 
             it->second.sending = true;
             frameToSend = std::move(it->second.frames.front());
@@ -1603,6 +1618,62 @@ private:
         if (shouldSend) {
             LOG_INFO << "[Modbus] Starting deferred write after read cycle: " << frameToSend.deviceName;
             sendSingleWriteFrame(frameToSend);
+        }
+        return shouldSend;
+    }
+
+    /**
+     * @brief 读周期（含写操作）全部完成时调用
+     *
+     * 记录"下次允许轮询的时间点"= now + readInterval，
+     * 并通过 runAfter 在 readInterval 后触发下一轮。
+     * runEvery 定时器在 nextAllowedPollTime_ 到期前会被 pollDevice 内的检查拦截，
+     * 保证始终是"读完 → 等间隔 → 再读"的语义。
+     */
+    void onReadCycleComplete(int deviceId) {
+        DeviceContext ctx;
+        {
+            std::lock_guard<std::mutex> lock(contextMutex_);
+            auto it = deviceContexts_.find(deviceId);
+            if (it == deviceContexts_.end()) return;
+            ctx = it->second;
+        }
+
+        auto* loop = TcpLinkManager::instance().getLinkLoop(ctx.linkId);
+        if (!loop) return;
+
+        auto allowedAt = std::chrono::steady_clock::now()
+            + std::chrono::milliseconds(ctx.readInterval * 1000);
+
+        {
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            nextAllowedPollTime_[deviceId] = allowedAt;
+        }
+
+        loop->runAfter(ctx.readInterval, [this, deviceId]() {
+            pollDevice(deviceId);
+        });
+
+        LOG_DEBUG << "[Modbus] Cycle complete, next poll in " << ctx.readInterval
+                  << "s: " << ctx.deviceName;
+    }
+
+    /**
+     * @brief 按 linkId + slaveId 触发所有相关设备的读周期完成回调
+     * 用于 trySendNextWrite 写队列清空时
+     */
+    void triggerReadCycleCompleteForSlave(int linkId, uint8_t slaveId) {
+        std::vector<int> deviceIds;
+        {
+            std::lock_guard<std::mutex> lock(contextMutex_);
+            for (const auto& [devId, ctx] : deviceContexts_) {
+                if (ctx.linkId == linkId && ctx.slaveId == slaveId) {
+                    deviceIds.push_back(devId);
+                }
+            }
+        }
+        for (int devId : deviceIds) {
+            onReadCycleComplete(devId);
         }
     }
 
@@ -1686,6 +1757,9 @@ private:
 
         if (shouldSend) {
             sendSingleWriteFrame(nextFrame);
+        } else {
+            // 写队列已清空，读+写完整周期结束，检查是否需要立即触发下一轮
+            triggerReadCycleCompleteForSlave(linkId, slaveId);
         }
     }
 
@@ -1790,6 +1864,10 @@ private:
 
     // 写入队列: "linkId:slaveId" → DeviceWriteQueue（共用 pendingMutex_）
     std::map<std::string, DeviceWriteQueue> writeQueues_;
+
+    // 下次允许轮询的时间点: deviceId → 时间点（共用 pendingMutex_）
+    // 在读周期完成时设置为 now + readInterval，pollDevice 遇到未到期的时间点则跳过
+    std::map<int, std::chrono::steady_clock::time_point> nextAllowedPollTime_;
 
     // 指令应答回调
     CommandResponseCallback commandResponseCallback_;
