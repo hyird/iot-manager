@@ -494,13 +494,25 @@ private:
         jsonData["funcCode"] = FUNC_READ;
         jsonData["direction"] = "UP";
 
+        // 合并到内存缓冲区（与异步路径 saveData 保持一致，解决多 ReadGroup 合并问题）
         Json::Value dataObj(Json::objectValue);
-        for (const auto& [key, elem] : registerValues) {
-            dataObj[key] = elem;
+        {
+            std::lock_guard<std::mutex> mlock(mergedRegsMutex_);
+            auto& merged = deviceMergedRegs_[ctx.deviceId];
+            for (const auto& [key, elem] : registerValues) {
+                merged[key] = elem;
+            }
+            dataObj = merged;
         }
         jsonData["data"] = dataObj;
 
         result.data = jsonData;
+
+        // 串行轮询：当前组响应完成后发送下一组
+        size_t nextIdx = pending.groupIndex + 1;
+        if (nextIdx < ctx.readGroups.size()) {
+            sendReadRequest(ctx, ctx.readGroups[nextIdx], nextIdx);
+        }
 
         // 生成 UTC 时间
         auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
@@ -874,9 +886,23 @@ private:
         // 清理超时的待处理请求，防止响应丢失导致内存泄漏
         cleanupTimedOutRequests(ctx.linkId);
 
-        for (const auto& group : ctx.readGroups) {
-            sendReadRequest(ctx, group);
+        if (ctx.readGroups.empty()) return;
+
+        // 串行轮询：当前设备仍有待应答的读请求时跳过本次触发
+        // 等超时清理后下次 tick 才重新开始，避免并发乱序
+        {
+            std::string slavePrefix = std::to_string(ctx.linkId) + ":" + std::to_string(ctx.slaveId) + ":";
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            for (const auto& [key, queue] : pendingRequests_) {
+                if (key.compare(0, slavePrefix.size(), slavePrefix) == 0 && !queue.empty()) {
+                    LOG_DEBUG << "[Modbus] " << ctx.deviceName << " prev poll in progress, skip";
+                    return;
+                }
+            }
         }
+
+        // 仅发送第一组；后续组在收到响应后链式触发
+        sendReadRequest(ctx, ctx.readGroups[0], 0);
     }
 
     /**
@@ -972,8 +998,9 @@ private:
 
     /**
      * @brief 发送一组读取请求
+     * @param groupIndex 在 readGroups 中的下标，用于串行轮询触发下一组
      */
-    void sendReadRequest(const DeviceContext& ctx, const ReadGroup& group) {
+    void sendReadRequest(const DeviceContext& ctx, const ReadGroup& group, size_t groupIndex = 0) {
         ModbusRequest req;
         req.slaveId = ctx.slaveId;
         req.functionCode = group.functionCode;
@@ -1033,6 +1060,7 @@ private:
             PendingRequest pending;
             pending.deviceId = ctx.deviceId;
             pending.group = group;
+            pending.groupIndex = groupIndex;
             pending.sentTime = std::chrono::steady_clock::now();
             pending.transactionId = req.transactionId;
 
@@ -1104,6 +1132,12 @@ private:
                   << " data=[" << ModbusUtils::toHexString(response.data) << "]"
                   << " → " << formatRegisterValues(registerValues);
         co_await saveData(ctx, registerValues);
+
+        // 串行轮询：当前组响应完成后发送下一组
+        size_t nextIdx = pending.groupIndex + 1;
+        if (nextIdx < ctx.readGroups.size()) {
+            sendReadRequest(ctx, ctx.readGroups[nextIdx], nextIdx);
+        }
     }
 
     /**
@@ -1657,6 +1691,7 @@ private:
     struct PendingRequest {
         int deviceId;
         ReadGroup group;
+        size_t groupIndex = 0;  // 在 readGroups 中的下标，用于串行轮询触发下一组
         std::chrono::steady_clock::time_point sentTime;
         uint16_t transactionId;
     };
