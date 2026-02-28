@@ -132,10 +132,10 @@ public:
     }
 
     /**
-     * @brief 提交事务并执行回调
+     * @brief 提交事务并等待确认，然后执行回调
      *
-     * 释放 Drogon Transaction 指针触发 SQL COMMIT，
-     * 确保数据库写入完成后再执行回调和后续的领域事件发布。
+     * 通过 setCommitCallback 挂起协程，等待 PostgreSQL 确认 COMMIT 后才继续，
+     * 确保数据库写入真正完成后，再执行回调和后续的领域事件发布。
      */
     Task<void> commit() {
         if (committed_) {
@@ -145,11 +145,33 @@ public:
             throw std::runtime_error("Transaction already rolled back");
         }
 
-        // 释放事务指针 → Drogon Transaction 析构 → SQL COMMIT
-        transaction_.reset();
+        // 等待 PostgreSQL COMMIT 确认：
+        //   1. 注册 setCommitCallback 作为恢复点
+        //   2. tx_.reset() 析构 Transaction → 发送 COMMIT 命令
+        //   3. 协程挂起，直到 PostgreSQL 响应到来触发回调
+        //   4. 回调中 handle.resume() 恢复协程，保证 DB 写入已完成
+        struct CommitAwaiter : drogon::CallbackAwaiter<bool> {
+            std::shared_ptr<Transaction> tx_;
+            explicit CommitAwaiter(std::shared_ptr<Transaction> tx)
+                : tx_(std::move(tx)) {}
+
+            void await_suspend(std::coroutine_handle<> handle) {
+                tx_->setCommitCallback([this, handle](bool success) {
+                    setValue(success);
+                    handle.resume();
+                });
+                tx_.reset();  // 析构 → 发送 COMMIT 命令
+            }
+        };
+
+        bool success = co_await CommitAwaiter{std::move(transaction_)};
         committed_ = true;
 
-        // 执行所有提交回调（通常是缓存清除）
+        if (!success) {
+            throw std::runtime_error("Transaction commit failed");
+        }
+
+        // 执行所有提交回调（通常是缓存清除），在 COMMIT 确认后执行
         for (const auto& callback : commitCallbacks_) {
             try {
                 co_await callback();

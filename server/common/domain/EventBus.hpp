@@ -2,8 +2,9 @@
 
 #include "DomainEvent.hpp"
 #include "common/cache/AuthCache.hpp"
-#include "common/cache/ResourceVersion.hpp"
 #include "common/cache/DeviceCache.hpp"
+#include "common/cache/RealtimeDataCache.hpp"
+#include "common/cache/ResourceVersion.hpp"
 
 /**
  * @brief 事件处理器类型
@@ -153,6 +154,7 @@ private:
         // ========== Device 事件 ==========
         else if (aggType == "Device") {
             DeviceCache::instance().markStale();
+            RealtimeDataCache::instance().invalidate(aggId);
             ResourceVersion::instance().incrementVersion("device");
 
             LOG_DEBUG << "EventBus: Invalidated device cache for Device#" << aggId;

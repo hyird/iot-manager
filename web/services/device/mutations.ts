@@ -2,7 +2,6 @@
  * 设备管理 Mutation Hooks
  */
 
-import { useQueryClient } from "@tanstack/react-query";
 import type { Device } from "@/types";
 import { useMutationWithFeedback } from "../common";
 import * as deviceApi from "./api";
@@ -10,8 +9,6 @@ import { deviceKeys } from "./keys";
 
 /** 保存设备 Mutation (创建或更新) */
 export function useDeviceSave() {
-  const queryClient = useQueryClient();
-
   return useMutationWithFeedback({
     mutationFn: async (data: Device.CreateDto & { id?: number }): Promise<void> => {
       if (data.id) {
@@ -23,11 +20,6 @@ export function useDeviceSave() {
     },
     successMessage: (_, variables) => (variables.id ? "更新成功" : "创建成功"),
     invalidateKeys: [deviceKeys.all],
-    onSuccess: (_, variables) => {
-      if (variables.id) {
-        queryClient.invalidateQueries({ queryKey: deviceKeys.detail(variables.id) });
-      }
-    },
   });
 }
 

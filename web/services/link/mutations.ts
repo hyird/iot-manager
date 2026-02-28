@@ -4,6 +4,7 @@
 
 import type { Link } from "@/types";
 import { useMutationWithFeedback } from "../common";
+import { deviceKeys } from "../device/keys";
 import * as api from "./api";
 import { linkQueryKeys } from "./keys";
 
@@ -12,7 +13,7 @@ export function useLinkCreate() {
   return useMutationWithFeedback({
     mutationFn: api.create,
     successMessage: "创建成功",
-    invalidateKeys: [linkQueryKeys.all],
+    invalidateKeys: [linkQueryKeys.all, deviceKeys.all],
   });
 }
 
@@ -21,7 +22,7 @@ export function useLinkUpdate() {
   return useMutationWithFeedback({
     mutationFn: ({ id, data }: { id: number; data: Link.UpdateDto }) => api.update(id, data),
     successMessage: "更新成功",
-    invalidateKeys: [linkQueryKeys.all],
+    invalidateKeys: [linkQueryKeys.all, deviceKeys.all],
   });
 }
 
@@ -30,7 +31,7 @@ export function useLinkDelete() {
   return useMutationWithFeedback({
     mutationFn: api.remove,
     successMessage: "删除成功",
-    invalidateKeys: [linkQueryKeys.all],
+    invalidateKeys: [linkQueryKeys.all, deviceKeys.all],
   });
 }
 
@@ -45,6 +46,6 @@ export function useLinkSave() {
       return api.create(values);
     },
     successMessage: "保存成功",
-    invalidateKeys: [linkQueryKeys.all],
+    invalidateKeys: [linkQueryKeys.all, deviceKeys.all],
   });
 }
