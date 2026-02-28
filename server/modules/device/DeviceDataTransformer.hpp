@@ -420,8 +420,8 @@ public:
 
             // COIL 类型添加预设值选项，优先使用寄存器配置的 0/1 值显示标签
             if (regType == "COIL") {
-                std::string label1 = "ON";
-                std::string label0 = "OFF";
+                std::string label1 = "1";
+                std::string label0 = "0";
                 if (reg.isMember("dictConfig") && reg["dictConfig"].isMember("items")
                     && reg["dictConfig"]["items"].isArray()) {
                     for (const auto& item : reg["dictConfig"]["items"]) {
