@@ -612,6 +612,10 @@ private:
 
         std::lock_guard<std::mutex> lock(contextMutex_);
         deviceContexts_.clear();
+        {
+            std::lock_guard<std::mutex> mlock(mergedRegsMutex_);
+            deviceMergedRegs_.clear();
+        }
 
         int total = 0, loaded = 0, skipped = 0;
         for (const auto& device : cachedDevices) {
@@ -1183,9 +1187,15 @@ private:
             data["funcCode"] = FUNC_READ;
             data["direction"] = "UP";
 
+            // 合并到内存缓冲区，获取当前设备所有已接收寄存器的完整快照
             Json::Value dataObj(Json::objectValue);
-            for (const auto& [key, elem] : registerValues) {
-                dataObj[key] = elem;
+            {
+                std::lock_guard<std::mutex> mlock(mergedRegsMutex_);
+                auto& merged = deviceMergedRegs_[ctx.deviceId];
+                for (const auto& [key, elem] : registerValues) {
+                    merged[key] = elem;
+                }
+                dataObj = merged;
             }
             data["data"] = dataObj;
 
@@ -1223,8 +1233,8 @@ private:
                 reportTime
             });
 
-            // 合并更新实时数据缓存（保留其他寄存器类型的现有数据，避免多 ReadGroup 互相覆盖）
-            RealtimeDataCache::instance().mergeUpdate(ctx.deviceId, FUNC_READ, data, reportTime);
+            // 更新实时数据缓存（data 已包含所有寄存器类型的合并值）
+            RealtimeDataCache::instance().update(ctx.deviceId, FUNC_READ, data, reportTime);
 
             // 更新资源版本号
             ResourceVersion::instance().incrementVersion("device");
@@ -1688,6 +1698,11 @@ private:
 
     // 指令应答回调
     CommandResponseCallback commandResponseCallback_;
+
+    // 寄存器值合并缓冲区: deviceId → 已接收到的所有寄存器值（跨 ReadGroup 累积）
+    // 解决多 ReadGroup 轮询时各批响应互相覆盖的问题
+    std::map<int, Json::Value> deviceMergedRegs_;
+    std::mutex mergedRegsMutex_;
 
     // Transaction ID 计数器
     std::atomic<uint16_t> transactionCounter_{0};
