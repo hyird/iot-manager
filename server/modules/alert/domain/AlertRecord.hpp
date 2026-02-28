@@ -82,8 +82,8 @@ public:
                    r.detail, r.triggered_at, r.acknowledged_at, r.acknowledged_by, r.resolved_at,
                    d.name AS device_name, ar.name AS rule_name
             FROM alert_record r
-            LEFT JOIN device d ON r.device_id = d.id
-            LEFT JOIN alert_rule ar ON r.rule_id = ar.id
+            LEFT JOIN device d ON r.device_id = d.id AND d.deleted_at IS NULL
+            LEFT JOIN alert_rule ar ON r.rule_id = ar.id AND ar.deleted_at IS NULL
         )" + where + " ORDER BY r.triggered_at DESC";
 
         if (pageSize > 0) {

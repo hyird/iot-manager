@@ -221,7 +221,7 @@ private:
         auto result = co_await db.execSqlCoro(R"(
             SELECT r.*, d.name AS device_name
             FROM alert_rule r
-            LEFT JOIN device d ON r.device_id = d.id
+            LEFT JOIN device d ON r.device_id = d.id AND d.deleted_at IS NULL
             WHERE r.status = 'enabled' AND r.deleted_at IS NULL
         )");
 

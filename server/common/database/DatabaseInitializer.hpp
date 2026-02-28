@@ -232,7 +232,7 @@ private:
         )");
         co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_protocol_config_protocol ON protocol_config (protocol))");
         co_await db->execSqlCoro(R"(CREATE INDEX IF NOT EXISTS idx_protocol_config_deleted ON protocol_config (deleted_at))");
-        co_await db->execSqlCoro(R"(CREATE UNIQUE INDEX IF NOT EXISTS idx_protocol_config_name ON protocol_config (protocol, name) WHERE deleted_at IS NULL)");
+        co_await db->execSqlCoro(R"(CREATE UNIQUE INDEX IF NOT EXISTS idx_protocol_config_name ON protocol_config (name) WHERE deleted_at IS NULL)");
 
         // 创建设备分组表
         co_await db->execSqlCoro(R"(

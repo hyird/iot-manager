@@ -234,7 +234,7 @@ public:
         std::string sql = R"(
             SELECT t.*, pc.name AS config_name, pc.protocol AS protocol_type
             FROM alert_rule_template t
-            LEFT JOIN protocol_config pc ON t.protocol_config_id = pc.id
+            LEFT JOIN protocol_config pc ON t.protocol_config_id = pc.id AND pc.deleted_at IS NULL
         )" + where + " ORDER BY t.created_at DESC" + page.limitClause();
 
         auto result = co_await db.execSqlCoro(sql, params);
@@ -363,10 +363,9 @@ public:
                    COUNT(*) FILTER (WHERE r.status = 'resolved') AS resolved_count,
                    MAX(r.triggered_at) AS latest_trigger_time
             FROM alert_record r
-            LEFT JOIN alert_rule ar ON r.rule_id = ar.id
-            LEFT JOIN device d ON r.device_id = d.id
+            LEFT JOIN alert_rule ar ON r.rule_id = ar.id AND ar.deleted_at IS NULL
+            LEFT JOIN device d ON r.device_id = d.id AND d.deleted_at IS NULL
             WHERE r.triggered_at >= NOW() - INTERVAL '1 days' * ?
-              AND ar.deleted_at IS NULL
             GROUP BY ar.id, ar.name, d.id, d.name, r.severity
             ORDER BY total_count DESC
         )", {std::to_string(days)});
@@ -419,8 +418,8 @@ public:
                    r.triggered_at, r.acknowledged_at,
                    d.name AS device_name, ar.name AS rule_name
             FROM alert_record r
-            LEFT JOIN device d ON r.device_id = d.id
-            LEFT JOIN alert_rule ar ON r.rule_id = ar.id
+            LEFT JOIN device d ON r.device_id = d.id AND d.deleted_at IS NULL
+            LEFT JOIN alert_rule ar ON r.rule_id = ar.id AND ar.deleted_at IS NULL
         )" + where + " ORDER BY r.triggered_at DESC";
 
         auto result = co_await db.execSqlCoro(sql, params);

@@ -383,7 +383,7 @@ public:
             // 查询设备的协议配置
             auto configResult = co_await dbService_.execSqlCoro(R"(
                 SELECT pc.config FROM device d
-                JOIN protocol_config pc ON d.protocol_config_id = pc.id
+                JOIN protocol_config pc ON d.protocol_config_id = pc.id AND pc.deleted_at IS NULL
                 WHERE d.id = ? AND d.deleted_at IS NULL
             )", {deviceIdStr});
 

@@ -65,7 +65,7 @@ public:
         std::string sql = R"(
             SELECT r.*, d.name AS device_name
             FROM alert_rule r
-            LEFT JOIN device d ON r.device_id = d.id
+            LEFT JOIN device d ON r.device_id = d.id AND d.deleted_at IS NULL
         )" + qb.whereClause() + " ORDER BY r.id DESC" + page.limitClause();
 
         auto result = co_await db.execSqlCoro(sql, qb.params());
@@ -88,7 +88,7 @@ public:
         auto result = co_await db.execSqlCoro(R"(
             SELECT r.*, d.name AS device_name
             FROM alert_rule r
-            LEFT JOIN device d ON r.device_id = d.id
+            LEFT JOIN device d ON r.device_id = d.id AND d.deleted_at IS NULL
             WHERE r.status = 'enabled' AND r.deleted_at IS NULL
             ORDER BY r.device_id, r.id
         )");
@@ -252,7 +252,7 @@ private:
         auto result = co_await db().execSqlCoro(R"(
             SELECT r.*, d.name AS device_name
             FROM alert_rule r
-            LEFT JOIN device d ON r.device_id = d.id
+            LEFT JOIN device d ON r.device_id = d.id AND d.deleted_at IS NULL
             WHERE r.id = ? AND r.deleted_at IS NULL
         )", {std::to_string(id)});
 

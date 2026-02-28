@@ -136,12 +136,12 @@ public:
     }
 
     /**
-     * @brief 约束：同协议下名称唯一
+     * @brief 约束：配置名称全局唯一（跨协议）
      */
     static Task<void> nameUnique(const ProtocolConfig& config) {
         DatabaseService db;
-        std::string sql = "SELECT 1 FROM protocol_config WHERE protocol = ? AND name = ? AND deleted_at IS NULL";
-        std::vector<std::string> params = {config.protocol_, config.name_};
+        std::string sql = "SELECT 1 FROM protocol_config WHERE name = ? AND deleted_at IS NULL";
+        std::vector<std::string> params = {config.name_};
 
         if (config.id() > 0) {
             sql += " AND id != ?";
@@ -150,7 +150,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("同协议下配置名称已存在");
+            throw ValidationException("配置名称已存在");
         }
     }
 
