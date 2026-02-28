@@ -508,14 +508,25 @@ private:
 
         result.data = jsonData;
 
-        // 串行轮询：当前组响应完成后发送下一组；全部完成后启动延迟的写操作
+        // 写优先：当前组响应后，先检查是否有待发写命令
+        // 有写 → 记录恢复点，暂停读，等写完后由 resumeReadAfterWrite 继续
+        // 无写 → 发下一个读组（或全部读完进入间隔等待）
         size_t nextIdx = pending.groupIndex + 1;
-        if (nextIdx < ctx.readGroups.size()) {
-            sendReadRequest(ctx, ctx.readGroups[nextIdx], nextIdx);
-        } else {
-            bool writeStarted = tryStartPendingWrite(ctx.linkId, ctx.slaveId);
-            if (!writeStarted) {
+        bool allGroupsDone = (nextIdx >= ctx.readGroups.size());
+        {
+            std::lock_guard<std::mutex> lk(pendingMutex_);
+            readResumeIdx_[ctx.deviceId] = allGroupsDone ? SIZE_MAX : nextIdx;
+        }
+        bool writeStarted = tryStartPendingWrite(ctx.linkId, ctx.slaveId);
+        if (!writeStarted) {
+            {
+                std::lock_guard<std::mutex> lk(pendingMutex_);
+                readResumeIdx_.erase(ctx.deviceId);
+            }
+            if (allGroupsDone) {
                 onReadCycleComplete(ctx.deviceId);
+            } else {
+                sendReadRequest(ctx, ctx.readGroups[nextIdx], nextIdx);
             }
         }
 
@@ -1155,14 +1166,23 @@ private:
                   << " → " << formatRegisterValues(registerValues);
         co_await saveData(ctx, registerValues);
 
-        // 串行轮询：当前组响应完成后发送下一组；全部完成后启动延迟的写操作
+        // 写优先：当前组响应后，先检查是否有待发写命令
         size_t nextIdx = pending.groupIndex + 1;
-        if (nextIdx < ctx.readGroups.size()) {
-            sendReadRequest(ctx, ctx.readGroups[nextIdx], nextIdx);
-        } else {
-            bool writeStarted = tryStartPendingWrite(ctx.linkId, ctx.slaveId);
-            if (!writeStarted) {
+        bool allGroupsDone = (nextIdx >= ctx.readGroups.size());
+        {
+            std::lock_guard<std::mutex> lk(pendingMutex_);
+            readResumeIdx_[ctx.deviceId] = allGroupsDone ? SIZE_MAX : nextIdx;
+        }
+        bool writeStarted = tryStartPendingWrite(ctx.linkId, ctx.slaveId);
+        if (!writeStarted) {
+            {
+                std::lock_guard<std::mutex> lk(pendingMutex_);
+                readResumeIdx_.erase(ctx.deviceId);
+            }
+            if (allGroupsDone) {
                 onReadCycleComplete(ctx.deviceId);
+            } else {
+                sendReadRequest(ctx, ctx.readGroups[nextIdx], nextIdx);
             }
         }
     }
@@ -1659,10 +1679,14 @@ private:
     }
 
     /**
-     * @brief 按 linkId + slaveId 触发所有相关设备的读周期完成回调
-     * 用于 trySendNextWrite 写队列清空时
+     * @brief 写队列清空后，按 linkId + slaveId 恢复被打断的读周期
+     *
+     * 若写操作是在读周期中途触发的，readResumeIdx_ 中记录了断点索引：
+     *   - resumeIdx < readGroups.size() → 从该索引继续发送读组
+     *   - resumeIdx == SIZE_MAX          → 读组已全部完成，进入间隔等待
+     * 若写操作是在两轮读之间触发的（readResumeIdx_ 无记录），直接进入间隔等待。
      */
-    void triggerReadCycleCompleteForSlave(int linkId, uint8_t slaveId) {
+    void resumeReadAfterWrite(int linkId, uint8_t slaveId) {
         std::vector<int> deviceIds;
         {
             std::lock_guard<std::mutex> lock(contextMutex_);
@@ -1672,8 +1696,37 @@ private:
                 }
             }
         }
+
         for (int devId : deviceIds) {
-            onReadCycleComplete(devId);
+            size_t resumeIdx = SIZE_MAX;
+            {
+                std::lock_guard<std::mutex> lock(pendingMutex_);
+                auto it = readResumeIdx_.find(devId);
+                if (it != readResumeIdx_.end()) {
+                    resumeIdx = it->second;
+                    readResumeIdx_.erase(it);
+                }
+            }
+
+            if (resumeIdx == SIZE_MAX) {
+                // 读组已全部完成，或写发生在两轮读之间
+                onReadCycleComplete(devId);
+            } else {
+                DeviceContext ctx;
+                {
+                    std::lock_guard<std::mutex> lock(contextMutex_);
+                    auto it = deviceContexts_.find(devId);
+                    if (it == deviceContexts_.end()) continue;
+                    ctx = it->second;
+                }
+                if (resumeIdx < ctx.readGroups.size()) {
+                    LOG_DEBUG << "[Modbus] Resuming read after write at group "
+                              << resumeIdx << ": " << ctx.deviceName;
+                    sendReadRequest(ctx, ctx.readGroups[resumeIdx], resumeIdx);
+                } else {
+                    onReadCycleComplete(devId);
+                }
+            }
         }
     }
 
@@ -1758,8 +1811,8 @@ private:
         if (shouldSend) {
             sendSingleWriteFrame(nextFrame);
         } else {
-            // 写队列已清空，读+写完整周期结束，检查是否需要立即触发下一轮
-            triggerReadCycleCompleteForSlave(linkId, slaveId);
+            // 写队列已清空，恢复被打断的读周期（或进入间隔等待）
+            resumeReadAfterWrite(linkId, slaveId);
         }
     }
 
@@ -1804,6 +1857,20 @@ private:
                     ++it;
                 }
             }
+
+        }
+
+        // 清理读恢复点（两把锁不能同时持有，分两步查询）
+        {
+            std::vector<int> deviceIds;
+            {
+                std::lock_guard<std::mutex> lock(contextMutex_);
+                for (const auto& [devId, ctx] : deviceContexts_) {
+                    if (ctx.linkId == linkId) deviceIds.push_back(devId);
+                }
+            }
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            for (int devId : deviceIds) readResumeIdx_.erase(devId);
         }
 
         // 锁释放后触发写请求失败回调
@@ -1868,6 +1935,10 @@ private:
     // 下次允许轮询的时间点: deviceId → 时间点（共用 pendingMutex_）
     // 在读周期完成时设置为 now + readInterval，pollDevice 遇到未到期的时间点则跳过
     std::map<int, std::chrono::steady_clock::time_point> nextAllowedPollTime_;
+
+    // 写优先暂停读的恢复点: deviceId → 下次应发送的 ReadGroup 索引（共用 pendingMutex_）
+    // SIZE_MAX 表示全部读组已完成（写结束后直接进入 onReadCycleComplete）
+    std::map<int, size_t> readResumeIdx_;
 
     // 指令应答回调
     CommandResponseCallback commandResponseCallback_;
