@@ -1223,8 +1223,8 @@ private:
                 reportTime
             });
 
-            // 更新实时数据缓存
-            RealtimeDataCache::instance().update(ctx.deviceId, FUNC_READ, data, reportTime);
+            // 合并更新实时数据缓存（保留其他寄存器类型的现有数据，避免多 ReadGroup 互相覆盖）
+            RealtimeDataCache::instance().mergeUpdate(ctx.deviceId, FUNC_READ, data, reportTime);
 
             // 更新资源版本号
             ResourceVersion::instance().incrementVersion("device");

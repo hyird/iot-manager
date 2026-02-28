@@ -55,6 +55,22 @@ public:
     }
 
     /**
+     * @brief 合并更新设备的某个功能码数据（fire-and-forget）
+     *
+     * 与 update() 的区别：不整体覆盖，而是将新数据的寄存器字段合并到现有条目。
+     * 用于 Modbus 多 ReadGroup 场景：不同寄存器类型的响应相互不覆盖。
+     */
+    void mergeUpdate(int deviceId, const std::string& funcCode, const Json::Value& data, const std::string& reportTime) {
+        drogon::async_run([this, deviceId, funcCode, data, reportTime]() -> Task<void> {
+            try {
+                co_await mergeUpdateRedis(deviceId, funcCode, data, reportTime);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[RealtimeDataCache] mergeUpdate failed for device " << deviceId << ": " << e.what();
+            }
+        });
+    }
+
+    /**
      * @brief 获取设备的所有实时数据
      */
     Task<std::optional<DeviceRealtimeData>> get(int deviceId) {
@@ -227,12 +243,49 @@ private:
     static constexpr const char* REDIS_LATEST_PREFIX = "realtime:latest:";
     static constexpr int REDIS_TTL = Constants::REDIS_TTL_REALTIME_DATA;
 
-    /** 预编译 Lua 脚本（TTL 在首次调用时烘焙进字符串，避免每次拼接） */
+    /** 预编译 Lua 脚本：整体替换（TTL 在首次调用时烘焙进字符串，避免每次拼接） */
     static const std::string& getUpdateScript() {
         static const std::string script = []() {
             auto ttl = std::to_string(REDIS_TTL);
             return std::string(
                 "redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]) "
+                "redis.call('EXPIRE',KEYS[1],") + ttl + ") "
+                "local cur=redis.call('GET',KEYS[2]) "
+                "if not cur or ARGV[3]>cur then redis.call('SETEX',KEYS[2]," + ttl + ",ARGV[3]) end "
+                "return 1";
+        }();
+        return script;
+    }
+
+    /**
+     * @brief 预编译 Lua 脚本：合并更新
+     *
+     * 将新数据的 data.data 字段逐一合并到现有条目，而不是整体覆盖。
+     * 用于 Modbus 多次 ReadGroup 响应：每次只更新本批寄存器，不影响其他类型的值。
+     * KEYS: [1]=dataKey [2]=latestKey
+     * ARGV: [1]=funcCode [2]=newJsonStr [3]=reportTime
+     */
+    static const std::string& getMergeUpdateScript() {
+        static const std::string script = []() {
+            auto ttl = std::to_string(REDIS_TTL);
+            return std::string(
+                "local ex=redis.call('HGET',KEYS[1],ARGV[1]) "
+                "if ex then "
+                "  local s,old=pcall(cjson.decode,ex) "
+                "  local s2,nw=pcall(cjson.decode,ARGV[2]) "
+                "  if s and s2 and type(old)=='table' and type(nw)=='table' "
+                "     and type(old['data'])=='table' and type(nw['data'])=='table' "
+                "     and type(old['data']['data'])=='table' "
+                "     and type(nw['data']['data'])=='table' then "
+                "    for k,v in pairs(nw['data']['data']) do old['data']['data'][k]=v end "
+                "    old['reportTime']=ARGV[3] "
+                "    redis.call('HSET',KEYS[1],ARGV[1],cjson.encode(old)) "
+                "  else "
+                "    redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]) "
+                "  end "
+                "else "
+                "  redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]) "
+                "end "
                 "redis.call('EXPIRE',KEYS[1],") + ttl + ") "
                 "local cur=redis.call('GET',KEYS[2]) "
                 "if not cur or ARGV[3]>cur then redis.call('SETEX',KEYS[2]," + ttl + ",ARGV[3]) end "
@@ -272,6 +325,33 @@ private:
         co_await client->execCommandCoro(
             "EVAL %s 2 %s %s %s %s %s",
             getUpdateScript().c_str(),
+            dataKey.c_str(), latestKey.c_str(),
+            funcCode.c_str(), jsonStr.c_str(), reportTime.c_str()
+        );
+    }
+
+    /**
+     * @brief 合并更新单个设备的实时数据（Lua 脚本，原子 merge，单次 Redis 往返）
+     * 将新数据的 data.data 字段逐一写入，保留已有的其他寄存器字段
+     */
+    Task<void> mergeUpdateRedis(int deviceId, const std::string& funcCode, const Json::Value& data, const std::string& reportTime) {
+        RedisService redis;
+        auto client = redis.getClient();
+        if (!client) {
+            throw std::runtime_error("Redis client not available");
+        }
+
+        Json::Value cacheData;
+        cacheData["data"] = data;
+        cacheData["reportTime"] = reportTime;
+        std::string jsonStr = JsonHelper::serialize(cacheData);
+
+        std::string dataKey = std::string(REDIS_KEY_PREFIX) + std::to_string(deviceId);
+        std::string latestKey = std::string(REDIS_LATEST_PREFIX) + std::to_string(deviceId);
+
+        co_await client->execCommandCoro(
+            "EVAL %s 2 %s %s %s %s %s",
+            getMergeUpdateScript().c_str(),
             dataKey.c_str(), latestKey.c_str(),
             funcCode.c_str(), jsonStr.c_str(), reportTime.c_str()
         );
