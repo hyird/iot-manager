@@ -77,6 +77,7 @@ public:
         return std::nullopt;
     }
 
+
     /**
      * @brief 检查客户端是否已注册
      */

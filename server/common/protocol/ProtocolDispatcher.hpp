@@ -196,16 +196,8 @@ public:
         // 订阅设备/协议配置事件，触发 Modbus 重载
         registerEventSubscriptions();
 
-        // 定期清理过期的设备连接映射（5 分钟周期）
-        batchLoop_->runEvery(300.0, []() {
-            try {
-                DeviceConnectionCache::instance().cleanExpired(300);
-            } catch (const std::exception& e) {
-                LOG_ERROR << "[ProtocolDispatcher] cleanExpired exception: " << e.what();
-            } catch (...) {
-                LOG_ERROR << "[ProtocolDispatcher] cleanExpired unknown exception";
-            }
-        });
+        // 设备连接映射的清理完全由 TCP 断连回调（removeByClient）负责，
+        // 不再按 lastSeen 定时清理，避免 DTU 在线但设备故障不响应时映射被误删。
 
         // 定期刷新物化视图（5 分钟周期，并发刷新不阻塞读取）
         batchLoop_->runEvery(300.0, []() {
