@@ -430,6 +430,15 @@ public:
     }
 
 private:
+    /** 待应答读请求 */
+    struct PendingRequest {
+        int deviceId;
+        ReadGroup group;
+        size_t groupIndex = 0;  // 在 readGroups 中的下标，用于串行轮询触发下一组
+        std::chrono::steady_clock::time_point sentTime;
+        uint16_t transactionId;
+    };
+
     // ==================== 响应匹配 ====================
 
     /**
@@ -1978,15 +1987,6 @@ private:
     }
 
     // ==================== 成员变量 ====================
-
-    /** 待应答读请求 */
-    struct PendingRequest {
-        int deviceId;
-        ReadGroup group;
-        size_t groupIndex = 0;  // 在 readGroups 中的下标，用于串行轮询触发下一组
-        std::chrono::steady_clock::time_point sentTime;
-        uint16_t transactionId;
-    };
 
     // 设备上下文: deviceId → DeviceContext
     std::map<int, DeviceContext> deviceContexts_;
