@@ -108,6 +108,12 @@ std::vector<std::string> getStageHints(const std::string& stage) {
             "相关数据表是否已正确创建",
         };
     }
+    if (stage == "protocol:modbus-initialize") {
+        return {
+            "数据库连接是否稳定",
+            "device 和 protocol_config 表是否已正确创建",
+        };
+    }
     if (stage == "resource-version:load-and-reset") {
         return {
             "Redis 连接是否稳定",
@@ -179,6 +185,11 @@ void onServerStarted() {
             LOG_INFO << "[Startup] " << stage;
             // 3. 预加载 DeviceCache（确保 TcpIoPool 同步访问时有数据）
             co_await DeviceCache::instance().getDevices();
+
+            stage = "protocol:modbus-initialize";
+            LOG_INFO << "[Startup] " << stage;
+            // 4. 初始化 Modbus 处理器（依赖数据库表和 DeviceCache）
+            co_await ProtocolDispatcher::instance().initializeModbusAsync();
 
             stage = "resource-version:load-and-reset";
             LOG_INFO << "[Startup] " << stage;

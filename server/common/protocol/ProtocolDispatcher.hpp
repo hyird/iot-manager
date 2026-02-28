@@ -119,8 +119,9 @@ public:
     }
 
     /**
-     * @brief 初始化协议分发器
-     * 设置 TcpLinkManager 的数据回调
+     * @brief 初始化协议分发器（同步部分）
+     * 设置 TcpLinkManager 的数据回调，创建协议处理器
+     * 注意：Modbus 异步初始化需在数据库就绪后调用 initializeModbusAsync()
      */
     void initialize() {
         LOG_DEBUG << "[ProtocolDispatcher] Initializing...";
@@ -184,23 +185,13 @@ public:
         // 指定批量写入 IO 线程（所有报文解析结果汇聚到此线程攒批）
         batchLoop_ = drogon::app().getIOLoop(0);
 
-        // 创建 Modbus 处理器并初始化
+        // 创建 Modbus 处理器（仅创建，不初始化——初始化需等数据库就绪）
         modbusHandler_ = std::make_unique<modbus::ModbusHandler>();
         modbusHandler_->setCommandResponseCallback(
             [this](const std::string& deviceCode, const std::string& funcCode, bool success, int64_t responseId) {
                 notifyCommandResponse(deviceCode, funcCode, success, responseId);
             }
         );
-        auto* modbusLoop = getNextDrogonLoop();
-        modbusLoop->queueInLoop([this]() {
-            drogon::async_run([this]() -> Task<> {
-                try {
-                    co_await modbusHandler_->initialize();
-                } catch (const std::exception& e) {
-                    LOG_ERROR << "[ProtocolDispatcher] Modbus initialize failed: " << e.what();
-                }
-            });
-        });
 
         // 订阅设备/协议配置事件，触发 Modbus 重载
         registerEventSubscriptions();
@@ -236,6 +227,17 @@ public:
         });
 
         LOG_DEBUG << "[ProtocolDispatcher] Initialized";
+    }
+
+    /**
+     * @brief 异步初始化 Modbus 处理器（需在数据库初始化完成后调用）
+     * 加载设备上下文，启动轮询定时器
+     */
+    Task<> initializeModbusAsync() {
+        if (modbusHandler_) {
+            co_await modbusHandler_->initialize();
+            LOG_INFO << "[ProtocolDispatcher] Modbus handler initialized";
+        }
     }
 
 private:

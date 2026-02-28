@@ -234,6 +234,28 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           return;
         }
 
+        // device:offline → 清空离线设备的 reportTime，即时反映离线状态
+        if (msg.type === "device:offline") {
+          const payload = msg.data as { deviceIds?: number[] } | undefined;
+          if (payload?.deviceIds?.length) {
+            const offlineSet = new Set(payload.deviceIds);
+            const queryKey = deviceKeys.realtime();
+            const existing = queryClient.getQueryData<{ list: Device.Realtime[] }>(queryKey);
+            if (existing?.list?.length) {
+              let hasChanges = false;
+              const mergedList = existing.list.map((device) => {
+                if (!offlineSet.has(device.id) || !device.reportTime) return device;
+                hasChanges = true;
+                return { ...device, reportTime: null };
+              });
+              if (hasChanges) {
+                queryClient.setQueryData(queryKey, { list: mergedList });
+              }
+            }
+          }
+          return;
+        }
+
         // 其他事件：invalidate 触发 refetch
         const keys = EVENT_QUERY_MAP[msg.type];
         if (keys) {

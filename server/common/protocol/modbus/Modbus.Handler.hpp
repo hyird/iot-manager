@@ -12,6 +12,7 @@
 #include "common/cache/RealtimeDataCache.hpp"
 #include "common/cache/ResourceVersion.hpp"
 #include "common/network/TcpLinkManager.hpp"
+#include "common/network/WebSocketManager.hpp"
 #include "common/utils/Constants.hpp"
 
 namespace modbus {
@@ -110,12 +111,12 @@ public:
      * @param connected 连接/断开
      */
     void onConnectionChanged(int linkId, const std::string& clientAddr, bool connected) {
-        // 连接变化时清理缓冲区和写入队列
+        // 连接变化时清理缓冲区和待处理状态
         {
             std::lock_guard<std::mutex> lock(bufferMutex_);
             buffers_.erase(linkId);
         }
-        clearWriteQueuesForLink(linkId);
+        clearPendingStateForLink(linkId);
 
         if (connected) {
             LOG_INFO << "[Modbus] Link " << linkId << " connected, starting poll";
@@ -1224,17 +1225,21 @@ private:
      * @brief 标记链路上所有 Modbus 设备为离线（TCP Client 断连时调用）
      */
     void markDevicesOfflineForLink(int linkId) {
-        std::lock_guard<std::mutex> lock(contextMutex_);
-        int count = 0;
-        for (const auto& [deviceId, ctx] : deviceContexts_) {
-            if (ctx.linkId == linkId) {
-                RealtimeDataCache::instance().clearLatestTime(deviceId);
-                count++;
+        Json::Value offlineDeviceIds(Json::arrayValue);
+        {
+            std::lock_guard<std::mutex> lock(contextMutex_);
+            for (const auto& [deviceId, ctx] : deviceContexts_) {
+                if (ctx.linkId == linkId) {
+                    RealtimeDataCache::instance().clearLatestTime(deviceId);
+                    offlineDeviceIds.append(deviceId);
+                }
             }
         }
-        if (count > 0) {
-            LOG_INFO << "[Modbus] Marked " << count << " device(s) offline, link=" << linkId;
+        if (!offlineDeviceIds.empty()) {
+            LOG_INFO << "[Modbus] Marked " << offlineDeviceIds.size()
+                     << " device(s) offline, link=" << linkId;
             ResourceVersion::instance().incrementVersion("device");
+            broadcastDeviceOffline(offlineDeviceIds);
         }
     }
 
@@ -1243,21 +1248,36 @@ private:
      * 在 removeByClient 之前调用，此时 DeviceConnectionCache 仍有映射
      */
     void markDeviceOfflineByClient(int linkId, const std::string& clientAddr) {
-        std::lock_guard<std::mutex> lock(contextMutex_);
-        int count = 0;
-        for (const auto& [deviceId, ctx] : deviceContexts_) {
-            if (ctx.linkId != linkId) continue;
+        Json::Value offlineDeviceIds(Json::arrayValue);
+        {
+            std::lock_guard<std::mutex> lock(contextMutex_);
+            for (const auto& [deviceId, ctx] : deviceContexts_) {
+                if (ctx.linkId != linkId) continue;
 
-            std::string connKey = "modbus_" + std::to_string(ctx.slaveId);
-            auto connOpt = DeviceConnectionCache::instance().getConnection(connKey);
-            if (connOpt && connOpt->linkId == linkId && connOpt->clientAddr == clientAddr) {
-                RealtimeDataCache::instance().clearLatestTime(deviceId);
-                count++;
+                std::string connKey = "modbus_" + std::to_string(ctx.slaveId);
+                auto connOpt = DeviceConnectionCache::instance().getConnection(connKey);
+                if (connOpt && connOpt->linkId == linkId && connOpt->clientAddr == clientAddr) {
+                    RealtimeDataCache::instance().clearLatestTime(deviceId);
+                    offlineDeviceIds.append(deviceId);
+                }
             }
         }
-        if (count > 0) {
-            LOG_INFO << "[Modbus] Marked " << count << " device(s) offline, client=" << clientAddr;
+        if (!offlineDeviceIds.empty()) {
+            LOG_INFO << "[Modbus] Marked " << offlineDeviceIds.size()
+                     << " device(s) offline, client=" << clientAddr;
             ResourceVersion::instance().incrementVersion("device");
+            broadcastDeviceOffline(offlineDeviceIds);
+        }
+    }
+
+    /**
+     * @brief 推送设备离线事件到前端
+     */
+    void broadcastDeviceOffline(const Json::Value& deviceIds) {
+        if (WebSocketManager::instance().connectionCount() > 0) {
+            Json::Value payload;
+            payload["deviceIds"] = deviceIds;
+            WebSocketManager::instance().broadcast("device:offline", payload);
         }
     }
 
@@ -1548,17 +1568,58 @@ private:
     }
 
     /**
-     * @brief 清理指定链路的写入队列（连接断开时调用）
+     * @brief 清理指定链路的所有待处理状态（连接变化时调用）
+     *
+     * 包括：待应答读请求、待应答写请求（触发失败回调）、写入队列
      */
-    void clearWriteQueuesForLink(int linkId) {
+    void clearPendingStateForLink(int linkId) {
         std::string prefix = std::to_string(linkId) + ":";
-        std::lock_guard<std::mutex> lock(pendingMutex_);
-        for (auto it = writeQueues_.begin(); it != writeQueues_.end(); ) {
-            if (it->first.compare(0, prefix.size(), prefix) == 0) {
-                it = writeQueues_.erase(it);
-            } else {
-                ++it;
+        std::vector<PendingWriteRequest> failedWrites;
+
+        {
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+
+            // 清理待应答读请求
+            for (auto it = pendingRequests_.begin(); it != pendingRequests_.end(); ) {
+                if (it->first.compare(0, prefix.size(), prefix) == 0) {
+                    it = pendingRequests_.erase(it);
+                } else {
+                    ++it;
+                }
             }
+
+            // 清理待应答写请求（收集失败回调数据）
+            for (auto it = pendingWriteRequests_.begin(); it != pendingWriteRequests_.end(); ) {
+                if (it->first.compare(0, prefix.size(), prefix) == 0) {
+                    for (auto& req : it->second) {
+                        failedWrites.push_back(std::move(req));
+                    }
+                    it = pendingWriteRequests_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            // 清理写入队列
+            for (auto it = writeQueues_.begin(); it != writeQueues_.end(); ) {
+                if (it->first.compare(0, prefix.size(), prefix) == 0) {
+                    it = writeQueues_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        // 锁释放后触发写请求失败回调
+        if (commandResponseCallback_) {
+            for (const auto& req : failedWrites) {
+                commandResponseCallback_(req.deviceCode, "MODBUS_WRITE", false, 0);
+            }
+        }
+
+        if (!failedWrites.empty()) {
+            LOG_WARN << "[Modbus] Link " << linkId << " cleared " << failedWrites.size()
+                     << " pending write request(s) on disconnect";
         }
     }
 
