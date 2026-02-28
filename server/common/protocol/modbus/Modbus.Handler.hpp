@@ -1036,7 +1036,6 @@ private:
         auto now = std::chrono::steady_clock::now();
         std::string prefix = std::to_string(linkId) + ":";
         std::vector<std::pair<int, uint8_t>> unstickQueues;
-        std::vector<std::string> timedOutConnKeys;  // 锁内收集，锁外清理（避免锁序反转）
 
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
@@ -1050,8 +1049,6 @@ private:
                     if (elapsed < RESPONSE_TIMEOUT_MS) break;
                     totalTimeouts_.fetch_add(1, std::memory_order_relaxed);
                     LOG_WARN << "[Modbus] Read request timed out (" << elapsed << "ms): key=" << it->first;
-                    // 收集超时设备的连接 key（用 deviceId，避免同 slaveId 多设备误删映射）
-                    timedOutConnKeys.push_back("modbus_" + std::to_string(queue.front().deviceId));
                     // 超时冷却：防止同一设备立即重发，给同 slaveId 的其他设备公平轮询机会
                     nextAllowedPollTime_[queue.front().deviceId] = now + std::chrono::seconds(1);
                     queue.pop_front();
@@ -1103,14 +1100,10 @@ private:
             }
         }
 
-        // 锁释放后清理 DTU 连接映射：超时的从站下次轮询改为广播，等待重新注册
-        for (const auto& connKey : timedOutConnKeys) {
-            if (DeviceConnectionCache::instance().getConnection(connKey)) {
-                DeviceConnectionCache::instance().removeConnection(connKey);
-                LOG_INFO << "[Modbus] Timeout: cleared DTU mapping for " << connKey
-                         << ", next poll will broadcast";
-            }
-        }
+        // 注意：超时不清理 DeviceConnectionCache 映射。
+        // 映射应跟随 TCP 连接生命周期（断连时由 TcpLinkManager 清理），
+        // Modbus 超时只说明从站未响应，DTU 连接仍然有效。
+        // 若清理映射，一次性注册的 DTU 后续响应会被 ProtocolDispatcher 拦截丢弃，导致死循环。
 
         // 锁释放后尝试发送队列中下一帧
         for (auto [lid, sid] : unstickQueues) {
