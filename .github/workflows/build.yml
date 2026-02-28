@@ -70,6 +70,11 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }}
 
+      # Strip Release 二进制（先 strip 再 UPX，效果更好）
+      - name: Strip binary
+        if: matrix.build_type == 'Release' && runner.os == 'Linux'
+        run: strip --strip-all build/release/iot-manager
+
       # UPX 压缩 Release 二进制（最优压缩）
       - name: Compress with UPX
         if: matrix.build_type == 'Release'
