@@ -33,10 +33,10 @@ import type { Modbus, ModbusDictConfig, Protocol } from "@/types";
 
 /** 寄存器类型选项 */
 const RegisterTypeOptions: { value: Modbus.RegisterType; label: string }[] = [
-  { value: "COIL", label: "线圈 (Coil)" },
-  { value: "DISCRETE_INPUT", label: "离散输入 (Discrete Input)" },
-  { value: "HOLDING_REGISTER", label: "保持寄存器 (Holding Register)" },
-  { value: "INPUT_REGISTER", label: "输入寄存器 (Input Register)" },
+  { value: "COIL", label: "0X - 线圈 (Coil)" },
+  { value: "DISCRETE_INPUT", label: "1X - 离散输入 (Discrete Input)" },
+  { value: "INPUT_REGISTER", label: "3X - 输入寄存器 (Input Register)" },
+  { value: "HOLDING_REGISTER", label: "4X - 保持寄存器 (Holding Register)" },
 ];
 
 /** 数据类型选项 */
