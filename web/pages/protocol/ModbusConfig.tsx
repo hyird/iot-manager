@@ -218,12 +218,12 @@ const ModbusConfigPage = () => {
       dataIndex: "address",
       render: (val: number, r: Modbus.Register) => {
         const prefixMap: Record<Modbus.RegisterType, string> = {
-          COIL: "0",
-          DISCRETE_INPUT: "1",
-          INPUT_REGISTER: "3",
-          HOLDING_REGISTER: "4",
+          COIL: "0X",
+          DISCRETE_INPUT: "1X",
+          INPUT_REGISTER: "3X",
+          HOLDING_REGISTER: "4X",
         };
-        return prefixMap[r.registerType] + String(val).padStart(4, "0");
+        return prefixMap[r.registerType] + val;
       },
     },
     {
