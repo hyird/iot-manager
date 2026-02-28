@@ -95,17 +95,7 @@ const LinkPage = () => {
     setModalVisible(true);
   };
 
-  /** 根据模式获取可用的协议列表 */
-  const getProtocolsByMode = (mode: Link.Mode): Link.Protocol[] => {
-    if (mode === "TCP Server") {
-      // TCP Server: SL651 或 Modbus RTU（串口透传）
-      return ["SL651", "Modbus RTU"];
-    } else {
-      return ["SL651", "Modbus TCP", "Modbus RTU"];
-    }
-  };
-
-  /** mode 变化时处理 IP 字段和协议选择 */
+  /** mode 变化时处理 IP 字段 */
   const handleModeChange = (mode: Link.Mode) => {
     if (mode === "TCP Server") {
       form.setFieldValue("ip", "0.0.0.0");
@@ -114,16 +104,6 @@ const LinkPage = () => {
       const currentIp = form.getFieldValue("ip");
       if (currentIp === "0.0.0.0") {
         form.setFieldValue("ip", "");
-      }
-    }
-
-    // 检查当前协议是否在新模式的可用列表中
-    const currentProtocol = form.getFieldValue("protocol") as Link.Protocol;
-    const availableProtocols = getProtocolsByMode(mode);
-    if (currentProtocol && !availableProtocols.includes(currentProtocol)) {
-      // Modbus TCP 在 Server 模式不可用，自动切换为 Modbus RTU
-      if (currentProtocol === "Modbus TCP") {
-        form.setFieldValue("protocol", "Modbus RTU");
       }
     }
   };
@@ -337,31 +317,16 @@ const LinkPage = () => {
             </Select>
           </Form.Item>
 
-          <Form.Item noStyle dependencies={["mode"]}>
-            {({ getFieldValue }) => {
-              const mode = getFieldValue("mode") as Link.Mode;
-              const protocols = getProtocolsByMode(mode || "TCP Client");
-              return (
-                <Form.Item
-                  label="协议"
-                  name="protocol"
-                  rules={[{ required: true, message: "请选择协议" }]}
-                  extra={
-                    mode === "TCP Server"
-                      ? "Server 模式下 Modbus 仅支持 RTU（串口透传）"
-                      : undefined
-                  }
-                >
-                  <Select disabled={!!editing}>
-                    {protocols.map((protocol) => (
-                      <Select.Option key={protocol} value={protocol}>
-                        {protocol}
-                      </Select.Option>
-                    ))}
-                  </Select>
-                </Form.Item>
-              );
-            }}
+          <Form.Item
+            label="协议"
+            name="protocol"
+            rules={[{ required: true, message: "请选择协议" }]}
+            extra="Modbus TCP/RTU 帧格式在设备管理中配置"
+          >
+            <Select disabled={!!editing}>
+              <Select.Option value="SL651">SL651</Select.Option>
+              <Select.Option value="Modbus">Modbus</Select.Option>
+            </Select>
           </Form.Item>
 
           <Form.Item noStyle dependencies={["mode"]}>

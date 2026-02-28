@@ -16,12 +16,10 @@ namespace {
         Constants::LINK_MODE_TCP_CLIENT
     };
 
-    // 允许的链路协议类型列表
+    // 允许的链路协议类型列表（TCP/RTU 帧模式在设备层配置，链路层只区分协议大类）
     const std::vector<std::string> ALLOWED_LINK_PROTOCOLS = {
         Constants::PROTOCOL_SL651,
-        Constants::PROTOCOL_MODBUS,
-        Constants::PROTOCOL_MODBUS_TCP,
-        Constants::PROTOCOL_MODBUS_RTU
+        Constants::PROTOCOL_MODBUS
     };
 }
 
@@ -97,7 +95,7 @@ public:
         ValidatorHelper::requireInList(*json, "mode", ALLOWED_LINK_MODES,
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
         ValidatorHelper::requireInList(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
-            "协议", "SL651、Modbus、Modbus TCP 或 Modbus RTU").throwIfInvalid();
+            "协议", "SL651 或 Modbus").throwIfInvalid();
 
         co_await service_.create(*json);
         co_return Response::created("创建成功");
@@ -116,7 +114,7 @@ public:
         ValidatorHelper::requireInListIfPresent(*json, "mode", ALLOWED_LINK_MODES,
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
         ValidatorHelper::requireInListIfPresent(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
-            "协议", "SL651、Modbus、Modbus TCP 或 Modbus RTU").throwIfInvalid();
+            "协议", "SL651 或 Modbus").throwIfInvalid();
 
         co_await service_.update(id, *json);
         co_return Response::updated("更新成功");
