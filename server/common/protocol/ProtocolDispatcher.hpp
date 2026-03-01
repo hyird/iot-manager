@@ -327,21 +327,35 @@ private:
         };
 
         // 1. 注册包匹配（ON 模式：智能判断完整匹配或前缀匹配）
+        // 同一 DTU 可能挂载多个不同 slaveId 的设备，需注册所有使用相同注册包的设备
+        const std::vector<uint8_t>* matchedRegBytes = nullptr;
+        bool isPrefix = false;
         for (const auto& dev : devices) {
             if (dev.registrationMode != "OFF" && !dev.registrationBytes.empty()) {
                 if (bytes == dev.registrationBytes) {
-                    // 完整匹配：整包就是注册包
-                    doRegister(dev, true, "Registration");
-                    return;  // 注册包不传给协议解析器
+                    matchedRegBytes = &dev.registrationBytes;
+                    break;
                 }
                 if (bytes.size() > dev.registrationBytes.size() &&
                     std::equal(dev.registrationBytes.begin(), dev.registrationBytes.end(), bytes.begin())) {
-                    // 前缀匹配：数据以注册包开头
-                    doRegister(dev, true, "Registration prefix");
-                    // 剥离前缀，继续协议解析
-                    bytes.erase(bytes.begin(), bytes.begin() + static_cast<ptrdiff_t>(dev.registrationBytes.size()));
+                    matchedRegBytes = &dev.registrationBytes;
+                    isPrefix = true;
                     break;
                 }
+            }
+        }
+        if (matchedRegBytes) {
+            // 注册所有使用相同注册包的设备（同 DTU 多 slaveId 场景）
+            for (const auto& dev : devices) {
+                if (dev.registrationMode != "OFF" && dev.registrationBytes == *matchedRegBytes) {
+                    doRegister(dev, true, "Registration");
+                }
+            }
+            if (isPrefix) {
+                // 前缀匹配：剥离前缀，继续协议解析
+                bytes.erase(bytes.begin(), bytes.begin() + static_cast<ptrdiff_t>(matchedRegBytes->size()));
+            } else {
+                return;  // 完整匹配：注册包不传给协议解析器
             }
         }
 

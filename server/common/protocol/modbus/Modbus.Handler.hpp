@@ -1004,15 +1004,11 @@ private:
                             return;
                         }
                     } else {
-                        // 当前设备无映射（超时清理后）：若其他设备也无映射，
-                        // 两者都会广播，可能撞同一 DTU，保守串行
-                        auto otherConn = DeviceConnectionCache::instance().getConnection(
-                            "modbus_" + std::to_string(q.front().deviceId));
-                        if (!otherConn) {
-                            LOG_DEBUG << "[Modbus] " << ctx.deviceName
-                                      << " both unmapped, conservatively skip poll";
-                            return;
-                        }
+                        // 当前设备无映射：不知道广播会到达哪个 DTU，
+                        // 保守与同链路所有 pending 请求串行，避免 RS485 总线冲突
+                        LOG_DEBUG << "[Modbus] " << ctx.deviceName
+                                  << " unmapped, link has pending requests, skip poll";
+                        return;
                     }
                 }
             }
@@ -1147,12 +1143,14 @@ private:
                              << " client=" << connOpt->clientAddr << " device=" << ctx.deviceName;
                 }
             } else {
-                // 无映射：广播查询，但排除已映射到其他设备的客户端，防止数据串台
+                // 无映射：广播查询，但排除已映射到同 slaveId 其他设备的客户端，防止同 slaveId 数据串台
+                // 不排除不同 slaveId 的 DTU：同一 DTU 可能 485 挂载多个不同 slaveId 的设备
                 std::set<std::string> excludeAddrs;
                 {
                     std::lock_guard<std::mutex> lock(contextMutex_);
                     for (const auto& [devId, devCtx] : deviceContexts_) {
                         if (devCtx.linkId != ctx.linkId || devId == ctx.deviceId) continue;
+                        if (devCtx.slaveId != ctx.slaveId) continue;  // 只排除同 slaveId
                         auto conn = DeviceConnectionCache::instance().getConnection(
                             "modbus_" + std::to_string(devId));
                         if (conn) {
