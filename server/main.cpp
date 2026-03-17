@@ -104,13 +104,14 @@ void printStartupError(const std::string& title, const std::string& detail,
  * @brief 根据失败阶段返回排查提示
  */
 std::vector<std::string> getStageHints(const std::string& stage) {
-    if (stage == "database:ping" || stage == "database:initialize") {
+    if (stage == "database:ping" || stage == "database:initialize" || stage == "database:migrate") {
         return {
             "PostgreSQL 服务是否正在运行",
             "config 中 db_clients 的 host/port 是否正确",
             "数据库用户名和密码是否正确",
             "数据库名称是否存在",
             "防火墙/安全组是否放行了数据库端口",
+            "检查 schema_migrations 表中是否有失败记录",
         };
     }
     if (stage == "redis:ping") {

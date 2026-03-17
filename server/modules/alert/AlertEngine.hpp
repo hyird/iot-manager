@@ -194,20 +194,20 @@ private:
         int recoveryWaitSeconds = 60;               // 恢复等待时间
     };
 
-    // deviceId → 该设备的规则列表
-    std::map<int, std::vector<CachedRule>> rulesByDevice_;
+    // deviceId → 该设备的规则列表（热路径 O(1) 查找）
+    std::unordered_map<int, std::vector<CachedRule>> rulesByDevice_;
     mutable std::shared_mutex rulesMutex_;
 
     // 变化率检测："deviceId:elementKey" → 上一次的值
-    std::map<std::string, double> previousValues_;
+    std::unordered_map<std::string, double> previousValues_;
     std::mutex prevValuesMutex_;
 
     // 冷却期缓存：ruleId → 上次触发时间
-    std::map<int, std::chrono::steady_clock::time_point> cooldownMap_;
+    std::unordered_map<int, std::chrono::steady_clock::time_point> cooldownMap_;
     std::mutex cooldownMutex_;
 
     // 触发状态追踪：ruleId → 触发状态
-    std::map<int, RuleTriggerState> triggerStates_;
+    std::unordered_map<int, RuleTriggerState> triggerStates_;
     std::mutex triggerStatesMutex_;
 
     // 离线检测
@@ -225,7 +225,7 @@ private:
             WHERE r.status = 'enabled' AND r.deleted_at IS NULL
         )");
 
-        std::map<int, std::vector<CachedRule>> newRules;
+        std::unordered_map<int, std::vector<CachedRule>> newRules;
 
         for (const auto& row : result) {
             CachedRule rule;
