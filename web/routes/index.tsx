@@ -1,5 +1,5 @@
 import "@/pages"; // 触发页面注册
-import { type ComponentType, lazy, useMemo } from "react";
+import { type ComponentType, lazy, useMemo, useRef } from "react";
 import { createHashRouter, Navigate, RouterProvider } from "react-router-dom";
 import { AuthGuard } from "@/components/AuthGuard";
 import FallbackPage from "@/components/FallbackPage";
@@ -49,7 +49,19 @@ function getRouteComponent(menu: Menu.Item): React.ReactNode {
 
 export function AppRoutes() {
   useInitAuth();
-  const { pageMenus } = useDynamicRoutes();
+  const { pageMenus: rawPageMenus } = useDynamicRoutes();
+
+  // 稳定 pageMenus 引用：仅当菜单内容真正变化时才更新，
+  // 避免 createHashRouter 不必要地重建导致整个应用卸载重挂载
+  const pageMenusRef = useRef(rawPageMenus);
+  const pageMenusKeyRef = useRef("");
+  const newKey = rawPageMenus.map((m) => `${m.path}:${m.component}`).join("|");
+  if (newKey !== pageMenusKeyRef.current) {
+    pageMenusKeyRef.current = newKey;
+    pageMenusRef.current = rawPageMenus;
+  }
+  const pageMenus = pageMenusRef.current;
+
   const router = useMemo(
     () =>
       createHashRouter([

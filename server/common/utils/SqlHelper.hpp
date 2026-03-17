@@ -14,6 +14,7 @@ namespace SqlHelper {
  */
 template <typename T>
 std::string buildInClause(const std::vector<T>& ids) {
+    static_assert(std::is_arithmetic_v<T>, "buildInClause only accepts numeric types to prevent SQL injection");
     if (ids.empty()) return "";
 
     std::ostringstream oss;

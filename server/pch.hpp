@@ -91,3 +91,4 @@
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>

@@ -44,7 +44,14 @@ export const refreshAccessToken = createAsyncThunk<
       headers: { Authorization: `Bearer ${token}` },
     });
 
+    if (!userResponse.ok) {
+      return rejectWithValue("获取用户信息失败");
+    }
+
     const userData = await userResponse.json();
+    if (!userData.data) {
+      return rejectWithValue("用户信息格式错误");
+    }
 
     return {
       token,

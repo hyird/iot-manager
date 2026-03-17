@@ -196,12 +196,18 @@ public:
 
     /**
      * @brief 增加计数器并设置过期时间（用于限流）
+     * 使用 Lua 脚本保证 INCR + EXPIRE 原子性，避免 TOCTOU 竞态
      */
     Task<int64_t> incrWithExpire(const std::string& key, int ttl) {
-        auto count = co_await incr(key);
-        if (count == 1) {
-            co_await expire(key, ttl);
-        }
-        co_return count;
+        auto client = getClient();
+
+        static const std::string script =
+            "local v = redis.call('INCR', KEYS[1]) "
+            "if v == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end "
+            "return v";
+
+        auto result = co_await client->execCommandCoro(
+            "EVAL %s 1 %s %d", script.c_str(), key.c_str(), ttl);
+        co_return result.asInteger();
     }
 };

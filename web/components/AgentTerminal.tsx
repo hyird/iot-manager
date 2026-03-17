@@ -91,8 +91,9 @@ export default function AgentTerminal({
 
     // 建立独立 WebSocket
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
-    const ws = new WebSocket(url);
+    const url = `${protocol}//${window.location.host}/ws`;
+    // 通过 Sec-WebSocket-Protocol 传递 JWT，避免 Token 暴露在 URL 中
+    const ws = new WebSocket(url, ["auth", token]);
     ws.binaryType = "arraybuffer"; // 二进制帧直接返回 ArrayBuffer
     wsRef.current = ws;
 

@@ -191,11 +191,8 @@ public:
         {
             std::unique_lock lock(mutex_);
             devices_ = std::move(newDevices);
-            // 重建索引
-            deviceIndex_.clear();
-            for (size_t i = 0; i < devices_.size(); ++i) {
-                deviceIndex_[devices_[i].id] = i;
-            }
+            // 重建所有索引
+            rebuildIndicesLocked();
             lastRefresh_ = std::chrono::steady_clock::now();
         }
 
@@ -209,6 +206,8 @@ public:
         std::unique_lock lock(mutex_);
         devices_.clear();
         deviceIndex_.clear();
+        deviceCodeIndex_.clear();
+        linkDeviceIndex_.clear();
         LOG_DEBUG << "[DeviceCache] Cache fully invalidated";
     }
 
@@ -226,23 +225,20 @@ public:
         size_t idx = indexIt->second;
         size_t lastIdx = devices_.size() - 1;
 
-        // 先从索引中删除目标设备
         deviceIndex_.erase(indexIt);
 
         if (idx != lastIdx) {
-            // 将最后一个元素移到被删除的位置
-            int lastId = devices_[lastIdx].id;
             devices_[idx] = std::move(devices_[lastIdx]);
-            deviceIndex_[lastId] = idx;
         }
 
         devices_.pop_back();
+        // 重建所有索引（swap-and-pop 后辅助索引失效）
+        rebuildIndicesLocked();
         LOG_DEBUG << "[DeviceCache] Device " << deviceId << " invalidated";
     }
 
     /**
      * @brief 按 ID 批量清除设备缓存
-     * 注意：批量删除时，由于索引会动态变化，需要逐个处理
      */
     void invalidateByIds(const std::vector<int>& deviceIds) {
         std::unique_lock lock(mutex_);
@@ -269,6 +265,8 @@ public:
             removedCount++;
         }
 
+        // 重建辅助索引
+        rebuildIndicesLocked();
         LOG_DEBUG << "[DeviceCache] " << removedCount << " devices invalidated";
     }
 
@@ -288,9 +286,12 @@ public:
     std::vector<CachedDevice> getDevicesByLinkIdSync(int linkId) const {
         std::shared_lock lock(mutex_);
         std::vector<CachedDevice> result;
-        for (const auto& device : devices_) {
-            if (device.linkId == linkId) {
-                result.push_back(device);
+        auto it = linkDeviceIndex_.find(linkId);
+        if (it != linkDeviceIndex_.end()) {
+            for (size_t idx : it->second) {
+                if (idx < devices_.size()) {
+                    result.push_back(devices_[idx]);
+                }
             }
         }
         return result;
@@ -341,6 +342,22 @@ public:
 
 private:
     DeviceCache() = default;
+
+    /** 重建所有索引（调用方必须持有 unique_lock） */
+    void rebuildIndicesLocked() {
+        deviceIndex_.clear();
+        deviceCodeIndex_.clear();
+        linkDeviceIndex_.clear();
+        for (size_t i = 0; i < devices_.size(); ++i) {
+            deviceIndex_[devices_[i].id] = i;
+            if (!devices_[i].deviceCode.empty()) {
+                deviceCodeIndex_[devices_[i].deviceCode] = i;
+            }
+            if (devices_[i].linkId > 0) {
+                linkDeviceIndex_[devices_[i].linkId].push_back(i);
+            }
+        }
+    }
 
     /**
      * @brief 零轮询协程通知器
@@ -418,7 +435,9 @@ private:
     static constexpr int CACHE_TTL_SECONDS = 600;
 
     std::vector<CachedDevice> devices_;
-    std::map<int, size_t> deviceIndex_;  // deviceId -> index in devices_
+    std::unordered_map<int, size_t> deviceIndex_;  // deviceId -> index in devices_
+    std::unordered_map<std::string, size_t> deviceCodeIndex_;  // deviceCode -> index in devices_
+    std::unordered_map<int, std::vector<size_t>> linkDeviceIndex_;  // linkId -> indices in devices_
     std::chrono::steady_clock::time_point lastRefresh_;
     mutable std::shared_mutex mutex_;
     bool refreshing_ = false;       // 防止多协程同时刷新缓存
@@ -433,9 +452,12 @@ public:
      */
     std::string getProtocolByLinkIdSync(int linkId) const {
         std::shared_lock lock(mutex_);
-        for (const auto& device : devices_) {
-            if (device.linkId == linkId && !device.protocolType.empty()) {
-                return device.protocolType;
+        auto it = linkDeviceIndex_.find(linkId);
+        if (it != linkDeviceIndex_.end()) {
+            for (size_t idx : it->second) {
+                if (idx < devices_.size() && !devices_[idx].protocolType.empty()) {
+                    return devices_[idx].protocolType;
+                }
             }
         }
         return "";
@@ -471,10 +493,9 @@ public:
      */
     std::optional<CachedDevice> findByCodeSync(const std::string& deviceCode) const {
         std::shared_lock lock(mutex_);
-        for (const auto& device : devices_) {
-            if (device.deviceCode == deviceCode) {
-                return device;
-            }
+        auto it = deviceCodeIndex_.find(deviceCode);
+        if (it != deviceCodeIndex_.end() && it->second < devices_.size()) {
+            return devices_[it->second];
         }
         return std::nullopt;
     }

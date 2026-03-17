@@ -39,13 +39,15 @@ const tabsSlice = createSlice({
       const index = state.tabs.findIndex((t) => t.key === key);
       if (index === -1) return;
 
-      state.tabs = state.tabs.filter((t) => t.key !== key);
+      const newTabs = state.tabs.filter((t) => t.key !== key);
 
       // 如果关闭的是当前激活的 tab，切换到相邻 tab
-      if (state.activeKey === key && state.tabs.length > 0) {
-        const newIndex = Math.min(index, state.tabs.length - 1);
-        state.activeKey = state.tabs[newIndex]?.key || HOME_TAB.key;
+      if (state.activeKey === key && newTabs.length > 0) {
+        const newIndex = Math.max(0, Math.min(index, newTabs.length - 1));
+        state.activeKey = newTabs[newIndex]?.key ?? HOME_TAB.key;
       }
+
+      state.tabs = newTabs;
     },
     setActiveKey: (state, action: PayloadAction<string>) => {
       state.activeKey = action.payload;

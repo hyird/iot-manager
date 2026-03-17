@@ -156,9 +156,10 @@ request.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // 服务器错误 (5xx)
+    // 服务器错误 (5xx) — 统一使用 notification，提前返回避免重复提示
     if (error.response.status >= 500) {
       notification.error({ message: "服务器错误", description: "服务器遇到问题，请稍后重试" });
+      return Promise.reject(new Error("服务器错误"));
     }
 
     const errMsg = error.response?.data?.message || error.message || "请求失败";

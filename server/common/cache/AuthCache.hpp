@@ -14,6 +14,19 @@ private:
     int userMenusTtl_;
     int userRolesTtl_;
 
+    /** Token 哈希：SHA256 → 64字符 hex，替代完整 JWT 作为 Redis key */
+    static std::string hashToken(const std::string& token) {
+        unsigned char hash[SHA256_DIGEST_LENGTH];
+        SHA256(reinterpret_cast<const unsigned char*>(token.data()),
+               token.size(), hash);
+        std::ostringstream oss;
+        for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+            oss << std::hex << std::setw(2) << std::setfill('0')
+                << static_cast<int>(hash[i]);
+        }
+        return oss.str();
+    }
+
 public:
     template<typename T = void> using Task = drogon::Task<T>;
 
@@ -135,9 +148,10 @@ public:
 
     /**
      * @brief 将 Token 加入黑名单（用于强制登出）
+     * 使用 SHA256 哈希作为 key，避免完整 JWT（200~500字节）占用 Redis 内存
      */
     Task<bool> blacklistToken(const std::string& token, int ttl) {
-        std::string key = "blacklist:token:" + token;
+        std::string key = "blacklist:token:" + hashToken(token);
         co_return co_await redis_.set(key, "1", ttl);
     }
 
@@ -145,7 +159,7 @@ public:
      * @brief 检查 Token 是否在黑名单中
      */
     Task<bool> isTokenBlacklisted(const std::string& token) {
-        std::string key = "blacklist:token:" + token;
+        std::string key = "blacklist:token:" + hashToken(token);
         co_return co_await redis_.exists(key);
     }
 

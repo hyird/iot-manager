@@ -4,6 +4,7 @@ import zhCN from "antd/locale/zh_CN";
 import ReactDOM from "react-dom/client";
 import { Provider } from "react-redux";
 import { PersistGate } from "redux-persist/integration/react";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AntdMessageHolder } from "./providers/AntdMessageHolder";
 import { TanstackQuery } from "./providers/TanstackQuery";
 import { WebSocketProvider } from "./providers/WebSocketProvider";
@@ -14,25 +15,27 @@ import "./styles/index.css";
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <Provider store={store}>
     <PersistGate loading={null} persistor={persistor}>
-      <StyleProvider hashPriority="low" layer>
-        <ConfigProvider
-          locale={zhCN}
-          theme={{
-            token: {
-              colorPrimary: "#1677ff",
-            },
-          }}
-        >
-          <AntdApp>
-            <AntdMessageHolder />
-            <TanstackQuery>
-              <WebSocketProvider>
-                <AppRoutes />
-              </WebSocketProvider>
-            </TanstackQuery>
-          </AntdApp>
-        </ConfigProvider>
-      </StyleProvider>
+      <ErrorBoundary>
+        <StyleProvider hashPriority="low" layer>
+          <ConfigProvider
+            locale={zhCN}
+            theme={{
+              token: {
+                colorPrimary: "#1677ff",
+              },
+            }}
+          >
+            <AntdApp>
+              <AntdMessageHolder />
+              <TanstackQuery>
+                <WebSocketProvider>
+                  <AppRoutes />
+                </WebSocketProvider>
+              </TanstackQuery>
+            </AntdApp>
+          </ConfigProvider>
+        </StyleProvider>
+      </ErrorBoundary>
     </PersistGate>
   </Provider>
 );

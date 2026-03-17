@@ -55,28 +55,35 @@ public:
         }
     }
 
-    /** 广播给所有连接 */
+    /** 广播给所有连接（先快照再发送，避免持锁期间调用 send） */
     void broadcast(const std::string& type, const Json::Value& data) {
         auto msg = buildMessage(type, data);
-        std::shared_lock lock(mutex_);
-        if (allConns_.empty()) return;
-        for (const auto& conn : allConns_) {
+        std::vector<WebSocketConnectionPtr> snapshot;
+        {
+            std::shared_lock lock(mutex_);
+            if (allConns_.empty()) return;
+            snapshot.assign(allConns_.begin(), allConns_.end());
+        }
+        for (const auto& conn : snapshot) {
             if (conn->connected()) {
                 conn->send(msg);
             }
         }
     }
 
-    /** 发送给指定用户 */
+    /** 发送给指定用户（先快照再发送，避免持锁期间调用 send） */
     void sendToUser(int userId, const std::string& type, const Json::Value& data) {
         auto msg = buildMessage(type, data);
-        std::shared_lock lock(mutex_);
-        auto it = userConns_.find(userId);
-        if (it != userConns_.end()) {
-            for (const auto& conn : it->second) {
-                if (conn->connected()) {
-                    conn->send(msg);
-                }
+        std::vector<WebSocketConnectionPtr> snapshot;
+        {
+            std::shared_lock lock(mutex_);
+            auto it = userConns_.find(userId);
+            if (it == userConns_.end()) return;
+            snapshot.assign(it->second.begin(), it->second.end());
+        }
+        for (const auto& conn : snapshot) {
+            if (conn->connected()) {
+                conn->send(msg);
             }
         }
     }

@@ -41,7 +41,7 @@ import {
 import DeviceCard from "@/components/DeviceCard";
 import ImagePreviewModal, { type ImagePreviewModalRef } from "@/components/ImagePreviewModal";
 import { PageContainer } from "@/components/PageContainer";
-import { useDebounceFn, usePermission } from "@/hooks";
+import { useDebounceFn, usePermissions } from "@/hooks";
 import { useWsStatus } from "@/providers";
 import { useDeviceDelete, useDeviceList, useDeviceSave, useLinkOptions } from "@/services";
 import type { Device } from "@/types";
@@ -361,12 +361,13 @@ const DevicePage = () => {
   const { modal, message } = App.useApp();
   const imageModalRef = useRef<ImagePreviewModalRef>(null);
 
-  // 权限
-  const canQuery = usePermission("iot:device:query");
-  const canAdd = usePermission("iot:device:add");
-  const canEdit = usePermission("iot:device:edit");
-  const canDelete = usePermission("iot:device:delete");
-  const canManageGroup = usePermission("iot:device-group:edit");
+  // 权限（单次调用，仅构建一次 Set）
+  const { hasPermission } = usePermissions();
+  const canQuery = hasPermission("iot:device:query");
+  const canAdd = hasPermission("iot:device:add");
+  const canEdit = hasPermission("iot:device:edit");
+  const canDelete = hasPermission("iot:device:delete");
+  const canManageGroup = hasPermission("iot:device-group:edit");
 
   // 搜索
   const [keyword, setKeyword] = useState("");

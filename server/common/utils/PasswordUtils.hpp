@@ -6,7 +6,7 @@
 class PasswordUtils {
 private:
     static constexpr int SALT_LENGTH = 16;
-    static constexpr int HASH_ITERATIONS = 10000;
+    static constexpr int HASH_ITERATIONS = 200000;
     static constexpr int HASH_LENGTH = 32;
 
     static std::string generateSalt() {
@@ -81,14 +81,14 @@ public:
             "abcdefghijklmnopqrstuvwxyz"
             "!@#$%^&*";
 
-        std::random_device rd;
-        std::mt19937 generator(rd());
-        std::uniform_int_distribution<> distribution(0, static_cast<int>(chars.size()) - 1);
+        // 使用密码学安全的 RAND_bytes 替代 mt19937
+        std::vector<unsigned char> randomBytes(length);
+        RAND_bytes(randomBytes.data(), length);
 
         std::string password;
         password.reserve(length);
         for (int i = 0; i < length; ++i) {
-            password += chars[distribution(generator)];
+            password += chars[randomBytes[i] % chars.size()];
         }
 
         return password;

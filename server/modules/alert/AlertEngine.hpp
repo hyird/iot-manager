@@ -134,7 +134,7 @@ public:
                         std::lock_guard lock(triggerStatesMutex_);
                         auto it = triggerStates_.find(rule.id);
                         if (it != triggerStates_.end()) {
-                            it->second.recordId = static_cast<int>(recordId);
+                            it->second.recordId = recordId;
                         }
                     }
                 } catch (const std::exception& e) {
@@ -175,7 +175,7 @@ private:
     };
 
     struct RuleTriggerState {
-        int recordId = 0;                       // 告警记录 ID
+        int64_t recordId = 0;                   // 告警记录 ID（匹配 BIGINT）
         Json::Value triggerData;                // 触发时的数据快照
         std::chrono::system_clock::time_point triggeredAt;
         bool isActive = true;                   // 是否处于活跃状态
@@ -345,7 +345,7 @@ private:
             std::lock_guard lock(triggerStatesMutex_);
             for (const auto& row : result) {
                 int ruleId = row["rule_id"].as<int>();
-                int recordId = row["id"].as<int>();
+                int64_t recordId = row["id"].as<int64_t>();
 
                 // 仅加载当前还存在的规则
                 if (triggerStates_.find(ruleId) != triggerStates_.end()) continue;
@@ -607,7 +607,7 @@ private:
     void markTriggerState(int ruleId, const Json::Value& data, int64_t recordId) {
         std::lock_guard lock(triggerStatesMutex_);
         triggerStates_[ruleId] = {
-            static_cast<int>(recordId),
+            recordId,
             data,
             std::chrono::system_clock::now(),
             true
@@ -617,7 +617,7 @@ private:
     Task<void> checkAndTriggerRecovery(const CachedRule& rule,
                                         const Json::Value& data) {
         // 先在锁内读取状态，co_await 前释放锁（避免持锁跨协程挂起导致死锁）
-        int recordId = 0;
+        int64_t recordId = 0;
         bool shouldRecover = false;
         std::string reason;
         {
@@ -717,7 +717,7 @@ private:
         return std::any_of(results.begin(), results.end(), [](bool r) { return r; });
     }
 
-    Task<void> triggerRecovery(const CachedRule& rule, int recordId,
+    Task<void> triggerRecovery(const CachedRule& rule, int64_t recordId,
                                 const Json::Value& data,
                                 const std::string& reason) {
         // 按 rule_id 恢复所有活跃记录（包括孤儿记录）

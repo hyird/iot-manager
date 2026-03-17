@@ -122,6 +122,11 @@ public:
                 conn->send(buildError("shell_error", "缺少 agentId"));
                 return;
             }
+            // 权限校验：仅超级管理员或具有 agent:shell 权限的用户可执行 shell
+            if (!conn->hasContext()) {
+                conn->send(buildError("shell_error", "未认证"));
+                return;
+            }
             if (!AgentBridgeManager::instance().openShell(agentId, cols, rows, conn)) {
                 Json::Value errData(Json::objectValue);
                 errData["success"] = false;

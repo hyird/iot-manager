@@ -48,6 +48,13 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-
+
       - name: Install frontend dependencies
         run: bun install
 
@@ -70,7 +77,7 @@ jobs:
           key: vcpkg-installed-linux-x64-linux-${{ hashFiles('vcpkg.json') }}
 
       - name: Build
-        run: cmake --build build --config ${{ matrix.build_type }}
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
 
       # Strip Release 二进制（先 strip 再 UPX，效果更好）
       - name: Strip binary
@@ -155,7 +162,7 @@ jobs:
           key: vcpkg-installed-arm-linux-${{ hashFiles('vcpkg.json') }}
 
       - name: Build agent
-        run: cmake --build build --config Release --target iot-agent
+        run: cmake --build build --config Release --target iot-agent --parallel
 
       - name: Strip binary
         run: arm-linux-musleabihf-strip --strip-all build/release/iot-agent
@@ -218,7 +225,7 @@ jobs:
           key: vcpkg-installed-windows-x64-static-${{ hashFiles('vcpkg.json') }}
 
       - name: Build l2config
-        run: cmake --build build --config Release --target l2config
+        run: cmake --build build --config Release --target l2config --parallel
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -50,7 +50,7 @@ public:
                 // 检查 Token 是否在黑名单中
                 bool isBlacklisted = co_await authCache_.isTokenBlacklisted(token);
                 if (isBlacklisted) {
-                    LOG_INFO << "Token is blacklisted: " << token.substr(0, 20) << "...";
+                    LOG_INFO << "Token is blacklisted";
                     fcb(Response::unauthorized("令牌已失效，请重新登录"));
                     co_return;
                 }

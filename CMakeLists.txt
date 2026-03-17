@@ -12,6 +12,9 @@ endif()
 # vcpkg overlay triplets（项目内自定义 triplet 优先）
 set(VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/triplets" CACHE STRING "")
 
+# vcpkg overlay ports（项目内自定义 port 优先，用于修复 snap7 静态构建等）
+set(VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_SOURCE_DIR}/ports" CACHE STRING "")
+
 # vcpkg triplet - 完全静态链接
 if(NOT DEFINED VCPKG_TARGET_TRIPLET)
     if(DEFINED ENV{VCPKG_DEFAULT_TRIPLET})
@@ -55,6 +58,9 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_CONFIGURATION_TYPES)
     if(MSVC)
         add_compile_options("$<$<CONFIG:Release>:/O2>")
+        # MSVC LTCG (Link-Time Code Generation)
+        add_compile_options("$<$<CONFIG:Release>:/GL>")
+        add_link_options("$<$<CONFIG:Release>:/LTCG>")
     else()
         add_compile_options("$<$<CONFIG:Release>:-O3>")
         # LTO (Link-Time Optimization)

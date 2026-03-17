@@ -522,12 +522,21 @@ private:
         if (!adapter) return;
 
         // 防抖：500ms 内多次触发只执行最后一次 reload
-        auto& pending = adapterReloadPending_[protocol];
-        auto generation = ++pending;
+        // 使用 shared_ptr<atomic> 避免 lambda 捕获 map 元素引用（map 扩容可能导致悬垂）
+        std::shared_ptr<std::atomic<uint64_t>> pending;
+        {
+            std::lock_guard lock(reloadPendingMutex_);
+            auto& ptr = adapterReloadPending_[protocol];
+            if (!ptr) {
+                ptr = std::make_shared<std::atomic<uint64_t>>(0);
+            }
+            pending = ptr;
+        }
+        auto generation = pending->fetch_add(1, std::memory_order_acq_rel) + 1;
 
         auto* ioLoop = DrogonLoopSelector::getNext();
-        ioLoop->runAfter(0.5, [adapter, protocol, generation, &pending]() {
-            if (pending.load(std::memory_order_acquire) != generation) {
+        ioLoop->runAfter(0.5, [adapter, protocol, generation, pending]() {
+            if (pending->load(std::memory_order_acquire) != generation) {
                 return;  // 被更新的 generation 覆盖，跳过
             }
             drogon::async_run([adapter, protocol]() -> Task<> {
@@ -649,7 +658,8 @@ private:
     std::atomic<bool> deviceCacheReloading_{false};
     std::atomic<int64_t> deviceCacheReloadCooldown_{0};
 
-    std::map<std::string, std::atomic<uint64_t>> adapterReloadPending_;  // 防抖 generation 计数器
+    std::map<std::string, std::shared_ptr<std::atomic<uint64_t>>> adapterReloadPending_;  // 防抖 generation 计数器
+    std::mutex reloadPendingMutex_;  // 保护 adapterReloadPending_ 的并发访问
 
     std::atomic<bool> viewRefreshing_{false};
 };
