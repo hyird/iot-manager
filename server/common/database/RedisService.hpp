@@ -149,13 +149,10 @@ public:
             auto keys = arr[1].asArray();
 
             if (!keys.empty()) {
-                // 批量删除：构建 UNLINK 命令（异步删除，不阻塞）
-                std::ostringstream cmd;
-                cmd << "UNLINK";
+                // 批量删除：逐个使用格式化参数传递键名，避免字符串拼接导致含空格键名解析错误
                 for (const auto& key : keys) {
-                    cmd << " " << key.asString();
+                    co_await client->execCommandCoro("UNLINK %s", key.asString().c_str());
                 }
-                co_await client->execCommandCoro(cmd.str().c_str());
                 deleted += static_cast<int>(keys.size());
             }
         } while (cursor != "0");

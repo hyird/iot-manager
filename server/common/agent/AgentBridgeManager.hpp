@@ -79,11 +79,16 @@ public:
     }
 
     /**
-     * @brief Agent 认证：硬编码 secret，只需 code 非空且 secret 匹配
+     * @brief Agent 认证：从配置读取 secret，需 code 非空且 secret 匹配
      */
     bool authorize(const std::string& agentCode, const std::string& secret) const {
         if (agentCode.empty() || secret.empty()) return false;
-        if (secret != agent::AGENT_SHARED_SECRET) {
+        const auto& expectedSecret = agent::getAgentSharedSecret();
+        if (expectedSecret.empty()) {
+            LOG_ERROR << "[AgentBridge] Agent shared secret not configured";
+            return false;
+        }
+        if (secret != expectedSecret) {
             LOG_WARN << "[AgentBridge] Reject agent auth for code=" << agentCode
                      << ", reason=invalid_secret";
             return false;

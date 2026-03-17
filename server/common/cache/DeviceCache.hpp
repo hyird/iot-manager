@@ -307,6 +307,10 @@ public:
 
         if (mode == "HEX") {
             // "AABBCC" → {0xAA, 0xBB, 0xCC}
+            if (content.size() % 2 != 0) {
+                LOG_WARN << "[DeviceCache] Odd-length hex string in parsePacketContent, length="
+                         << content.size() << ", truncating last nibble";
+            }
             std::vector<uint8_t> bytes;
             bytes.reserve(content.size() / 2);
             for (size_t i = 0; i + 1 < content.size(); i += 2) {

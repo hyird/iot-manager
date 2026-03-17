@@ -237,17 +237,15 @@ private:
             rule.logic = row["logic"].as<std::string>();
             rule.silenceDuration = row["silence_duration"].as<int>();
 
-            // 新字段可能不存在（数据库未迁移），使用默认值
+            // 新字段可能不存在（数据库未迁移），兼容处理
             try {
-                rule.recoveryCondition = row["recovery_condition"].isNull() ? "reverse" : row["recovery_condition"].as<std::string>();
-            } catch (const drogon::orm::RangeError&) {
-                rule.recoveryCondition = "reverse";
-            }
+                if (!row["recovery_condition"].isNull())
+                    rule.recoveryCondition = row["recovery_condition"].as<std::string>();
+            } catch (const std::exception&) { /* 列不存在，使用默认值 */ }
             try {
-                rule.recoveryWaitSeconds = row["recovery_wait_seconds"].isNull() ? 60 : row["recovery_wait_seconds"].as<int>();
-            } catch (const drogon::orm::RangeError&) {
-                rule.recoveryWaitSeconds = 60;
-            }
+                if (!row["recovery_wait_seconds"].isNull())
+                    rule.recoveryWaitSeconds = row["recovery_wait_seconds"].as<int>();
+            } catch (const std::exception&) { /* 列不存在，使用默认值 */ }
 
             // 解析 conditions JSONB
             Json::CharReaderBuilder builder;

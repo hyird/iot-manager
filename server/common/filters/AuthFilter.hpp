@@ -65,7 +65,8 @@ public:
 
             } catch (const AppException& e) {
                 fcb(Response::error(e.getCode(), e.getMessage(), e.getStatus()));
-            } catch (const std::exception&) {
+            } catch (const std::exception& e) {
+                LOG_WARN << "[AuthFilter] JWT validation failed: " << e.what();
                 fcb(Response::unauthorized("令牌验证失败"));
             }
         });

@@ -26,18 +26,20 @@ std::string buildInClause(const std::vector<T>& ids) {
 }
 
 /**
- * @brief 构建 IN 子句的参数化占位符和参数（如 "?, ?, ?" + ["1", "2", "3"]）
+ * @brief 构建 IN 子句的参数化占位符和参数
  * @param ids ID 列表
- * @return {占位符字符串, 参数列表}
+ * @param startIndex 参数起始编号（默认 1），用于复合查询中偏移
+ * @return {占位符字符串（如 "$1, $2, $3"）, 参数列表}
  */
 template <typename T>
-std::pair<std::string, std::vector<std::string>> buildParameterizedIn(const std::vector<T>& ids) {
+std::pair<std::string, std::vector<std::string>> buildParameterizedIn(
+    const std::vector<T>& ids, int startIndex = 1) {
     std::string placeholders;
     std::vector<std::string> params;
     params.reserve(ids.size());
     for (size_t i = 0; i < ids.size(); ++i) {
         if (i > 0) placeholders += ", ";
-        placeholders += "?";
+        placeholders += "$" + std::to_string(startIndex + static_cast<int>(i));
         params.push_back(std::to_string(ids[i]));
     }
     return {placeholders, params};
@@ -46,7 +48,7 @@ std::pair<std::string, std::vector<std::string>> buildParameterizedIn(const std:
 /**
  * @brief 构建批量插入的 VALUES 子句和参数
  *
- * 生成 "(?, ?), (?, ?), ..." 格式的 SQL 片段及对应参数列表，
+ * 生成 "($1, $2), ($3, $4), ..." 格式的 SQL 片段及对应参数列表，
  * 用于多对多关联表的批量插入（如 sys_user_role, sys_role_menu）
  *
  * @param leftId 左侧关联 ID（如 userId, roleId）
@@ -55,14 +57,16 @@ std::pair<std::string, std::vector<std::string>> buildParameterizedIn(const std:
  */
 template <typename T>
 std::pair<std::string, std::vector<std::string>> buildBatchInsertValues(
-    int leftId, const std::vector<T>& rightIds) {
+    int leftId, const std::vector<T>& rightIds, int startIndex = 1) {
     std::string sql;
     std::vector<std::string> params;
     params.reserve(rightIds.size() * 2);
 
+    int idx = startIndex;
     for (size_t i = 0; i < rightIds.size(); ++i) {
         if (i > 0) sql += ", ";
-        sql += "(?, ?)";
+        sql += "($" + std::to_string(idx) + ", $" + std::to_string(idx + 1) + ")";
+        idx += 2;
         params.push_back(std::to_string(leftId));
         params.push_back(std::to_string(rightIds[i]));
     }

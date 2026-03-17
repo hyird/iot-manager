@@ -4,6 +4,7 @@
 #include "common/network/WebSocketManager.hpp"
 #include "common/utils/JwtUtils.hpp"
 #include "common/cache/AuthCache.hpp"
+#include "common/filters/PermissionFilter.hpp"
 
 /**
  * @brief WebSocket 控制器
@@ -31,10 +32,6 @@ public:
                              const drogon::WebSocketConnectionPtr& conn) override {
         // 优先从 Sec-WebSocket-Protocol 获取 token（避免 URL query 泄露）
         std::string token = extractTokenFromWsProtocol(req->getHeader("Sec-WebSocket-Protocol"));
-        // 兼容旧客户端：从 query 参数获取 token
-        if (token.empty()) {
-            token = req->getParameter("token");
-        }
         if (token.empty()) {
             // 回退：尝试 Authorization header
             auto authHeader = req->getHeader("Authorization");
@@ -127,32 +124,52 @@ public:
                 conn->send(buildError("shell_error", "未认证"));
                 return;
             }
-            if (!AgentBridgeManager::instance().openShell(agentId, cols, rows, conn)) {
-                Json::Value errData(Json::objectValue);
-                errData["success"] = false;
-                errData["error"] = "Agent 不在线或已有活跃 Shell 会话";
-                conn->send(WebSocketManager::buildMessage("shell:opened", errData));
-            }
+            auto session = conn->getContext<WsSession>();
+            int userId = session->userId;
+            drogon::async_run([this, agentId, cols, rows, conn, userId]() -> Task<void> {
+                try {
+                    bool hasPerm = co_await PermissionChecker::hasPermission(userId, {"agent:shell"});
+                    if (!hasPerm) {
+                        conn->send(buildError("shell_error", "无 agent:shell 权限"));
+                        co_return;
+                    }
+                    if (!AgentBridgeManager::instance().openShell(agentId, cols, rows, conn)) {
+                        Json::Value errData(Json::objectValue);
+                        errData["success"] = false;
+                        errData["error"] = "Agent 不在线或已有活跃 Shell 会话";
+                        conn->send(WebSocketManager::buildMessage("shell:opened", errData));
+                    } else {
+                        // 记录 Shell 会话所有者
+                        std::lock_guard lock(shellOwnerMutex_);
+                        shellOwners_[agentId] = userId;
+                    }
+                } catch (const std::exception& e) {
+                    LOG_ERROR << "[WS] Shell permission check failed: " << e.what();
+                    conn->send(buildError("shell_error", "权限检查失败"));
+                }
+            });
             return;
         }
         if (msgType == "shell:data") {
             int agentId = data.get("agentId", 0).asInt();
-            if (agentId > 0) {
+            if (agentId > 0 && isShellOwner(conn, agentId)) {
                 AgentBridgeManager::instance().writeShell(agentId, data.get("data", "").asString());
             }
             return;
         }
         if (msgType == "shell:resize") {
             int agentId = data.get("agentId", 0).asInt();
-            if (agentId > 0) {
+            if (agentId > 0 && isShellOwner(conn, agentId)) {
                 AgentBridgeManager::instance().resizeShell(agentId, data.get("cols", 80).asInt(), data.get("rows", 24).asInt());
             }
             return;
         }
         if (msgType == "shell:close") {
             int agentId = data.get("agentId", 0).asInt();
-            if (agentId > 0) {
+            if (agentId > 0 && isShellOwner(conn, agentId)) {
                 AgentBridgeManager::instance().closeShell(agentId);
+                std::lock_guard lock(shellOwnerMutex_);
+                shellOwners_.erase(agentId);
             }
             return;
         }
@@ -165,6 +182,18 @@ public:
 private:
     std::shared_ptr<JwtUtils> jwtUtils_;
     AuthCache authCache_;
+
+    // Shell 会话所有权：agentId → userId（防止越权操作他人 Shell）
+    std::map<int, int> shellOwners_;
+    std::mutex shellOwnerMutex_;
+
+    bool isShellOwner(const drogon::WebSocketConnectionPtr& conn, int agentId) {
+        if (!conn->hasContext()) return false;
+        auto session = conn->getContext<WsSession>();
+        std::lock_guard lock(shellOwnerMutex_);
+        auto it = shellOwners_.find(agentId);
+        return it != shellOwners_.end() && it->second == session->userId;
+    }
 
     static std::string trim(const std::string& value) {
         size_t start = value.find_first_not_of(" \t\r\n");

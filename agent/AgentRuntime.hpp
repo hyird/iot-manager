@@ -167,7 +167,7 @@ private:
         auto req = drogon::HttpRequest::newHttpRequest();
         req->setPath("/agent/ws");
         req->addHeader("X-Agent-Code", config_.code);
-        req->addHeader("X-Agent-Secret", agent::AGENT_SHARED_SECRET);
+        req->addHeader("X-Agent-Secret", agent::getAgentSharedSecret());
         req->addHeader("X-Agent-Name", config_.name);
 
         wsClient_->connectToServer(

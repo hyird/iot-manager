@@ -191,7 +191,12 @@ public:
         if (!value) {
             co_return 0;
         }
-        co_return std::stoll(*value);
+        try {
+            co_return std::stoll(*value);
+        } catch (const std::exception&) {
+            LOG_WARN << "Invalid login failure count for user " << username << ", resetting";
+            co_return 0;
+        }
     }
 
     // ==================== API 限流 ====================
@@ -212,7 +217,7 @@ public:
      * @brief 清除用户所有缓存（权限变更、角色变更时调用）
      */
     Task<void> clearUserCache(int userId) {
-        // 并行清除三类缓存（3 次串行 Redis 往返 → 1 次并行往返）
+        // 串行清除三类缓存（Drogon 协程启动后依次 co_await）
         auto t1 = deleteUserSession(userId);
         auto t2 = deleteUserRoles(userId);
         auto t3 = deleteUserMenus(userId);

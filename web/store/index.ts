@@ -33,7 +33,7 @@ const tabsTransform = createTransform(
 const authPersistConfig = {
   key: "auth",
   storage: sessionStorage,
-  whitelist: ["token", "refreshToken", "user"],
+  whitelist: ["token", "user"],  // refreshToken 不持久化到 sessionStorage，降低 XSS 窃取风险
 };
 
 // Tabs 持久化配置

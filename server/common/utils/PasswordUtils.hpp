@@ -81,14 +81,19 @@ public:
             "abcdefghijklmnopqrstuvwxyz"
             "!@#$%^&*";
 
-        // 使用密码学安全的 RAND_bytes 替代 mt19937
-        std::vector<unsigned char> randomBytes(length);
-        RAND_bytes(randomBytes.data(), length);
+        // 使用密码学安全的 RAND_bytes + 拒绝采样消除模偏差
+        const size_t charCount = chars.size();
+        const size_t limit = 256 - (256 % charCount);  // 240 for charCount=70
 
         std::string password;
         password.reserve(length);
-        for (int i = 0; i < length; ++i) {
-            password += chars[randomBytes[i] % chars.size()];
+        for (int i = 0; i < length; ) {
+            unsigned char byte;
+            RAND_bytes(&byte, 1);
+            if (byte < limit) {
+                password += chars[byte % charCount];
+                ++i;
+            }
         }
 
         return password;

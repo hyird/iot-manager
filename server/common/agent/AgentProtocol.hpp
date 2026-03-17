@@ -57,8 +57,19 @@ inline constexpr const char* MESSAGE_SHELL_CLOSE = "shell:close";
 inline constexpr const char* MESSAGE_SHELL_CLOSED = "shell:closed";
 inline constexpr const char* MESSAGE_ERROR = "error";
 
-// Agent 认证硬编码密钥（仅用于 Agent ↔ Server 内部通信）
-inline constexpr const char* AGENT_SHARED_SECRET = "iot-agent-shared-secret-2026";
+// Agent 认证密钥（运行时从配置加载，禁止硬编码）
+inline std::string& agentSharedSecret() {
+    static std::string secret;
+    return secret;
+}
+
+inline void setAgentSharedSecret(const std::string& secret) {
+    agentSharedSecret() = secret;
+}
+
+inline const std::string& getAgentSharedSecret() {
+    return agentSharedSecret();
+}
 
 using ConfigVersion = int64_t;
 

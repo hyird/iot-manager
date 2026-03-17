@@ -85,6 +85,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pingTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const connectRef = useRef<() => void>(undefined);
 
   const cleanup = useCallback(() => {
     if (pingTimerRef.current) {
@@ -279,13 +280,17 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       // 指数退避重连
       const delay = getReconnectDelay(reconnectAttemptRef.current);
       reconnectAttemptRef.current++;
-      reconnectTimerRef.current = setTimeout(connect, delay);
+      reconnectTimerRef.current = setTimeout(() => connectRef.current?.(), delay);
     };
 
     ws.onerror = () => {
       // onclose 会紧随 onerror 触发，重连逻辑在 onclose 中处理
     };
   }, [token, queryClient, notification, mergeRealtimeUpdates]);
+
+  // 保持 connectRef 始终指向最新的 connect 闭包，
+  // 使 onclose 重连回调不会捕获过期 token
+  connectRef.current = connect;
 
   useEffect(() => {
     if (token) {

@@ -15,10 +15,20 @@ private:
     using BioChainPtr = std::unique_ptr<BIO, decltype(&BIO_free_all)>;
 
     static std::string base64UrlEncode(const std::string& input) {
-        BioChainPtr bioChain(
-            BIO_push(BIO_new(BIO_f_base64()), BIO_new(BIO_s_mem())),
-            BIO_free_all
-        );
+        BIO* b64 = BIO_new(BIO_f_base64());
+        BIO* mem = BIO_new(BIO_s_mem());
+        if (!b64 || !mem) {
+            BIO_free(b64);
+            BIO_free(mem);
+            throw std::runtime_error("BIO allocation failed");
+        }
+        BIO* chain = BIO_push(b64, mem);
+        if (!chain) {
+            BIO_free(b64);
+            BIO_free(mem);
+            throw std::runtime_error("BIO_push failed");
+        }
+        BioChainPtr bioChain(chain, BIO_free_all);
 
         BIO_set_flags(bioChain.get(), BIO_FLAGS_BASE64_NO_NL);
         BIO_write(bioChain.get(), input.c_str(), static_cast<int>(input.length()));

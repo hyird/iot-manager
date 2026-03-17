@@ -71,6 +71,7 @@ function onTokenRefreshFailed(error: Error) {
 }
 
 function handleAuthExpired(error: Error) {
+  isRefreshing = false;
   onTokenRefreshFailed(error);
   store.dispatch(clearAuth());
   redirectToLogin();
@@ -167,5 +168,11 @@ request.interceptors.response.use(
     return Promise.reject(new Error(errMsg));
   }
 );
+
+/** 重置 Token 刷新状态（登出时调用，防止残留状态影响新会话） */
+export function resetRefreshState() {
+  isRefreshing = false;
+  refreshSubscribers = [];
+}
 
 export default request;

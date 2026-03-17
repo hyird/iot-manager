@@ -611,10 +611,10 @@ private:
      * 当 onDataReceived 检测到 DeviceCache 未加载时调用。
      */
     void scheduleDeviceCacheReload() {
-        auto cooldown = deviceCacheReloadCooldown_.load(std::memory_order_acquire);
-        if (cooldown > 0) {
-            auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-            if (now < cooldown) return;
+        auto cooldownTp = std::chrono::steady_clock::time_point(
+            std::chrono::steady_clock::duration(deviceCacheReloadCooldown_.load(std::memory_order_acquire)));
+        if (cooldownTp.time_since_epoch().count() > 0) {
+            if (std::chrono::steady_clock::now() < cooldownTp) return;
         }
 
         bool expected = false;

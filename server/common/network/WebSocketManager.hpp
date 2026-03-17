@@ -116,7 +116,7 @@ public:
 private:
     WebSocketManager() = default;
 
-    std::set<WebSocketConnectionPtr> allConns_;
-    std::map<int, std::set<WebSocketConnectionPtr>> userConns_;
+    std::unordered_set<WebSocketConnectionPtr> allConns_;
+    std::unordered_map<int, std::unordered_set<WebSocketConnectionPtr>> userConns_;
     mutable std::shared_mutex mutex_;
 };
