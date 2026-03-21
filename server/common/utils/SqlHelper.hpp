@@ -28,18 +28,20 @@ std::string buildInClause(const std::vector<T>& ids) {
 /**
  * @brief 构建 IN 子句的参数化占位符和参数
  * @param ids ID 列表
- * @param startIndex 参数起始编号（默认 1），用于复合查询中偏移
- * @return {占位符字符串（如 "$1, $2, $3"）, 参数列表}
+ * @return {占位符字符串（如 "?, ?, ?"）, 参数列表}
+ *
+ * 适用于 DatabaseService::execSqlCoro / TransactionGuard::execSqlCoro，
+ * 这两者都会把 `?` 自动重编号成 PostgreSQL 的 `$1/$2/...`。
  */
 template <typename T>
 std::pair<std::string, std::vector<std::string>> buildParameterizedIn(
-    const std::vector<T>& ids, int startIndex = 1) {
+    const std::vector<T>& ids) {
     std::string placeholders;
     std::vector<std::string> params;
     params.reserve(ids.size());
     for (size_t i = 0; i < ids.size(); ++i) {
         if (i > 0) placeholders += ", ";
-        placeholders += "$" + std::to_string(startIndex + static_cast<int>(i));
+        placeholders += "?";
         params.push_back(std::to_string(ids[i]));
     }
     return {placeholders, params};
