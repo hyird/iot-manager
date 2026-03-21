@@ -33,7 +33,7 @@ export default defineConfig({
     target: "es6",
     outDir: "../build/web",
     emptyOutDir: true,
-    chunkSizeWarningLimit: 4000,
+    chunkSizeWarningLimit: 5000,
     cssCodeSplit: false,
     assetsInlineLimit: () => true,
     modulePreload: false,

@@ -2,6 +2,7 @@
 
 #include "DtuRegistry.hpp"
 #include "DtuSessionManager.hpp"
+#include "Modbus.Utils.hpp"
 #include "ModbusPollScheduler.hpp"
 #include "ModbusSessionEngine.hpp"
 #include "RegistrationNormalizer.hpp"
@@ -149,6 +150,8 @@ public:
                          << linkId << ", client=" << clientAddr;
                 return;
             }
+
+            logRegistrationMatch(linkId, clientAddr, normalized);
 
             if (normalized.sessionBound && !normalized.dtuKey.empty()) {
                 if (normalized.kind == RegistrationMatchKind::StandaloneFrame && sessionEngine_) {
@@ -500,6 +503,76 @@ private:
             if (session.bindState == SessionBindState::Bound) continue;
             sessionEngine_->triggerDiscovery(session.linkId, session.clientAddr);
         }
+    }
+
+    static std::string registrationMatchKindToString(RegistrationMatchKind kind) {
+        switch (kind) {
+            case RegistrationMatchKind::StandaloneFrame:
+                return "StandaloneFrame";
+            case RegistrationMatchKind::PrefixedPayload:
+                return "PrefixedPayload";
+            case RegistrationMatchKind::Conflict:
+                return "Conflict";
+            case RegistrationMatchKind::None:
+            default:
+                return "None";
+        }
+    }
+
+    static std::string bytesToAsciiString(const std::vector<uint8_t>& bytes) {
+        static constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
+
+        std::string out;
+        out.reserve(bytes.size());
+        for (uint8_t byte : bytes) {
+            switch (byte) {
+                case '\\':
+                    out += "\\\\";
+                    break;
+                case '"':
+                    out += "\\\"";
+                    break;
+                case '\n':
+                    out += "\\n";
+                    break;
+                case '\r':
+                    out += "\\r";
+                    break;
+                case '\t':
+                    out += "\\t";
+                    break;
+                default:
+                    if (byte >= 0x20 && byte <= 0x7E) {
+                        out.push_back(static_cast<char>(byte));
+                    } else {
+                        out += "\\x";
+                        out.push_back(HEX_DIGITS[byte >> 4]);
+                        out.push_back(HEX_DIGITS[byte & 0x0F]);
+                    }
+                    break;
+            }
+        }
+        return out;
+    }
+
+    static void logRegistrationMatch(
+        int linkId,
+        const std::string& clientAddr,
+        const RegistrationMatchResult& normalized) {
+        if (normalized.kind != RegistrationMatchKind::StandaloneFrame
+            && normalized.kind != RegistrationMatchKind::PrefixedPayload) {
+            return;
+        }
+        if (normalized.registrationBytes.empty()) {
+            return;
+        }
+
+        LOG_DEBUG << "[Modbus][Adapter] Registration stripped: linkId=" << linkId
+                  << ", client=" << clientAddr
+                  << ", kind=" << registrationMatchKindToString(normalized.kind)
+                  << ", hex=" << ModbusUtils::toHexString(normalized.registrationBytes)
+                  << ", ascii=\"" << bytesToAsciiString(normalized.registrationBytes) << "\""
+                  << ", payloadBytes=" << normalized.payload.size();
     }
 
     std::unique_ptr<DtuRegistry> dtuRegistry_;
