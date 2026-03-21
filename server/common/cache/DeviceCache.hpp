@@ -469,12 +469,16 @@ public:
 
     /**
      * @brief 通过 linkId + deviceCode 同步查找设备
+     * 使用 linkDeviceIndex_ 缩小搜索范围，避免 O(n) 全量扫描
      */
     std::optional<CachedDevice> findByLinkAndCodeSync(int linkId, const std::string& deviceCode) const {
         std::shared_lock lock(mutex_);
-        for (const auto& device : devices_) {
-            if (device.linkId == linkId && device.deviceCode == deviceCode) {
-                return device;
+        auto it = linkDeviceIndex_.find(linkId);
+        if (it != linkDeviceIndex_.end()) {
+            for (size_t idx : it->second) {
+                if (idx < devices_.size() && devices_[idx].deviceCode == deviceCode) {
+                    return devices_[idx];
+                }
             }
         }
         return std::nullopt;

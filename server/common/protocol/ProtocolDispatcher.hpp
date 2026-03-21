@@ -338,6 +338,11 @@ public:
     /**
      * @brief 检查设备是否在线（基于实际连接状态）
      */
+    /**
+     * @brief 检查设备是否在线
+     * 线程安全：adapters_ 在 initialize() 阶段注册完毕后不再修改，
+     * 运行时仅只读迭代，无需加锁。
+     */
     bool isDeviceConnected(int deviceId) const {
         for (const auto& [protocol, adapter] : adapters_) {
             if (adapter && adapter->isDeviceConnected(deviceId)) {

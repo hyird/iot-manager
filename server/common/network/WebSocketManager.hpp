@@ -26,10 +26,26 @@ public:
         return mgr;
     }
 
-    /** 注册连接 */
+    static constexpr size_t MAX_CONNECTIONS_PER_USER = 10;
+    static constexpr size_t MAX_TOTAL_CONNECTIONS = 10000;
+
+    /** 注册连接（含连接数上限保护） */
     void addConnection(int userId, const WebSocketConnectionPtr& conn) {
         std::unique_lock lock(mutex_);
-        userConns_[userId].insert(conn);
+        if (allConns_.size() >= MAX_TOTAL_CONNECTIONS) {
+            LOG_WARN << "[WS] Max total connections reached (" << MAX_TOTAL_CONNECTIONS
+                     << "), rejecting User#" << userId;
+            conn->forceClose();
+            return;
+        }
+        auto& userSet = userConns_[userId];
+        if (userSet.size() >= MAX_CONNECTIONS_PER_USER) {
+            LOG_WARN << "[WS] Max connections per user reached (" << MAX_CONNECTIONS_PER_USER
+                     << ") for User#" << userId;
+            conn->forceClose();
+            return;
+        }
+        userSet.insert(conn);
         allConns_.insert(conn);
         LOG_INFO << "[WS] User#" << userId << " connected, total: " << allConns_.size();
     }
@@ -100,16 +116,19 @@ public:
         return userConns_.size();
     }
 
-    /** 构建 JSON 消息字符串 */
+    /** 构建 JSON 消息字符串（静态 builder 避免高频分配） */
     static std::string buildMessage(const std::string& type, const Json::Value& data) {
+        static const Json::StreamWriterBuilder builder = []() {
+            Json::StreamWriterBuilder b;
+            b["indentation"] = "";
+            return b;
+        }();
         Json::Value msg;
         msg["type"] = type;
         msg["data"] = data;
         msg["ts"] = static_cast<Json::Int64>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count());
-        Json::StreamWriterBuilder builder;
-        builder["indentation"] = "";
         return Json::writeString(builder, msg);
     }
 

@@ -203,12 +203,31 @@ public:
 
     /**
      * @brief 检查 API 访问频率
-     * @return 当前访问次数
+     * @return true 表示允许访问，false 表示超过限制
      */
-    Task<int64_t> checkRateLimit(int userId, const std::string& endpoint, [[maybe_unused]] int maxRequests, int windowSeconds) {
+    Task<bool> checkRateLimit(int userId, const std::string& endpoint, int maxRequests, int windowSeconds) {
         std::string key = "ratelimit:" + std::to_string(userId) + ":" + endpoint;
         auto count = co_await redis_.incrWithExpire(key, windowSeconds);
-        co_return count;
+        co_return count <= maxRequests;
+    }
+
+    /**
+     * @brief 按 IP 记录登录失败次数（防密码喷洒攻击）
+     */
+    Task<int64_t> recordLoginFailureByIp(const std::string& ip) {
+        std::string key = "login:failed:ip:" + ip;
+        co_return co_await redis_.incrWithExpire(key, Constants::LOGIN_FAILURE_WINDOW);
+    }
+
+    /**
+     * @brief 获取 IP 登录失败次数
+     */
+    Task<int64_t> getLoginFailureCountByIp(const std::string& ip) {
+        std::string key = "login:failed:ip:" + ip;
+        auto value = co_await redis_.get(key);
+        if (!value) co_return 0;
+        try { co_return std::stoll(*value); }
+        catch (...) { co_return 0; }
     }
 
     // ==================== 批量清除缓存 ====================

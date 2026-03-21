@@ -183,11 +183,11 @@ private:
     std::shared_ptr<JwtUtils> jwtUtils_;
     AuthCache authCache_;
 
-    // Shell 会话所有权：agentId → userId（防止越权操作他人 Shell）
-    std::map<int, int> shellOwners_;
-    std::mutex shellOwnerMutex_;
+    // Shell 会话所有权：agentId → userId（静态成员，跨控制器实例共享）
+    static inline std::unordered_map<int, int> shellOwners_;
+    static inline std::mutex shellOwnerMutex_;
 
-    bool isShellOwner(const drogon::WebSocketConnectionPtr& conn, int agentId) {
+    static bool isShellOwner(const drogon::WebSocketConnectionPtr& conn, int agentId) {
         if (!conn->hasContext()) return false;
         auto session = conn->getContext<WsSession>();
         std::lock_guard lock(shellOwnerMutex_);

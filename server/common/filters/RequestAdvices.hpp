@@ -125,6 +125,12 @@ private:
             if (req->path().starts_with("/api/") && resp->getHeader("Cache-Control").empty()) {
                 resp->addHeader("Cache-Control", "no-cache");
             }
+
+            // 安全响应头
+            resp->addHeader("X-Content-Type-Options", "nosniff");
+            resp->addHeader("X-Frame-Options", "DENY");
+            resp->addHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+            resp->addHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
             std::string username = "-";
             try {
                 username = req->attributes()->get<std::string>("username");

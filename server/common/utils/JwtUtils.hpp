@@ -60,10 +60,20 @@ private:
 
         std::vector<char> buffer(input.length(), 0);
 
-        BioChainPtr bioChain(
-            BIO_push(BIO_new(BIO_f_base64()), BIO_new_mem_buf(input.c_str(), static_cast<int>(input.length()))),
-            BIO_free_all
-        );
+        BIO* b64 = BIO_new(BIO_f_base64());
+        BIO* mem = BIO_new_mem_buf(input.c_str(), static_cast<int>(input.length()));
+        if (!b64 || !mem) {
+            BIO_free(b64);
+            BIO_free(mem);
+            throw std::runtime_error("BIO allocation failed in base64UrlDecode");
+        }
+        BIO* chain = BIO_push(b64, mem);
+        if (!chain) {
+            BIO_free(b64);
+            BIO_free(mem);
+            throw std::runtime_error("BIO_push failed in base64UrlDecode");
+        }
+        BioChainPtr bioChain(chain, BIO_free_all);
 
         BIO_set_flags(bioChain.get(), BIO_FLAGS_BASE64_NO_NL);
         int decodedLength = BIO_read(bioChain.get(), buffer.data(), static_cast<int>(input.length()));
@@ -132,6 +142,19 @@ public:
         std::string encodedHeader = token.substr(0, firstDot);
         std::string encodedPayload = token.substr(firstDot + 1, secondDot - firstDot - 1);
         std::string encodedSignature = token.substr(secondDot + 1);
+
+        // 验证 header 中的 alg 字段，防止算法混淆攻击
+        {
+            std::string headerStr = base64UrlDecode(encodedHeader);
+            Json::CharReaderBuilder rb;
+            Json::Value header;
+            std::istringstream hss(headerStr);
+            std::string herrs;
+            if (!Json::parseFromStream(rb, hss, &header, &herrs) ||
+                header.get("alg", "").asString() != "HS256") {
+                throw AuthException::TokenInvalid();
+            }
+        }
 
         std::string message = encodedHeader + "." + encodedPayload;
         std::string expectedSignature = hmacSha256(message);
