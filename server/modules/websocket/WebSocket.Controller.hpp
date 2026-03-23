@@ -126,7 +126,7 @@ public:
             }
             auto session = conn->getContext<WsSession>();
             int userId = session->userId;
-            drogon::async_run([this, agentId, cols, rows, conn, userId]() -> Task<void> {
+            drogon::async_run([agentId, cols, rows, conn, userId]() -> Task<void> {
                 try {
                     bool hasPerm = co_await PermissionChecker::hasPermission(userId, {"agent:shell"});
                     if (!hasPerm) {
