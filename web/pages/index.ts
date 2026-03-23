@@ -142,6 +142,23 @@ registerPage({
   ],
 });
 
+// S7 协议配置
+registerPage({
+  component: "S7Config",
+  name: "S7配置",
+  module: "IOT管理",
+  description: "S7协议连接与区域轮询配置",
+  loader: () => import("./protocol/S7Config"),
+  permissions: [
+    { code: "iot:protocol:query", name: "查询配置", action: "query" },
+    { code: "iot:protocol:add", name: "新增配置", action: "add" },
+    { code: "iot:protocol:edit", name: "编辑配置", action: "edit" },
+    { code: "iot:protocol:delete", name: "删除配置", action: "delete" },
+    { code: "iot:protocol:import", name: "导入配置", action: "import" },
+    { code: "iot:protocol:export", name: "导出配置", action: "export" },
+  ],
+});
+
 // 设备管理
 registerPage({
   component: "Device",
