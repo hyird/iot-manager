@@ -41,6 +41,8 @@ public:
         std::string createdAt;
         std::string linkName;
         std::string linkMode;
+        std::string linkIp;
+        int linkPort = 0;
         std::string protocolName;
         std::string protocolType;
         Json::Value protocolConfig;  // 解析后的协议配置
@@ -106,7 +108,7 @@ public:
             SELECT d.id, d.name, d.link_id, d.protocol_config_id, d.group_id,
                    d.status, d.protocol_params, d.remark, d.created_at,
                    p.name as protocol_name, p.protocol as protocol_type, p.config as protocol_config,
-                   l.name as link_name, l.mode as link_mode
+                   l.name as link_name, l.mode as link_mode, l.ip as link_ip, l.port as link_port
             FROM device d
             LEFT JOIN protocol_config p ON d.protocol_config_id = p.id AND p.deleted_at IS NULL
             LEFT JOIN link l ON d.link_id = l.id AND l.deleted_at IS NULL
@@ -131,6 +133,8 @@ public:
             device.createdAt = FieldHelper::getString(row["created_at"], "");
             device.linkName = FieldHelper::getString(row["link_name"], "");
             device.linkMode = FieldHelper::getString(row["link_mode"], "");
+            device.linkIp = FieldHelper::getString(row["link_ip"], "");
+            device.linkPort = row["link_port"].isNull() ? 0 : FieldHelper::getInt(row["link_port"]);
             device.protocolName = FieldHelper::getString(row["protocol_name"], "");
             device.protocolType = FieldHelper::getString(row["protocol_type"], "");
 

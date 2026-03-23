@@ -141,9 +141,6 @@ private:
                 throw ValidationException("S7 配置的 connection 必须是对象");
             }
             const auto& connection = config["connection"];
-            if (connection.get("host", "").asString().empty()) {
-                throw ValidationException("S7 配置的 connection.host 不能为空");
-            }
             int rack = connection.get("rack", 0).asInt();
             int slot = connection.get("slot", 1).asInt();
             if (rack != preset->first || slot != preset->second) {

@@ -189,9 +189,8 @@ export interface S7Area {
   remark?: string;
 }
 
-/** S7 连接配置 */
+/** S7 连接配置（连接地址由链路决定） */
 export interface S7Connection {
-  host: string;
   rack: number;
   slot: number;
   connectionType?: S7ConnectionType;

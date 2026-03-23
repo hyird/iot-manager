@@ -33,7 +33,7 @@ struct S7AreaDefinition {
 };
 
 struct S7ConnectionConfig {
-    std::string host;
+    std::string host;  // 解析后的连接目标，优先取链路 IP，兼容旧配置
     int rack = 0;
     int slot = 1;
     int pollIntervalSec = 5;
@@ -300,6 +300,12 @@ private:
         runtime->linkId = device.linkId;
         runtime->deviceCode = device.deviceCode.empty() ? ("s7_" + std::to_string(device.id)) : device.deviceCode;
         runtime->connection = parseConnection(device.protocolConfig);
+        if (!device.linkIp.empty()) {
+            runtime->connection.host = device.linkIp;
+        }
+        if (runtime->connection.host.empty()) {
+            return nullptr;
+        }
         runtime->areas = parseAreas(device.protocolConfig);
         return runtime;
     }

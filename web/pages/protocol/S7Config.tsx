@@ -35,7 +35,6 @@ type DraftItem = Protocol.Item & { config: S7.Config };
 type ConnectionFormValues = {
   deviceType: string;
   plcModel: S7.PlcModel;
-  host: string;
   rack: number;
   slot: number;
   connectionType: S7.ConnectionType;
@@ -46,7 +45,6 @@ const defaultConfig = (): S7.Config => ({
   deviceType: "",
   plcModel: "S7-1200",
   connection: {
-    host: "",
     rack: 0,
     slot: 1,
     connectionType: "PG",
@@ -71,7 +69,6 @@ const cloneDraft = (item: Protocol.Item): DraftItem => ({
     deviceType: (item.config as S7.Config)?.deviceType ?? "",
     plcModel: (item.config as S7.Config)?.plcModel ?? "S7-1200",
     connection: {
-      host: (item.config as S7.Config)?.connection?.host ?? "",
       rack: (item.config as S7.Config)?.connection?.rack ?? 0,
       slot: (item.config as S7.Config)?.connection?.slot ?? 1,
       connectionType: (item.config as S7.Config)?.connection?.connectionType ?? "PG",
@@ -226,7 +223,6 @@ const S7ConfigPage = () => {
     connectionForm.setFieldsValue({
       deviceType: draft.config.deviceType,
       plcModel: draft.config.plcModel,
-      host: draft.config.connection.host,
       rack: draft.config.connection.rack,
       slot: draft.config.connection.slot,
       connectionType: draft.config.connection.connectionType,
@@ -342,16 +338,17 @@ const S7ConfigPage = () => {
   const handleCreate = async () => {
     const values = await createForm.validateFields();
     const preset = getPlcPreset(values.plcModel);
+    const config = defaultConfig();
     await saveMutation.mutateAsync({
       protocol: "S7",
       name: values.deviceType,
       enabled: true,
       config: {
-        ...defaultConfig(),
+        ...config,
         deviceType: values.deviceType,
         plcModel: values.plcModel,
         connection: {
-          ...defaultConfig().connection,
+          ...config.connection,
           rack: preset.rack,
           slot: preset.slot,
         },
@@ -447,13 +444,15 @@ const S7ConfigPage = () => {
                   value={draft.config.deviceType || draft.name}
                   style={{ width: 280 }}
                   disabled={!canEdit}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    connectionForm.setFieldsValue({ deviceType: value });
                     setDraft({
                       ...draft,
-                      name: e.target.value,
-                      config: { ...draft.config, deviceType: e.target.value },
-                    })
-                  }
+                      name: value,
+                      config: { ...draft.config, deviceType: value },
+                    });
+                  }}
                 />
                 <Space>
                   <span>启用</span>
@@ -496,7 +495,6 @@ const S7ConfigPage = () => {
                         plcModel: values.plcModel,
                         connection: {
                           ...current.config.connection,
-                          host: values.host,
                           rack: values.rack,
                           slot: values.slot,
                           connectionType: values.connectionType,
@@ -540,14 +538,6 @@ const S7ConfigPage = () => {
                       />
                     </Form.Item>
                     <Space wrap className="w-full">
-                      <Form.Item
-                        name="host"
-                        label="PLC 地址"
-                        rules={[{ required: true, message: "S7配置的 connection.host 不能为空" }]}
-                        className="flex-1 min-w-[240px]"
-                      >
-                        <Input placeholder="PLC 地址" />
-                      </Form.Item>
                       <Form.Item name="rack" label="Rack">
                         <InputNumber min={0} className="w-full" disabled />
                       </Form.Item>
@@ -624,13 +614,7 @@ const S7ConfigPage = () => {
             label="PLC型号"
             rules={[{ required: true, message: "请选择PLC型号" }]}
           >
-            <Select
-              options={plcModelOptions.map(({ value, label }) => ({ value, label }))}
-              onChange={(value: S7.PlcModel) => {
-                const preset = getPlcPreset(value);
-                connectionForm.setFieldsValue({ rack: preset.rack, slot: preset.slot });
-              }}
-            />
+            <Select options={plcModelOptions.map(({ value, label }) => ({ value, label }))} />
           </Form.Item>
           <Space size="middle" className="w-full">
             <Form.Item label="Rack" className="flex-1">
