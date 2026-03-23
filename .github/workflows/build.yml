@@ -23,6 +23,9 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
+      - name: Configure git default branch
+        run: git config --global init.defaultBranch main
+
       - uses: actions/checkout@v6
 
       - name: Install dependencies (Linux)
@@ -70,9 +73,6 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
-          -DCMAKE_C_COMPILER=clang-18
-          -DCMAKE_CXX_COMPILER=clang++-18
-          -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
 
       # 保存 vcpkg 缓存（Configure 后、Build 前，仅在缓存未命中时保存）
       - name: Save vcpkg cache
@@ -93,11 +93,10 @@ jobs:
       # UPX 压缩 Release 二进制（最优压缩）
       - name: Compress with UPX
         if: matrix.build_type == 'Release'
-        uses: crazy-max/ghaction-upx@v4
-        with:
-          version: latest
-          files: build/release/iot-manager
-          args: --best --lzma
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
+          upx --best --lzma build/release/iot-manager
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -116,6 +115,9 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
+      - name: Configure git default branch
+        run: git config --global init.defaultBranch main
+
       - uses: actions/checkout@v6
 
       - name: Cache musl toolchain
@@ -180,11 +182,10 @@ jobs:
         run: arm-linux-musleabihf-strip --strip-all build/release/iot-edgenode
 
       - name: Compress with UPX
-        uses: crazy-max/ghaction-upx@v4
-        with:
-          version: latest
-          files: build/release/iot-edgenode
-          args: --best --lzma
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
+          upx --best --lzma build/release/iot-edgenode
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -201,6 +202,9 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
+      - name: Configure git default branch
+        run: git config --global init.defaultBranch main
+
       - uses: actions/checkout@v6
 
       - name: Restore vcpkg cache
