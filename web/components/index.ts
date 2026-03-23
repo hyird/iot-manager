@@ -1,6 +1,7 @@
 export { AuthGuard } from "./AuthGuard";
 export { default as DeviceCard } from "./DeviceCard";
 export { default as DynamicIcon } from "./DynamicIcon";
+export { default as EdgeNodeTerminal } from "./EdgeNodeTerminal";
 export { default as FallbackPage } from "./FallbackPage";
 export { default as ImagePreviewModal, type ImagePreviewModalRef } from "./ImagePreviewModal";
 export { default as LayoutBreadcrumb } from "./LayoutBreadcrumb";

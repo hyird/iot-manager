@@ -6,7 +6,7 @@
 #include "ModbusPollScheduler.hpp"
 #include "ModbusSessionEngine.hpp"
 #include "RegistrationNormalizer.hpp"
-#include "common/agent/AgentBridgeManager.hpp"
+#include "common/edgenode/AgentBridgeManager.hpp"
 #include "common/cache/DeviceCache.hpp"
 #include "common/cache/DeviceConnectionCache.hpp"
 #include "common/protocol/ProtocolAdapter.hpp"

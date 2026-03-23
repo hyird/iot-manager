@@ -5,7 +5,7 @@
 #include "modules/protocol/domain/Events.hpp"
 #include "common/domain/EventBus.hpp"
 #include "common/network/LinkTransportFacade.hpp"
-#include "common/agent/AgentBridgeManager.hpp"
+#include "common/edgenode/AgentBridgeManager.hpp"
 #include "common/database/DatabaseService.hpp"
 #include "common/utils/Constants.hpp"
 #include "common/utils/FieldHelper.hpp"

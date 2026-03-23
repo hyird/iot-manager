@@ -1,5 +1,5 @@
 /**
- * Agent Mutation Hooks
+ * EdgeNode Mutation Hooks
  */
 
 import type { Agent } from "@/types";
@@ -11,7 +11,7 @@ import { agentQueryKeys } from "./keys";
 export function useAgentCreate() {
   return useMutationWithFeedback<{ id: number; code: string; name: string }, Agent.CreateInput>({
     mutationFn: api.create,
-    successMessage: "Agent 节点创建成功",
+    successMessage: "边缘节点创建成功",
     invalidateKeys: [agentQueryKeys.all],
   });
 }
@@ -19,7 +19,7 @@ export function useAgentCreate() {
 export function useAgentUpdate() {
   return useMutationWithFeedback<void, { id: number; data: Agent.UpdateInput }>({
     mutationFn: ({ id, data }) => api.update(id, data),
-    successMessage: "Agent 节点更新成功",
+    successMessage: "边缘节点更新成功",
     invalidateKeys: [agentQueryKeys.all],
   });
 }
@@ -35,7 +35,7 @@ export function useAgentResync() {
 export function useAgentDelete() {
   return useMutationWithFeedback<void, number>({
     mutationFn: api.remove,
-    successMessage: "采集 Agent 已删除",
+    successMessage: "边缘节点已删除",
     invalidateKeys: [agentQueryKeys.all, linkQueryKeys.all],
   });
 }

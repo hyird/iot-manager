@@ -10,8 +10,6 @@
  * - index.ts:     模块导出
  */
 
-// Agent
-export * from "./agent";
 // Alert
 export * from "./alert";
 // Auth
@@ -22,6 +20,8 @@ export * from "./department";
 export * from "./device";
 // Device Group
 export * from "./device-group";
+// EdgeNode
+export * from "./edgenode";
 // Home
 export * from "./home";
 // Link

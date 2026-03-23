@@ -1,28 +1,24 @@
 /**
- * Agent WebSSH 终端组件
+ * EdgeNode WebSSH 终端组件
  *
- * 通过独立 WebSocket 连接与 Agent 的 PTY 通信。
- * 消息流: 前端 → /ws → Server → Agent → PTY
+ * 通过独立 WebSocket 连接与边缘节点的 PTY 通信。
+ * 消息流: 前端 → /ws → Server → EdgeNode → PTY
  */
 
-import { inflate } from "pako";
-import { useCallback, useEffect, useRef } from "react";
-
-import { useAppSelector } from "@/store/hooks";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
+import { inflate } from "pako";
+import { useCallback, useEffect, useRef } from "react";
+import { useAppSelector } from "@/store/hooks";
 import "@xterm/xterm/css/xterm.css";
 
-interface AgentTerminalProps {
+interface EdgeNodeTerminalProps {
   agentId: number;
   visible: boolean;
 }
 
-export default function AgentTerminal({
-  agentId,
-  visible,
-}: AgentTerminalProps) {
+export default function EdgeNodeTerminal({ agentId, visible }: EdgeNodeTerminalProps) {
   const token = useAppSelector((s) => s.auth.token);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -37,7 +33,7 @@ export default function AgentTerminal({
           JSON.stringify({
             type: "shell:close",
             data: { agentId },
-          }),
+          })
         );
       }
       wsRef.current.onclose = null;
@@ -59,7 +55,8 @@ export default function AgentTerminal({
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace",
+      fontFamily:
+        "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace",
       scrollback: 5000,
       fastScrollSensitivity: 5,
       theme: {
@@ -87,7 +84,7 @@ export default function AgentTerminal({
     termRef.current = term;
     fitRef.current = fit;
 
-    term.writeln("\x1b[33m连接到 Agent...\x1b[0m");
+    term.writeln("\x1b[33m连接到边缘节点...\x1b[0m");
 
     // 建立独立 WebSocket
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -135,7 +132,7 @@ export default function AgentTerminal({
             JSON.stringify({
               type: "shell:open",
               data: { agentId, cols, rows },
-            }),
+            })
           );
           return;
         }
@@ -145,9 +142,7 @@ export default function AgentTerminal({
             openedRef.current = true;
             term.writeln("\x1b[32m已连接\x1b[0m\r\n");
           } else {
-            term.writeln(
-              `\x1b[31m连接失败: ${msg.data?.error ?? "未知错误"}\x1b[0m`,
-            );
+            term.writeln(`\x1b[31m连接失败: ${msg.data?.error ?? "未知错误"}\x1b[0m`);
           }
           return;
         }
@@ -164,7 +159,7 @@ export default function AgentTerminal({
           const reason = msg.data?.reason;
           openedRef.current = false;
           term.writeln(
-            `\r\n\x1b[33m会话已结束${reason === "agent_offline" ? " (Agent 离线)" : ""} (code=${code})\x1b[0m`,
+            `\r\n\x1b[33m会话已结束${reason === "agent_offline" ? " (边缘节点离线)" : ""} (code=${code})\x1b[0m`
           );
           return;
         }
@@ -187,7 +182,7 @@ export default function AgentTerminal({
           JSON.stringify({
             type: "shell:data",
             data: { agentId, data },
-          }),
+          })
         );
       }
     });
@@ -206,7 +201,7 @@ export default function AgentTerminal({
               JSON.stringify({
                 type: "shell:resize",
                 data: { agentId, cols: dims.cols, rows: dims.rows },
-              }),
+              })
             );
           }
         }

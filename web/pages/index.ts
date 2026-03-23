@@ -98,14 +98,14 @@ registerPage({
   ],
 });
 
-// 采集 Agent
+// 边缘节点
 registerPage({
-  component: "Agent",
-  name: "采集Agent",
+  component: "EdgeNode",
+  name: "边缘节点",
   module: "IOT管理",
-  description: "采集 Agent 的在线状态、能力上报和配置同步状态",
-  loader: () => import("./agent/Agent"),
-  permissions: [{ code: "iot:link:query", name: "查询采集Agent", action: "query" }],
+  description: "边缘节点的在线状态、能力上报和配置同步状态",
+  loader: () => import("./edgenode/EdgeNode"),
+  permissions: [{ code: "iot:link:query", name: "查询边缘节点", action: "query" }],
 });
 
 // SL651 协议配置

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/agent/AgentBridgeManager.hpp"
+#include "common/edgenode/AgentBridgeManager.hpp"
 #include "common/network/WebSocketManager.hpp"
 #include "common/utils/JwtUtils.hpp"
 #include "common/cache/AuthCache.hpp"

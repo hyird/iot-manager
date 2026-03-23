@@ -1,5 +1,5 @@
 /**
- * Agent Service
+ * EdgeNode Service
  */
 
 export * as agentApi from "./api";

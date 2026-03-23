@@ -1,5 +1,5 @@
 /**
- * Agent Query Hooks
+ * EdgeNode Query Hooks
  */
 
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";

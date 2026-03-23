@@ -7,7 +7,21 @@ import {
   HistoryOutlined,
   SyncOutlined,
 } from "@ant-design/icons";
-import { Button, Empty, Flex, Form, Input, InputNumber, Modal, Popconfirm, Result, Select, Space, Tag, Tooltip } from "antd";
+import {
+  Button,
+  Empty,
+  Flex,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Popconfirm,
+  Result,
+  Select,
+  Space,
+  Tag,
+  Tooltip,
+} from "antd";
 import { lazy, Suspense, useMemo, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission } from "@/hooks";
@@ -25,7 +39,7 @@ import {
 } from "@/services";
 import type { Agent } from "@/types";
 
-const AgentTerminal = lazy(() => import("@/components/AgentTerminal"));
+const EdgeNodeTerminal = lazy(() => import("@/components/EdgeNodeTerminal"));
 const { Search } = Input;
 
 const configStatusConfig: Record<string, { label: string; color: string }> = {
@@ -133,7 +147,11 @@ function NetworkInterfaceList({
       <div key={`${agent.id}-${item.name}`}>
         <div className="group flex items-center justify-between rounded-lg border border-slate-100 px-3 py-1.5 text-sm">
           <span className="flex items-center gap-1.5 text-slate-700">
-            {isBridge && <Tag className="m-0" color="purple" variant="filled">Bridge</Tag>}
+            {isBridge && (
+              <Tag className="m-0" color="purple" variant="filled">
+                Bridge
+              </Tag>
+            )}
             {item.display_name || item.name}
           </span>
           <span className="flex items-center gap-2">
@@ -142,9 +160,7 @@ function NetworkInterfaceList({
                 {method.text}
               </Tag>
             )}
-            <span className="font-mono text-xs text-slate-500">
-              {formatInterfaceAddress(item)}
-            </span>
+            <span className="font-mono text-xs text-slate-500">{formatInterfaceAddress(item)}</span>
             <Tag className="m-0" color={item.up ? "success" : "default"}>
               {item.up ? "UP" : "DOWN"}
             </Tag>
@@ -177,10 +193,10 @@ function NetworkInterfaceList({
     <div className="mt-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">网络接口</span>
-          {networkBackend && (
-            <span className="text-[10px] text-slate-400">{networkBackend}</span>
-          )}
+          <span className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
+            网络接口
+          </span>
+          {networkBackend && <span className="text-[10px] text-slate-400">{networkBackend}</span>}
         </div>
         {canEdit && agent.is_online && (
           <Button type="link" size="small" className="px-0 text-xs" onClick={onCreateBridge}>
@@ -270,12 +286,20 @@ function AgentCard({
       </div>
 
       {/* Network interfaces */}
-      <NetworkInterfaceList agent={agent} interfaces={interfaces} canEdit={canEdit} onEditInterface={onEditInterface} onCreateBridge={onCreateBridge} />
+      <NetworkInterfaceList
+        agent={agent}
+        interfaces={interfaces}
+        canEdit={canEdit}
+        onEditInterface={onEditInterface}
+        onCreateBridge={onCreateBridge}
+      />
 
       {/* Endpoints management */}
       <div className="mt-4">
         <div className="flex items-center justify-between">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">接入端点</div>
+          <div className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
+            接入端点
+          </div>
           {canEdit && (
             <Button type="link" size="small" className="px-0 text-xs" onClick={onAddEndpoint}>
               + 新增
@@ -300,16 +324,31 @@ function AgentCard({
                   <span className="text-xs text-slate-400">{ep.device_count || 0} 设备</span>
                   {canEdit && (
                     <span className="hidden gap-1 group-hover:flex">
-                      <Button type="link" size="small" className="px-0 text-xs" onClick={() => onEditEndpoint(ep)}>
+                      <Button
+                        type="link"
+                        size="small"
+                        className="px-0 text-xs"
+                        onClick={() => onEditEndpoint(ep)}
+                      >
                         编辑
                       </Button>
                       <Popconfirm
                         title="确认删除端点？"
-                        description={ep.device_count ? `该端点关联 ${ep.device_count} 台设备，请先解除关联` : undefined}
+                        description={
+                          ep.device_count
+                            ? `该端点关联 ${ep.device_count} 台设备，请先解除关联`
+                            : undefined
+                        }
                         onConfirm={() => onDeleteEndpoint(ep)}
                         disabled={(ep.device_count || 0) > 0}
                       >
-                        <Button type="link" size="small" danger className="px-0 text-xs" disabled={(ep.device_count || 0) > 0}>
+                        <Button
+                          type="link"
+                          size="small"
+                          danger
+                          className="px-0 text-xs"
+                          disabled={(ep.device_count || 0) > 0}
+                        >
                           删除
                         </Button>
                       </Popconfirm>
@@ -335,9 +374,7 @@ function AgentCard({
             </Tag>
           </Tooltip>
         )}
-        {expectedEndpoints.length > 0 && (
-          <span>端点: {expectedEndpoints.length}</span>
-        )}
+        {expectedEndpoints.length > 0 && <span>端点: {expectedEndpoints.length}</span>}
       </div>
 
       {/* Recent events preview */}
@@ -349,9 +386,7 @@ function AgentCard({
               查看全部
             </Button>
           </div>
-          <div className="mt-1 truncate text-xs text-slate-600">
-            {recentEvents[0].message}
-          </div>
+          <div className="mt-1 truncate text-xs text-slate-600">{recentEvents[0].message}</div>
         </div>
       )}
 
@@ -479,7 +514,12 @@ function EndpointFormModal({
       });
     } else {
       form.resetFields();
-      form.setFieldsValue({ transport: "ethernet", protocol: "SL651", mode: "TCP Server", ip: "0.0.0.0" });
+      form.setFieldsValue({
+        transport: "ethernet",
+        protocol: "SL651",
+        mode: "TCP Server",
+        ip: "0.0.0.0",
+      });
     }
   };
 
@@ -503,7 +543,11 @@ function EndpointFormModal({
       destroyOnHidden
     >
       <Form form={form} layout="vertical" className="mt-4">
-        <Form.Item name="name" label="端点名称" rules={[{ required: true, message: "请输入端点名称" }]}>
+        <Form.Item
+          name="name"
+          label="端点名称"
+          rules={[{ required: true, message: "请输入端点名称" }]}
+        >
           <Input placeholder="例如: SL651 TCP Server :6001" />
         </Form.Item>
         <Form.Item name="transport" label="传输方式" rules={[{ required: true }]}>
@@ -525,7 +569,10 @@ function EndpointFormModal({
               <Select options={modeOptions} />
             </Form.Item>
             <Form.Item name="ip" label="IP 地址" rules={[{ required: true, message: "请输入 IP" }]}>
-              <Input placeholder={isServerMode ? "0.0.0.0" : "192.168.1.100"} disabled={isServerMode} />
+              <Input
+                placeholder={isServerMode ? "0.0.0.0" : "192.168.1.100"}
+                disabled={isServerMode}
+              />
             </Form.Item>
             <Form.Item name="port" label="端口" rules={[{ required: true, message: "请输入端口" }]}>
               <InputNumber min={1} max={65535} className="w-full" placeholder="6001" />
@@ -534,7 +581,11 @@ function EndpointFormModal({
         )}
         {transport === "serial" && (
           <>
-            <Form.Item name="channel" label="串口通道" rules={[{ required: true, message: "请输入串口通道" }]}>
+            <Form.Item
+              name="channel"
+              label="串口通道"
+              rules={[{ required: true, message: "请输入串口通道" }]}
+            >
               <Input placeholder="/dev/ttyS0" />
             </Form.Item>
             <Form.Item name="baud_rate" label="波特率">
@@ -636,11 +687,13 @@ function NetworkConfigModal({
       mode: v.mode,
       ...(isBridge ? { type: "bridge" as const } : {}),
       ...(isBridge && v.bridge_ports?.length ? { bridge_ports: v.bridge_ports } : {}),
-      ...(v.mode === "static" ? {
-        ip: v.ip,
-        prefix_length: v.prefix_length ?? 24,
-        ...(v.gateway ? { gateway: v.gateway } : {}),
-      } : {}),
+      ...(v.mode === "static"
+        ? {
+            ip: v.ip,
+            prefix_length: v.prefix_length ?? 24,
+            ...(v.gateway ? { gateway: v.gateway } : {}),
+          }
+        : {}),
     };
     onSubmit([item]);
   };
@@ -664,11 +717,17 @@ function NetworkConfigModal({
         <Form form={form} layout="vertical" className="mt-4">
           <div className="mb-3 flex items-center gap-2">
             <span className="font-medium text-slate-700">{iface.display_name || iface.name}</span>
-            {isBridge && <Tag className="m-0" color="purple">Bridge</Tag>}
+            {isBridge && (
+              <Tag className="m-0" color="purple">
+                Bridge
+              </Tag>
+            )}
             <Tag className="m-0" color={iface.up ? "success" : "default"}>
               {iface.up ? "UP" : "DOWN"}
             </Tag>
-            <span className="font-mono text-xs text-slate-400">{formatInterfaceAddress(iface)}</span>
+            <span className="font-mono text-xs text-slate-400">
+              {formatInterfaceAddress(iface)}
+            </span>
           </div>
           {networkBackend && (
             <div className="mb-3 text-xs text-slate-400">
@@ -730,7 +789,7 @@ function CreateBridgeModal({
       allInterfaces
         .filter((i) => i.up && !i.bridge_ports)
         .map((i) => ({ label: i.display_name || i.name, value: i.name })),
-    [allInterfaces],
+    [allInterfaces]
   );
 
   const handleOpen = () => {
@@ -745,11 +804,13 @@ function CreateBridgeModal({
       mode: v.mode,
       type: "bridge",
       bridge_ports: v.bridge_ports || [],
-      ...(v.mode === "static" ? {
-        ip: v.ip,
-        prefix_length: v.prefix_length ?? 24,
-        ...(v.gateway ? { gateway: v.gateway } : {}),
-      } : {}),
+      ...(v.mode === "static"
+        ? {
+            ip: v.ip,
+            prefix_length: v.prefix_length ?? 24,
+            ...(v.gateway ? { gateway: v.gateway } : {}),
+          }
+        : {}),
     };
     onSubmit([item]);
   };
@@ -848,7 +909,7 @@ function AgentFormModal({
 
   return (
     <Modal
-      title={isEdit ? "编辑 Agent" : "新增 Agent 节点"}
+      title={isEdit ? "编辑边缘节点" : "新增边缘节点"}
       open={open}
       onCancel={onClose}
       onOk={handleSubmit}
@@ -865,11 +926,7 @@ function AgentFormModal({
         >
           <Input placeholder="例如: agent-arm-001" disabled={isEdit} />
         </Form.Item>
-        <Form.Item
-          name="name"
-          label="名称"
-          rules={[{ required: true, message: "请输入名称" }]}
-        >
+        <Form.Item name="name" label="名称" rules={[{ required: true, message: "请输入名称" }]}>
           <Input placeholder="例如: ARM采集节点001" />
         </Form.Item>
       </Form>
@@ -877,11 +934,9 @@ function AgentFormModal({
   );
 }
 
-export default function AgentPage() {
+export default function EdgeNodePage() {
   const [keyword, setKeyword] = useState("");
-  const [issueFilter, setIssueFilter] = useState<
-    "all" | "attention" | "failed" | "offline"
-  >("all");
+  const [issueFilter, setIssueFilter] = useState<"all" | "attention" | "failed" | "offline">("all");
   const [formOpen, setFormOpen] = useState(false);
   const [editAgent, setEditAgent] = useState<Agent.Item | null>(null);
   const [eventViewerAgent, setEventViewerAgent] = useState<Agent.Item | null>(null);
@@ -908,10 +963,7 @@ export default function AgentPage() {
     enabled: canQuery,
     refetchInterval: 5000,
   });
-  const {
-    data: eventViewerEvents = [],
-    isLoading: loadingEventViewer,
-  } = useAgentEvents(
+  const { data: eventViewerEvents = [], isLoading: loadingEventViewer } = useAgentEvents(
     eventViewerAgent?.id,
     { hours: 24, limit: 200 },
     { enabled: !!eventViewerAgent }
@@ -928,7 +980,7 @@ export default function AgentPage() {
   if (!canQuery) {
     return (
       <PageContainer>
-        <Result status="403" title="无权限" subTitle="您没有查询采集 Agent 的权限，请联系管理员" />
+        <Result status="403" title="无权限" subTitle="您没有查询边缘节点的权限，请联系管理员" />
       </PageContainer>
     );
   }
@@ -951,9 +1003,7 @@ export default function AgentPage() {
     switch (issueFilter) {
       case "attention":
         return (
-          !agent.is_online ||
-          agent.config_status === "failed" ||
-          agent.config_status === "pending"
+          !agent.is_online || agent.config_status === "failed" || agent.config_status === "pending"
         );
       case "failed":
         return agent.config_status === "failed";
@@ -983,24 +1033,33 @@ export default function AgentPage() {
   };
 
   const handleUpdate = (id: number, data: Agent.UpdateInput) => {
-    updateMutation.mutate({ id, data }, {
-      onSuccess: () => {
-        setFormOpen(false);
-        setEditAgent(null);
-      },
-    });
+    updateMutation.mutate(
+      { id, data },
+      {
+        onSuccess: () => {
+          setFormOpen(false);
+          setEditAgent(null);
+        },
+      }
+    );
   };
 
   const handleEndpointSubmit = (values: Agent.EndpointCreate) => {
     const { agentId, editEndpoint } = endpointModal;
     if (editEndpoint) {
-      endpointUpdateMutation.mutate({ id: editEndpoint.id, data: values }, {
-        onSuccess: () => setEndpointModal({ open: false, agentId: 0, editEndpoint: null }),
-      });
+      endpointUpdateMutation.mutate(
+        { id: editEndpoint.id, data: values },
+        {
+          onSuccess: () => setEndpointModal({ open: false, agentId: 0, editEndpoint: null }),
+        }
+      );
     } else {
-      endpointCreateMutation.mutate({ agentId, data: values }, {
-        onSuccess: () => setEndpointModal({ open: false, agentId: 0, editEndpoint: null }),
-      });
+      endpointCreateMutation.mutate(
+        { agentId, data: values },
+        {
+          onSuccess: () => setEndpointModal({ open: false, agentId: 0, editEndpoint: null }),
+        }
+      );
     }
   };
 
@@ -1009,9 +1068,9 @@ export default function AgentPage() {
       header={
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 className="m-0 text-base font-medium">采集 Agent</h3>
+            <h3 className="m-0 text-base font-medium">边缘节点</h3>
             <div className="mt-1 text-sm text-slate-500">
-              管理 Agent 节点，查看在线状态、网口能力和配置同步
+              管理边缘节点，查看在线状态、网口能力和配置同步
             </div>
           </div>
           <Space wrap>
@@ -1044,7 +1103,7 @@ export default function AgentPage() {
                   setFormOpen(true);
                 }}
               >
-                + 新增 Agent
+                + 新增边缘节点
               </Button>
             )}
           </Space>
@@ -1053,7 +1112,7 @@ export default function AgentPage() {
     >
       {/* Summary cards */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
-        <SummaryCard title="Agent 总数" value={summary.total} tone="neutral" />
+        <SummaryCard title="边缘节点总数" value={summary.total} tone="neutral" />
         <SummaryCard title="在线节点" value={summary.online} tone="success" />
         <SummaryCard title="托管设备" value={summary.managedDevices} tone="neutral" />
         <SummaryCard title="待应用配置" value={summary.pending} tone="warning" />
@@ -1068,7 +1127,7 @@ export default function AgentPage() {
         <div className="mt-6">
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={keyword ? "没有匹配的采集 Agent" : "暂无采集 Agent"}
+            description={keyword ? "没有匹配的边缘节点" : "暂无边缘节点"}
           />
         </div>
       ) : (
@@ -1087,8 +1146,12 @@ export default function AgentPage() {
               onEditInterface={(iface) => setNetworkConfigTarget({ agent, iface })}
               onCreateBridge={() => setCreateBridgeAgent(agent)}
               onViewEvents={() => setEventViewerAgent(agent)}
-              onAddEndpoint={() => setEndpointModal({ open: true, agentId: agent.id, editEndpoint: null })}
-              onEditEndpoint={(ep) => setEndpointModal({ open: true, agentId: agent.id, editEndpoint: ep })}
+              onAddEndpoint={() =>
+                setEndpointModal({ open: true, agentId: agent.id, editEndpoint: null })
+              }
+              onEditEndpoint={(ep) =>
+                setEndpointModal({ open: true, agentId: agent.id, editEndpoint: ep })
+              }
               onDeleteEndpoint={(ep) => endpointDeleteMutation.mutate(ep.id)}
               onOpenTerminal={() => setTerminalAgent(agent)}
               resyncLoading={resyncMutation.isPending && resyncMutation.variables === agent.id}
@@ -1123,8 +1186,7 @@ export default function AgentPage() {
         <div className="space-y-3">
           {eventViewerEvents.length > 0 ? (
             eventViewerEvents.map((event, index) => {
-              const eventLevel =
-                eventLevelConfig[event.level || "info"] || eventLevelConfig.info;
+              const eventLevel = eventLevelConfig[event.level || "info"] || eventLevelConfig.info;
               return (
                 <div
                   key={`${eventViewerAgent?.id || 0}-${event.ts}-${event.type}-${index}`}
@@ -1173,9 +1235,12 @@ export default function AgentPage() {
         onClose={() => setNetworkConfigTarget(null)}
         onSubmit={(data) => {
           if (networkConfigTarget) {
-            networkConfigMutation.mutate({ id: networkConfigTarget.agent.id, data }, {
-              onSuccess: () => setNetworkConfigTarget(null),
-            });
+            networkConfigMutation.mutate(
+              { id: networkConfigTarget.agent.id, data },
+              {
+                onSuccess: () => setNetworkConfigTarget(null),
+              }
+            );
           }
         }}
         loading={networkConfigMutation.isPending}
@@ -1188,9 +1253,12 @@ export default function AgentPage() {
         onClose={() => setCreateBridgeAgent(null)}
         onSubmit={(data) => {
           if (createBridgeAgent) {
-            networkConfigMutation.mutate({ id: createBridgeAgent.id, data }, {
-              onSuccess: () => setCreateBridgeAgent(null),
-            });
+            networkConfigMutation.mutate(
+              { id: createBridgeAgent.id, data },
+              {
+                onSuccess: () => setCreateBridgeAgent(null),
+              }
+            );
           }
         }}
         loading={networkConfigMutation.isPending}
@@ -1219,21 +1287,25 @@ export default function AgentPage() {
           </div>
         }
         open={!!terminalAgent}
-        onCancel={() => { setTerminalAgent(null); setTerminalFullscreen(false); }}
+        onCancel={() => {
+          setTerminalAgent(null);
+          setTerminalFullscreen(false);
+        }}
         footer={null}
         width={terminalFullscreen ? "100vw" : 960}
         destroyOnHidden
         styles={{
-          body: { padding: 0, background: "#1e1e2e", height: terminalFullscreen ? "calc(100vh - 55px)" : 520 },
+          body: {
+            padding: 0,
+            background: "#1e1e2e",
+            height: terminalFullscreen ? "calc(100vh - 55px)" : 520,
+          },
         }}
         style={terminalFullscreen ? { top: 0, maxWidth: "100vw", paddingBottom: 0 } : undefined}
       >
         {terminalAgent && (
           <Suspense fallback={null}>
-            <AgentTerminal
-              agentId={terminalAgent.id}
-              visible={!!terminalAgent}
-            />
+            <EdgeNodeTerminal agentId={terminalAgent.id} visible={!!terminalAgent} />
           </Suspense>
         )}
       </Modal>

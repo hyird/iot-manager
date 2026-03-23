@@ -1,5 +1,5 @@
 /**
- * 采集 Agent API
+ * 边缘节点 API
  */
 
 import type { Agent } from "@/types";

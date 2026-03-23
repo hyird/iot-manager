@@ -2,8 +2,6 @@
  * 类型定义统一导出
  */
 
-// Agent 模块类型
-export * from "./agent";
 // 告警管理模块类型
 export * from "./alert";
 // 通用类型
@@ -14,6 +12,8 @@ export * from "./constants";
 export * from "./device";
 // 设备分组模块类型
 export * from "./deviceGroup";
+// EdgeNode 模块类型
+export * from "./edgenode";
 // 链路管理模块类型
 export * from "./link";
 // 开放接入模块类型

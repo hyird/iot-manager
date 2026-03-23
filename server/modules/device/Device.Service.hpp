@@ -13,7 +13,7 @@
 #include "common/utils/AppException.hpp"
 #include "common/utils/SqlHelper.hpp"
 #include "common/utils/JsonHelper.hpp"
-#include "common/agent/AgentBridgeManager.hpp"
+#include "common/edgenode/AgentBridgeManager.hpp"
 
 // 类型别名，简化代码
 using ElementData = DeviceDataTransformer::ElementData;

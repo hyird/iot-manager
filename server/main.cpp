@@ -9,7 +9,7 @@
 #include "common/cache/ResourceVersion.hpp"
 #include "common/cache/DeviceCache.hpp"
 #include "common/cache/RealtimeDataCache.hpp"
-#include "common/agent/AgentBridgeManager.hpp"
+#include "common/edgenode/AgentBridgeManager.hpp"
 
 // Filters
 #include "common/filters/AuthFilter.hpp"
@@ -35,7 +35,7 @@
 #include "modules/link/Link.Controller.hpp"
 #include "modules/link/Link.Service.hpp"
 #include "modules/link/domain/LinkEventHandlers.hpp"
-#include "modules/agent/Agent.Controller.hpp"
+#include "modules/edgenode/EdgeNodeController.hpp"
 
 // Network
 #include "common/network/TcpLinkManager.hpp"
@@ -54,7 +54,7 @@
 #include "modules/alert/AlertEngine.hpp"
 
 // WebSocket Module
-#include "modules/websocket/AgentWebSocket.Controller.hpp"
+#include "modules/websocket/EdgeNodeWebSocket.Controller.hpp"
 #include "modules/websocket/WebSocket.Controller.hpp"
 #include "modules/websocket/WsEventHandlers.hpp"
 
@@ -331,7 +331,7 @@ int main() {
     // 4. 应用配置
     LoggerManager::setLogLevel(ConfigManager::getLogLevel());
 
-    // 初始化 Agent 共享密钥（从配置文件读取，禁止硬编码）
+    // 初始化 EdgeNode 共享密钥（从配置文件读取，禁止硬编码）
     {
         auto config = app().getCustomConfig();
         std::string agentSecret = config.get("agent", Json::objectValue).get("shared_secret", "").asString();

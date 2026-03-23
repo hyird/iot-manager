@@ -1,5 +1,5 @@
 /**
- * 采集 Agent 类型定义
+ * 边缘节点类型定义
  */
 
 export interface AgentInterface {

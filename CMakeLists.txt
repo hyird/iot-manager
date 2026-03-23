@@ -107,8 +107,8 @@ set_source_files_properties(${HEADERS} PROPERTIES HEADER_FILE_ONLY TRUE)
 # 链接 Drogon + mimalloc
 target_link_libraries(${PROJECT_NAME} PRIVATE Drogon::Drogon mimalloc-static)
 
-# Agent 子项目
-add_subdirectory(agent)
+# EdgeNode 子项目
+add_subdirectory(edgenode)
 
 # L2 配置工具（Windows 专用，需要 Npcap SDK，默认关闭）
 option(BUILD_L2CONFIG "Build L2 config tool (requires Npcap SDK)" OFF)

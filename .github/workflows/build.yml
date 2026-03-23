@@ -101,7 +101,7 @@ jobs:
 
   agent-armv7l:
     runs-on: ubuntu-latest
-    name: agent - armv7l Release
+    name: edgenode - armv7l Release
 
     env:
       VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
@@ -162,22 +162,22 @@ jobs:
           key: vcpkg-installed-arm-linux-${{ hashFiles('vcpkg.json') }}
 
       - name: Build agent
-        run: cmake --build build --config Release --target iot-agent --parallel
+        run: cmake --build build --config Release --target iot-edgenode --parallel
 
       - name: Strip binary
-        run: arm-linux-musleabihf-strip --strip-all build/release/iot-agent
+        run: arm-linux-musleabihf-strip --strip-all build/release/iot-edgenode
 
       - name: Compress with UPX
         uses: crazy-max/ghaction-upx@v3
         with:
           version: latest
-          files: build/release/iot-agent
+          files: build/release/iot-edgenode
           args: --best --lzma
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: iot-agent-armv7l-Release
+          name: iot-edgenode-armv7l-Release
           path: build/release/
 
   l2config-windows:
