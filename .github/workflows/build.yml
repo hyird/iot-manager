@@ -21,6 +21,8 @@ jobs:
     env:
       VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      CC: clang-18
+      CXX: clang++-18
 
     steps:
       - name: Configure git default branch
@@ -73,8 +75,6 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
-          -DCMAKE_C_COMPILER=clang-18
-          -DCMAKE_CXX_COMPILER=clang++-18
           -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
 
       # 保存 vcpkg 缓存（Configure 后、Build 前，仅在缓存未命中时保存）
