@@ -49,14 +49,14 @@ public:
         // 异步验证 token（需要查询 Redis 黑名单）
         drogon::async_run([this, token, conn]() mutable -> Task<void> {
             try {
-                bool isBlacklisted = co_await authCache_.isTokenBlacklisted(token);
+                bool isBlacklisted = co_await this->authCache_.isTokenBlacklisted(token);
                 if (isBlacklisted) {
                     conn->send(buildError("auth_failed", "令牌已失效"));
                     conn->shutdown(drogon::CloseCode::kViolation, "Token blacklisted");
                     co_return;
                 }
 
-                Json::Value payload = jwtUtils_->verify(token);
+                Json::Value payload = this->jwtUtils_->verify(token);
                 int userId = payload["userId"].asInt();
                 std::string username = payload["username"].asString();
 

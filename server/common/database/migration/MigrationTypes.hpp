@@ -56,7 +56,7 @@ public:
     virtual Task<> down(const TransactionPtr& txn) = 0;
 
     /// 正向迁移（非事务模式，直接使用 DbClient）
-    virtual Task<> upNoTxn(const DbClientPtr& db) {
+    virtual Task<> upNoTxn([[maybe_unused]] const DbClientPtr& db) {
         // 默认抛出异常，非事务迁移必须覆盖此方法
         throw std::runtime_error(
             "Migration V" + std::to_string(info().version) +
@@ -65,7 +65,7 @@ public:
     }
 
     /// 回滚迁移（非事务模式）
-    virtual Task<> downNoTxn(const DbClientPtr& db) {
+    virtual Task<> downNoTxn([[maybe_unused]] const DbClientPtr& db) {
         throw std::runtime_error(
             "Migration V" + std::to_string(info().version) +
             " non-transactional rollback not supported");

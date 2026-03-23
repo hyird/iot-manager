@@ -20,6 +20,7 @@ jobs:
 
     env:
       VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - uses: actions/checkout@v4
@@ -107,6 +108,7 @@ jobs:
       VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
       MUSL_TOOLCHAIN_URL: https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/x86_64-arm-linux-musleabihf.tar.xz
       MUSL_TOOLCHAIN_DIR: ${{ github.workspace }}/arm-linux-musleabihf-cross
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - uses: actions/checkout@v4
@@ -186,6 +188,7 @@ jobs:
 
     env:
       VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - uses: actions/checkout@v4
@@ -237,6 +240,8 @@ jobs:
     needs: [build, agent-armv7l, l2config-windows]
     if: always()
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     permissions:
       actions: write
     steps:
