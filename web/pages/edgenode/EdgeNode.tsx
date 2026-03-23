@@ -460,7 +460,7 @@ function EndpointFormModal({
   const protocol = Form.useWatch("protocol", form) as string | undefined;
   const mode = Form.useWatch("mode", form) as string | undefined;
 
-  // 协议选项：串口只有 Modbus，以太网有 SL651 和 Modbus
+  // 协议选项：串口只有 Modbus，以太网有 SL651、Modbus 和 S7
   const protocolOptions = useMemo(() => {
     if (transport === "serial") {
       return [{ label: "Modbus", value: "Modbus" }];
@@ -468,6 +468,7 @@ function EndpointFormModal({
     return [
       { label: "SL651", value: "SL651" },
       { label: "Modbus", value: "Modbus" },
+      { label: "S7", value: "S7" },
     ];
   }, [transport]);
 
