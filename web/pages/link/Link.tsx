@@ -18,13 +18,7 @@ import { PageContainer } from "@/components/PageContainer";
 import { StatusTag } from "@/components/StatusTag";
 import { useDebounceFn, usePermission } from "@/hooks";
 import { useWsStatus } from "@/providers";
-import {
-  useLinkDelete,
-  useLinkEnums,
-  useLinkList,
-  useLinkSave,
-  usePublicIp,
-} from "@/services";
+import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave, usePublicIp } from "@/services";
 import type { Link } from "@/types";
 
 /** 连接状态配置 */
@@ -95,6 +89,9 @@ const LinkPage = () => {
   const handleModeChange = (mode: Link.Mode) => {
     if (mode === "TCP Server") {
       form.setFieldValue("ip", "0.0.0.0");
+      if (form.getFieldValue("protocol") === "S7") {
+        form.setFieldValue("protocol", "SL651");
+      }
     } else {
       const currentIp = form.getFieldValue("ip");
       if (currentIp === "0.0.0.0") {
@@ -239,6 +236,11 @@ const LinkPage = () => {
     },
   ];
 
+  const protocolOptions = (mode: Link.Mode | undefined) => {
+    const protocols = linkEnums?.protocols || ["SL651", "Modbus", "Modbus TCP", "Modbus RTU", "S7"];
+    return mode === "TCP Server" ? protocols.filter((protocol) => protocol !== "S7") : protocols;
+  };
+
   return (
     <PageContainer
       header={
@@ -291,7 +293,9 @@ const LinkPage = () => {
         }}
         onOk={() => form.submit()}
         confirmLoading={saveMutation.isPending}
-        afterOpenChange={(open) => { if (!open) form.resetFields(); }}
+        afterOpenChange={(open) => {
+          if (!open) form.resetFields();
+        }}
         destroyOnHidden
         width={480}
       >
@@ -329,10 +333,20 @@ const LinkPage = () => {
             rules={[{ required: true, message: "请选择协议" }]}
             extra={editing ? "链路创建后协议不可修改" : undefined}
           >
-            <Select disabled={!!editing}>
-              <Select.Option value="SL651">SL651</Select.Option>
-              <Select.Option value="Modbus">Modbus</Select.Option>
-            </Select>
+            <Form.Item noStyle dependencies={["mode"]}>
+              {({ getFieldValue }) => {
+                const mode = getFieldValue("mode") as Link.Mode | undefined;
+                return (
+                  <Select disabled={!!editing}>
+                    {protocolOptions(mode).map((protocol) => (
+                      <Select.Option key={protocol} value={protocol}>
+                        {protocol}
+                      </Select.Option>
+                    ))}
+                  </Select>
+                );
+              }}
+            </Form.Item>
           </Form.Item>
 
           <Form.Item noStyle dependencies={["mode"]}>

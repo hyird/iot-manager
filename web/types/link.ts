@@ -14,7 +14,7 @@ export type LinkStatus = "enabled" | "disabled";
 export type LinkMode = "TCP Server" | "TCP Client";
 
 /** 链路协议类型 */
-export type LinkProtocol = "SL651" | "Modbus" | "Modbus TCP" | "Modbus RTU";
+export type LinkProtocol = "SL651" | "Modbus" | "Modbus TCP" | "Modbus RTU" | "S7";
 
 /** 连接状态 */
 export type ConnStatus = "stopped" | "listening" | "connected" | "connecting" | "error";

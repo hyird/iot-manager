@@ -19,7 +19,8 @@ namespace {
     // 允许的链路协议类型列表（TCP/RTU 帧模式在设备层配置，链路层只区分协议大类）
     const std::vector<std::string> ALLOWED_LINK_PROTOCOLS = {
         Constants::PROTOCOL_SL651,
-        Constants::PROTOCOL_MODBUS
+        Constants::PROTOCOL_MODBUS,
+        Constants::PROTOCOL_S7
     };
 }
 
@@ -95,7 +96,11 @@ public:
         ValidatorHelper::requireInList(*json, "mode", ALLOWED_LINK_MODES,
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
         ValidatorHelper::requireInList(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
-            "协议", "SL651 或 Modbus").throwIfInvalid();
+            "协议", "SL651、Modbus 或 S7").throwIfInvalid();
+        if (json->get("protocol", "").asString() == Constants::PROTOCOL_S7 &&
+            json->get("mode", "").asString() != Constants::LINK_MODE_TCP_CLIENT) {
+            co_return Response::badRequest("S7 协议仅支持 TCP Client 模式");
+        }
         if (json->isMember("agent_id") && !(*json)["agent_id"].isNull() && (*json)["agent_id"].asInt() < 0) {
             co_return Response::badRequest("采集Agent参数错误");
         }
@@ -117,7 +122,11 @@ public:
         ValidatorHelper::requireInListIfPresent(*json, "mode", ALLOWED_LINK_MODES,
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
         ValidatorHelper::requireInListIfPresent(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
-            "协议", "SL651 或 Modbus").throwIfInvalid();
+            "协议", "SL651、Modbus 或 S7").throwIfInvalid();
+        if (json->isMember("protocol") && json->get("protocol", "").asString() == Constants::PROTOCOL_S7 &&
+            json->get("mode", "").asString() != Constants::LINK_MODE_TCP_CLIENT) {
+            co_return Response::badRequest("S7 协议仅支持 TCP Client 模式");
+        }
         if (json->isMember("agent_id") && !(*json)["agent_id"].isNull() && (*json)["agent_id"].asInt() < 0) {
             co_return Response::badRequest("采集Agent参数错误");
         }
