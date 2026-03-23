@@ -15,7 +15,8 @@ namespace {
         Constants::PROTOCOL_SL651,
         Constants::PROTOCOL_MODBUS,
         Constants::PROTOCOL_MODBUS_TCP,
-        Constants::PROTOCOL_MODBUS_RTU
+        Constants::PROTOCOL_MODBUS_RTU,
+        Constants::PROTOCOL_S7
     };
 }
 
@@ -116,6 +117,51 @@ private:
                     }
                 }
             }
+        } else if (protocol == Constants::PROTOCOL_S7) {
+            if (!config.isMember("connection") || !config["connection"].isObject()) {
+                throw ValidationException("S7 配置的 connection 必须是对象");
+            }
+            const auto& connection = config["connection"];
+            if (connection.get("host", "").asString().empty()) {
+                throw ValidationException("S7 配置的 connection.host 不能为空");
+            }
+            int rack = connection.get("rack", 0).asInt();
+            if (rack < 0 || rack > 7) {
+                throw ValidationException("S7 配置的 connection.rack 必须在 0-7 之间");
+            }
+            int slot = connection.get("slot", 1).asInt();
+            if (slot < 0 || slot > 31) {
+                throw ValidationException("S7 配置的 connection.slot 必须在 0-31 之间");
+            }
+
+            if (config.isMember("areas")) {
+                if (!config["areas"].isArray()) {
+                    throw ValidationException("S7 配置的 areas 必须是数组");
+                }
+                for (const auto& area : config["areas"]) {
+                    if (!area.isObject()) continue;
+                    if (area.get("id", "").asString().empty()) {
+                        throw ValidationException("S7 配置的区域 id 不能为空");
+                    }
+                    if (area.get("name", "").asString().empty()) {
+                        throw ValidationException("S7 配置的区域名称不能为空");
+                    }
+                    std::string areaType = area.get("area", "").asString();
+                    if (areaType != "DB" && areaType != "MK" && areaType != "PE" &&
+                        areaType != "PA" && areaType != "CT" && areaType != "TM") {
+                        throw ValidationException("S7 区域 area 仅支持 DB、MK、PE、PA、CT、TM");
+                    }
+                    if (areaType == "DB" && area.get("dbNumber", 0).asInt() < 0) {
+                        throw ValidationException("S7 DB 区域的 dbNumber 不能小于 0");
+                    }
+                    if (area.get("size", 0).asInt() < 1) {
+                        throw ValidationException("S7 区域的 size 必须 >= 1");
+                    }
+                    if (area.get("start", 0).asInt() < 0) {
+                        throw ValidationException("S7 区域的 start 不能小于 0");
+                    }
+                }
+            }
         }
     }
 
@@ -178,7 +224,7 @@ public:
         ValidatorHelper::requireNonEmptyString(*json, "protocol", "协议类型").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "name", "配置名称").throwIfInvalid();
         ValidatorHelper::requireInList(*json, "protocol", ALLOWED_CONFIG_PROTOCOLS,
-            "协议类型", "SL651、MODBUS、Modbus TCP 或 Modbus RTU").throwIfInvalid();
+            "协议类型", "SL651、MODBUS、Modbus TCP、Modbus RTU 或 S7").throwIfInvalid();
 
         // 校验 config 字段结构
         if (json->isMember("config") && (*json)["config"].isObject()) {
@@ -200,7 +246,7 @@ public:
         if (!json) co_return Response::badRequest("请求体格式错误");
 
         ValidatorHelper::requireInListIfPresent(*json, "protocol", ALLOWED_CONFIG_PROTOCOLS,
-            "协议类型", "SL651、MODBUS、Modbus TCP 或 Modbus RTU").throwIfInvalid();
+            "协议类型", "SL651、MODBUS、Modbus TCP、Modbus RTU 或 S7").throwIfInvalid();
 
         co_await service_.update(id, *json, [](const std::string& proto, const Json::Value& cfg) {
             validateConfig(proto, cfg);

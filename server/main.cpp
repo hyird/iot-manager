@@ -63,6 +63,7 @@
 #include "common/protocol/sl651/SL651.DeviceConfigProvider.hpp"
 #include "common/protocol/sl651/SL651.ProtocolAdapter.hpp"
 #include "common/protocol/modbus/Modbus.ProtocolAdapter.hpp"
+#include "common/protocol/s7/S7.ProtocolAdapter.hpp"
 
 using namespace drogon;
 
@@ -134,6 +135,13 @@ std::vector<std::string> getStageHints(const std::string& stage) {
             "device 和 protocol_config 表是否已正确创建",
         };
     }
+    if (stage == "protocol:s7-initialize") {
+        return {
+            "数据库连接是否稳定",
+            "device 和 protocol_config 表是否已正确创建",
+            "snap7 依赖是否正确链接",
+        };
+    }
     if (stage == "resource-version:load-and-reset") {
         return {
             "Redis 连接是否稳定",
@@ -178,6 +186,8 @@ void onServerStarted() {
             std::make_unique<sl651::SL651ProtocolAdapter>(runtimeCtx, sl651ConfigProvider));
         dispatcher.registerAdapter(
             std::make_unique<modbus::ModbusProtocolAdapter>(runtimeCtx));
+        dispatcher.registerAdapter(
+            std::make_unique<s7::S7ProtocolAdapter>(runtimeCtx));
     }
 
     // 启动后台维护任务（物化视图刷新等）
@@ -247,6 +257,10 @@ void onServerStarted() {
             LOG_INFO << "[Startup] " << stage;
             // 4. 初始化协议运行时（当前需预热 Modbus，依赖数据库表和 DeviceCache）
             co_await ProtocolDispatcher::instance().initializeProtocolAsync(Constants::PROTOCOL_MODBUS);
+
+            stage = "protocol:s7-initialize";
+            LOG_INFO << "[Startup] " << stage;
+            co_await ProtocolDispatcher::instance().initializeProtocolAsync(Constants::PROTOCOL_S7);
 
             stage = "resource-version:load-and-reset";
             LOG_INFO << "[Startup] " << stage;

@@ -88,6 +88,9 @@ inline constexpr const char* PROTOCOL_MODBUS_TCP = "Modbus TCP";
 /** Modbus RTU 协议（通过 TCP 转发）*/
 inline constexpr const char* PROTOCOL_MODBUS_RTU = "Modbus RTU";
 
+/** Siemens S7 协议 */
+inline constexpr const char* PROTOCOL_S7 = "S7";
+
 // ==================== 用户状态 ====================
 
 /** 用户状态 - 启用 */
