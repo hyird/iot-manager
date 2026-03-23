@@ -294,31 +294,29 @@ private:
             }
 
             try {
-                // 使用 PL/pgSQL format() + %I(标识符) / %L(字面量) 防止 SQL 注入
-                co_await db->execSqlCoro(R"(
-                    DO $do$
-                    BEGIN
-                        EXECUTE format(
-                            'CREATE MATERIALIZED VIEW IF NOT EXISTS %I AS
-                             SELECT DISTINCT ON (device_id, data->>''funcCode'')
-                                 device_id,
-                                 data->>''funcCode'' as func_code,
-                                 data,
-                                 report_time,
-                                 created_at
-                             FROM device_data
-                             WHERE protocol = %L
-                             ORDER BY device_id, data->>''funcCode'', report_time DESC NULLS LAST',
-                            $1, $2
-                        );
-                        EXECUTE format(
-                            'CREATE UNIQUE INDEX IF NOT EXISTS %I ON %I (device_id, func_code)',
-                            $3, $1
-                        );
-                    END $do$
-                )", "mv_device_data_latest_" + protocol,
-                   protocol,
-                   "idx_mv_" + protocol + "_device_func");
+                const std::string viewName = "mv_device_data_latest_" + protocol;
+                const std::string indexName = "idx_mv_" + protocol + "_device_func";
+
+                // 这里不能把参数交给 DO 块里的 format()，否则 libpq 会把它当成“无参数语句”并报错。
+                // 协议名已通过 isValidIdentifier 校验，只包含字母、数字和下划线。
+                std::ostringstream viewSql;
+                viewSql << "CREATE MATERIALIZED VIEW IF NOT EXISTS " << viewName << R"(
+AS
+SELECT DISTINCT ON (device_id, data->>'funcCode')
+    device_id,
+    data->>'funcCode' as func_code,
+    data,
+    report_time,
+    created_at
+FROM device_data
+WHERE protocol = ')" << protocol << R"('
+ORDER BY device_id, data->>'funcCode', report_time DESC NULLS LAST)";
+                co_await db->execSqlCoro(viewSql.str());
+
+                std::ostringstream indexSql;
+                indexSql << "CREATE UNIQUE INDEX IF NOT EXISTS " << indexName
+                         << " ON " << viewName << " (device_id, func_code)";
+                co_await db->execSqlCoro(indexSql.str());
 
                 LOG_INFO << "Materialized view created: mv_device_data_latest_" << protocol;
             } catch (const std::exception& e) {
