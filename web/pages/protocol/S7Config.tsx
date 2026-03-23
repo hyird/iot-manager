@@ -1,6 +1,6 @@
 /**
  * S7 协议配置页面
- * 布局：左侧配置列表 + 右侧连接/轮询区域编辑
+ * 布局：左侧设备类型列表 + 右侧寄存器配置
  */
 
 import { PlusOutlined } from "@ant-design/icons";
@@ -32,7 +32,19 @@ import type { Protocol, S7 } from "@/types";
 
 type DraftItem = Protocol.Item & { config: S7.Config };
 
+type ConnectionFormValues = {
+  deviceType: string;
+  plcModel: S7.PlcModel;
+  host: string;
+  rack: number;
+  slot: number;
+  connectionType: S7.ConnectionType;
+  pollInterval: number;
+};
+
 const defaultConfig = (): S7.Config => ({
+  deviceType: "",
+  plcModel: "S7-1200",
   connection: {
     host: "",
     rack: 0,
@@ -43,9 +55,21 @@ const defaultConfig = (): S7.Config => ({
   areas: [],
 });
 
+const plcModelOptions: { value: S7.PlcModel; label: string; rack: number; slot: number }[] = [
+  { value: "S7-300", label: "S7-300", rack: 0, slot: 2 },
+  { value: "S7-400", label: "S7-400", rack: 0, slot: 3 },
+  { value: "S7-1200", label: "S7-1200", rack: 0, slot: 1 },
+  { value: "S7-1500", label: "S7-1500", rack: 0, slot: 1 },
+];
+
+const getPlcPreset = (plcModel: S7.PlcModel) =>
+  plcModelOptions.find((option) => option.value === plcModel) ?? plcModelOptions[2];
+
 const cloneDraft = (item: Protocol.Item): DraftItem => ({
   ...item,
   config: {
+    deviceType: (item.config as S7.Config)?.deviceType ?? "",
+    plcModel: (item.config as S7.Config)?.plcModel ?? "S7-1200",
     connection: {
       host: (item.config as S7.Config)?.connection?.host ?? "",
       rack: (item.config as S7.Config)?.connection?.rack ?? 0,
@@ -90,7 +114,7 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
 
   return (
     <Modal
-      title={mode === "create" ? "新增区域" : "编辑区域"}
+      title={mode === "create" ? "新增寄存器" : "编辑寄存器"}
       open={open}
       onCancel={onCancel}
       onOk={handleOk}
@@ -112,20 +136,24 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
           }
         }
       >
-        <Form.Item name="id" label="区域 ID" rules={[{ required: true, message: "请输入区域 ID" }]}>
-          <Input placeholder="例如: db_temp" />
+        <Form.Item
+          name="id"
+          label="寄存器 ID"
+          rules={[{ required: true, message: "请输入寄存器 ID" }]}
+        >
+          <Input placeholder="例如: reg_temp" />
         </Form.Item>
         <Form.Item
           name="name"
-          label="区域名称"
-          rules={[{ required: true, message: "请输入区域名称" }]}
+          label="寄存器名称"
+          rules={[{ required: true, message: "请输入寄存器名称" }]}
         >
-          <Input placeholder="例如: 温度区" />
+          <Input placeholder="例如: 温度寄存器" />
         </Form.Item>
-        <Form.Item name="area" label="区域类型" rules={[{ required: true }]}>
+        <Form.Item name="area" label="寄存器类型" rules={[{ required: true }]}>
           <Select options={areaTypeOptions} />
         </Form.Item>
-        <Form.Item name="dbNumber" label="DB 号">
+        <Form.Item name="dbNumber" label="DB 编号">
           <InputNumber min={0} className="w-full" />
         </Form.Item>
         <Space size="middle" className="w-full">
@@ -167,7 +195,9 @@ const S7ConfigPage = () => {
   const [selectedTypeId, setSelectedTypeId] = useState<number>();
   const [draft, setDraft] = useState<DraftItem | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [createForm] = Form.useForm<{ name: string }>();
+  const [createForm] = Form.useForm<{ deviceType: string; plcModel: S7.PlcModel }>();
+  const [connectionForm] = Form.useForm<ConnectionFormValues>();
+  const watchedCreatePlcModel = Form.useWatch("plcModel", createForm) ?? "S7-1200";
 
   const [areaModalOpen, setAreaModalOpen] = useState(false);
   const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
@@ -191,20 +221,54 @@ const S7ConfigPage = () => {
     setDraft(cloneDraft(activeType));
   }, [activeType]);
 
+  useEffect(() => {
+    if (!draft) return;
+    connectionForm.setFieldsValue({
+      deviceType: draft.config.deviceType,
+      plcModel: draft.config.plcModel,
+      host: draft.config.connection.host,
+      rack: draft.config.connection.rack,
+      slot: draft.config.connection.slot,
+      connectionType: draft.config.connection.connectionType,
+      pollInterval: draft.config.pollInterval ?? 5,
+    });
+  }, [activeTypeId, connectionForm]);
+
+  useEffect(() => {
+    if (!draft) return;
+    const preset = getPlcPreset(draft.config.plcModel);
+    if (
+      draft.config.connection.rack !== preset.rack ||
+      draft.config.connection.slot !== preset.slot
+    ) {
+      updateDraft((current) => ({
+        ...current,
+        config: {
+          ...current.config,
+          connection: {
+            ...current.config.connection,
+            rack: preset.rack,
+            slot: preset.slot,
+          },
+        },
+      }));
+    }
+  }, [draft?.config.plcModel]);
+
   const updateDraft = (updater: (current: DraftItem) => DraftItem) => {
     setDraft((current) => (current ? updater(current) : current));
   };
 
   const areaColumns: ColumnsType<S7.Area> = [
-    { title: "区域 ID", dataIndex: "id", ellipsis: true },
-    { title: "名称", dataIndex: "name", ellipsis: true },
+    { title: "寄存器 ID", dataIndex: "id", ellipsis: true },
+    { title: "寄存器名称", dataIndex: "name", ellipsis: true },
     {
-      title: "类型",
+      title: "寄存器类型",
       dataIndex: "area",
       render: (value: S7.AreaType) => <Tag color="blue">{value}</Tag>,
     },
-    { title: "DB 号", dataIndex: "dbNumber", render: (value?: number) => value ?? "-" },
-    { title: "起始", dataIndex: "start" },
+    { title: "DB 编号", dataIndex: "dbNumber", render: (value?: number) => value ?? "-" },
+    { title: "起始地址", dataIndex: "start" },
     { title: "长度", dataIndex: "size" },
     {
       title: "可写",
@@ -231,7 +295,7 @@ const S7ConfigPage = () => {
           )}
           {canDelete && (
             <Popconfirm
-              title="确认删除该区域？"
+              title="确认删除该寄存器？"
               onConfirm={() => {
                 if (!draft) return;
                 updateDraft((current) => ({
@@ -263,6 +327,7 @@ const S7ConfigPage = () => {
 
   const handleSave = async () => {
     if (!draft) return;
+    await connectionForm.validateFields();
     await saveMutation.mutateAsync({
       id: draft.id,
       protocol: "S7",
@@ -276,11 +341,21 @@ const S7ConfigPage = () => {
 
   const handleCreate = async () => {
     const values = await createForm.validateFields();
+    const preset = getPlcPreset(values.plcModel);
     await saveMutation.mutateAsync({
       protocol: "S7",
-      name: values.name,
+      name: values.deviceType,
       enabled: true,
-      config: defaultConfig(),
+      config: {
+        ...defaultConfig(),
+        deviceType: values.deviceType,
+        plcModel: values.plcModel,
+        connection: {
+          ...defaultConfig().connection,
+          rack: preset.rack,
+          slot: preset.slot,
+        },
+      },
     });
     setCreateModalOpen(false);
     createForm.resetFields();
@@ -294,12 +369,12 @@ const S7ConfigPage = () => {
       <Flex gap="middle" align="stretch" className="h-full">
         <Card
           className="w-[360px] shrink-0"
-          title="配置列表"
+          title="设备类型"
           extra={
             <Space>
               {canAdd && (
                 <Button type="primary" size="small" onClick={() => setCreateModalOpen(true)}>
-                  新增配置
+                  新建设备类型
                 </Button>
               )}
               {canImport && (
@@ -330,7 +405,12 @@ const S7ConfigPage = () => {
               dataSource={types}
               rowSelection={undefined}
               columns={[
-                { title: "名称", dataIndex: "name", ellipsis: true },
+                {
+                  title: "设备类型",
+                  dataIndex: "name",
+                  ellipsis: true,
+                  render: (_, row) => (row.config as S7.Config)?.deviceType || row.name,
+                },
                 {
                   title: "状态",
                   dataIndex: "enabled",
@@ -357,17 +437,23 @@ const S7ConfigPage = () => {
           )}
         </Card>
 
-        <Card className="flex-1 min-w-0" title="配置详情">
+        <Card className="flex-1 min-w-0" title="寄存器配置">
           {!draft ? (
             <Result status="info" title="请选择或创建一个 S7 配置" />
           ) : (
             <Space direction="vertical" className="w-full" size="large">
               <Space wrap>
                 <Input
-                  value={draft.name}
+                  value={draft.config.deviceType || draft.name}
                   style={{ width: 280 }}
                   disabled={!canEdit}
-                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      name: e.target.value,
+                      config: { ...draft.config, deviceType: e.target.value },
+                    })
+                  }
                 />
                 <Space>
                   <span>启用</span>
@@ -397,90 +483,94 @@ const S7ConfigPage = () => {
               </Space>
 
               <Card size="small" title="连接参数">
-                <Space direction="vertical" className="w-full">
-                  <Space wrap>
-                    <Input
-                      value={draft.config.connection.host}
-                      disabled={!canEdit}
-                      placeholder="PLC 地址"
-                      style={{ width: 240 }}
-                      onChange={(e) =>
-                        updateDraft((current) => ({
-                          ...current,
-                          config: {
-                            ...current.config,
-                            connection: { ...current.config.connection, host: e.target.value },
-                          },
-                        }))
-                      }
-                    />
-                    <InputNumber
-                      min={0}
-                      value={draft.config.connection.rack}
-                      disabled={!canEdit}
-                      addonBefore="Rack"
-                      onChange={(value) =>
-                        updateDraft((current) => ({
-                          ...current,
-                          config: {
-                            ...current.config,
-                            connection: { ...current.config.connection, rack: Number(value ?? 0) },
-                          },
-                        }))
-                      }
-                    />
-                    <InputNumber
-                      min={0}
-                      value={draft.config.connection.slot}
-                      disabled={!canEdit}
-                      addonBefore="Slot"
-                      onChange={(value) =>
-                        updateDraft((current) => ({
-                          ...current,
-                          config: {
-                            ...current.config,
-                            connection: { ...current.config.connection, slot: Number(value ?? 0) },
-                          },
-                        }))
-                      }
-                    />
-                    <Select
-                      value={draft.config.connection.connectionType}
-                      disabled={!canEdit}
-                      style={{ width: 160 }}
-                      options={connectionTypeOptions}
-                      onChange={(value) =>
-                        updateDraft((current) => ({
-                          ...current,
-                          config: {
-                            ...current.config,
-                            connection: { ...current.config.connection, connectionType: value },
-                          },
-                        }))
-                      }
-                    />
-                    <InputNumber
-                      min={1}
-                      value={draft.config.pollInterval}
-                      disabled={!canEdit}
-                      addonBefore="轮询(秒)"
-                      onChange={(value) =>
-                        updateDraft((current) => ({
-                          ...current,
-                          config: { ...current.config, pollInterval: Number(value ?? 5) },
-                        }))
-                      }
-                    />
+                <Form
+                  form={connectionForm}
+                  layout="vertical"
+                  disabled={!canEdit}
+                  onValuesChange={(_, values) =>
+                    updateDraft((current) => ({
+                      ...current,
+                      config: {
+                        ...current.config,
+                        deviceType: values.deviceType,
+                        plcModel: values.plcModel,
+                        connection: {
+                          ...current.config.connection,
+                          host: values.host,
+                          rack: values.rack,
+                          slot: values.slot,
+                          connectionType: values.connectionType,
+                        },
+                        pollInterval: values.pollInterval,
+                      },
+                    }))
+                  }
+                >
+                  <Space direction="vertical" className="w-full" size="middle">
+                    <Form.Item
+                      name="deviceType"
+                      label="设备类型"
+                      rules={[{ required: true, message: "请输入设备类型" }]}
+                    >
+                      <Input placeholder="例如：S7-1200" />
+                    </Form.Item>
+                    <Form.Item
+                      name="plcModel"
+                      label="PLC型号"
+                      rules={[{ required: true, message: "请选择PLC型号" }]}
+                    >
+                      <Select
+                        options={plcModelOptions.map(({ value, label }) => ({ value, label }))}
+                        onChange={(value: S7.PlcModel) => {
+                          const preset = getPlcPreset(value);
+                          connectionForm.setFieldsValue({ rack: preset.rack, slot: preset.slot });
+                          updateDraft((current) => ({
+                            ...current,
+                            config: {
+                              ...current.config,
+                              plcModel: value,
+                              connection: {
+                                ...current.config.connection,
+                                rack: preset.rack,
+                                slot: preset.slot,
+                              },
+                            },
+                          }));
+                        }}
+                      />
+                    </Form.Item>
+                    <Space wrap className="w-full">
+                      <Form.Item
+                        name="host"
+                        label="PLC 地址"
+                        rules={[{ required: true, message: "S7配置的 connection.host 不能为空" }]}
+                        className="flex-1 min-w-[240px]"
+                      >
+                        <Input placeholder="PLC 地址" />
+                      </Form.Item>
+                      <Form.Item name="rack" label="Rack">
+                        <InputNumber min={0} className="w-full" disabled />
+                      </Form.Item>
+                      <Form.Item name="slot" label="Slot">
+                        <InputNumber min={0} className="w-full" disabled />
+                      </Form.Item>
+                      <Form.Item name="connectionType" label="连接类型" className="min-w-[160px]">
+                        <Select options={connectionTypeOptions} />
+                      </Form.Item>
+                      <Form.Item name="pollInterval" label="轮询(秒)">
+                        <InputNumber min={1} className="w-full" />
+                      </Form.Item>
+                    </Space>
+                    <Tooltip title="S7 适配器会按这个间隔轮询区域并回传原始字节数据">
+                      <Tag color="blue">registers={draft.config.areas.length}</Tag>
+                    </Tooltip>
                   </Space>
-                  <Tooltip title="S7 适配器会按这个间隔轮询区域并回传原始字节数据">
-                    <Tag color="blue">areas={draft.config.areas.length}</Tag>
-                  </Tooltip>
-                </Space>
+                </Form>
               </Card>
 
               <Card
                 size="small"
-                title="轮询区域"
+                title="寄存器配置"
                 extra={
                   canEdit ? (
                     <Button
@@ -491,7 +581,7 @@ const S7ConfigPage = () => {
                         setAreaModalOpen(true);
                       }}
                     >
-                      新增区域
+                      新增寄存器
                     </Button>
                   ) : null
                 }
@@ -502,7 +592,7 @@ const S7ConfigPage = () => {
                   pagination={false}
                   dataSource={draft.config.areas}
                   columns={areaColumns}
-                  locale={{ emptyText: <Empty description="暂无区域" /> }}
+                  locale={{ emptyText: <Empty description="暂无寄存器" /> }}
                 />
               </Card>
             </Space>
@@ -511,20 +601,53 @@ const S7ConfigPage = () => {
       </Flex>
 
       <Modal
-        title="新增S7配置"
+        title="新建设备类型"
         open={createModalOpen}
         onCancel={() => setCreateModalOpen(false)}
         onOk={handleCreate}
         destroyOnHidden
       >
-        <Form form={createForm} layout="vertical" initialValues={{ name: "新建S7配置" }}>
+        <Form
+          form={createForm}
+          layout="vertical"
+          initialValues={{ deviceType: "", plcModel: "S7-1200" }}
+        >
           <Form.Item
-            name="name"
-            label="配置名称"
-            rules={[{ required: true, message: "请输入配置名称" }]}
+            name="deviceType"
+            label="设备类型"
+            rules={[{ required: true, message: "请输入设备类型" }]}
           >
-            <Input placeholder="例如: PLC-A" />
+            <Input placeholder="例如: S7-1200" />
           </Form.Item>
+          <Form.Item
+            name="plcModel"
+            label="PLC型号"
+            rules={[{ required: true, message: "请选择PLC型号" }]}
+          >
+            <Select
+              options={plcModelOptions.map(({ value, label }) => ({ value, label }))}
+              onChange={(value: S7.PlcModel) => {
+                const preset = getPlcPreset(value);
+                connectionForm.setFieldsValue({ rack: preset.rack, slot: preset.slot });
+              }}
+            />
+          </Form.Item>
+          <Space size="middle" className="w-full">
+            <Form.Item label="Rack" className="flex-1">
+              <InputNumber
+                value={getPlcPreset(watchedCreatePlcModel).rack}
+                disabled
+                className="w-full"
+              />
+            </Form.Item>
+            <Form.Item label="Slot" className="flex-1">
+              <InputNumber
+                value={getPlcPreset(watchedCreatePlcModel).slot}
+                disabled
+                className="w-full"
+              />
+            </Form.Item>
+          </Space>
         </Form>
       </Modal>
 

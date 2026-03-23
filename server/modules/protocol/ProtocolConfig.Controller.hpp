@@ -118,6 +118,25 @@ private:
                 }
             }
         } else if (protocol == Constants::PROTOCOL_S7) {
+            if (config.get("deviceType", "").asString().empty()) {
+                throw ValidationException("S7 配置的 deviceType 不能为空");
+            }
+            std::string plcModel = config.get("plcModel", "").asString();
+            if (plcModel.empty()) {
+                throw ValidationException("S7 配置的 plcModel 不能为空");
+            }
+
+            auto resolvePreset = [](const std::string& model) -> std::optional<std::pair<int, int>> {
+                if (model == "S7-300") return std::make_pair(0, 2);
+                if (model == "S7-400") return std::make_pair(0, 3);
+                if (model == "S7-1200" || model == "S7-1500") return std::make_pair(0, 1);
+                return std::nullopt;
+            };
+            auto preset = resolvePreset(plcModel);
+            if (!preset) {
+                throw ValidationException("S7 配置的 plcModel 仅支持 S7-300、S7-400、S7-1200、S7-1500");
+            }
+
             if (!config.isMember("connection") || !config["connection"].isObject()) {
                 throw ValidationException("S7 配置的 connection 必须是对象");
             }
@@ -126,12 +145,9 @@ private:
                 throw ValidationException("S7 配置的 connection.host 不能为空");
             }
             int rack = connection.get("rack", 0).asInt();
-            if (rack < 0 || rack > 7) {
-                throw ValidationException("S7 配置的 connection.rack 必须在 0-7 之间");
-            }
             int slot = connection.get("slot", 1).asInt();
-            if (slot < 0 || slot > 31) {
-                throw ValidationException("S7 配置的 connection.slot 必须在 0-31 之间");
+            if (rack != preset->first || slot != preset->second) {
+                throw ValidationException("S7 配置的 Rack/Slot 必须与所选 PLC 型号匹配");
             }
 
             if (config.isMember("areas")) {

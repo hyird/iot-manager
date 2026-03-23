@@ -171,6 +171,9 @@ export interface ModbusConfig {
 /** S7 连接类型 */
 export type S7ConnectionType = "PG" | "OP" | "S7_BASIC";
 
+/** S7 PLC 型号 */
+export type S7PlcModel = "S7-300" | "S7-400" | "S7-1200" | "S7-1500";
+
 /** S7 区域类型 */
 export type S7AreaType = "DB" | "MK" | "PE" | "PA" | "CT" | "TM";
 
@@ -196,6 +199,8 @@ export interface S7Connection {
 
 /** S7 配置结构 */
 export interface S7Config {
+  deviceType: string;
+  plcModel: S7PlcModel;
   connection: S7Connection;
   pollInterval?: number;
   areas: S7Area[];
@@ -279,6 +284,7 @@ export namespace Modbus {
 /** S7 命名空间 */
 export namespace S7 {
   export type ConnectionType = S7ConnectionType;
+  export type PlcModel = S7PlcModel;
   export type AreaType = S7AreaType;
   export type Area = S7Area;
   export type Connection = S7Connection;
