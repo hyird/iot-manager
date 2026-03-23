@@ -42,9 +42,14 @@ jobs:
           key: vcpkg-installed-linux-x64-linux-${{ hashFiles('vcpkg.json') }}
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11.5
-        with:
-          vcpkgGitCommitId: 66c0373dc7fca549e5803087b9487edfe3aca0a1
+        run: |
+          if [ ! -d "${{ github.workspace }}/vcpkg" ]; then
+            git clone https://github.com/microsoft/vcpkg.git "${{ github.workspace }}/vcpkg"
+          fi
+          cd "${{ github.workspace }}/vcpkg"
+          git fetch --depth 1 origin 66c0373dc7fca549e5803087b9487edfe3aca0a1
+          git checkout --detach 66c0373dc7fca549e5803087b9487edfe3aca0a1
+          ./bootstrap-vcpkg.sh -disableMetrics
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2.2.0
@@ -141,9 +146,14 @@ jobs:
           key: vcpkg-installed-arm-linux-${{ hashFiles('vcpkg.json') }}
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11.5
-        with:
-          vcpkgGitCommitId: 66c0373dc7fca549e5803087b9487edfe3aca0a1
+        run: |
+          if [ ! -d "${{ github.workspace }}/vcpkg" ]; then
+            git clone https://github.com/microsoft/vcpkg.git "${{ github.workspace }}/vcpkg"
+          fi
+          cd "${{ github.workspace }}/vcpkg"
+          git fetch --depth 1 origin 66c0373dc7fca549e5803087b9487edfe3aca0a1
+          git checkout --detach 66c0373dc7fca549e5803087b9487edfe3aca0a1
+          ./bootstrap-vcpkg.sh -disableMetrics
 
       - name: Configure CMake
         run: >
@@ -201,9 +211,15 @@ jobs:
           key: vcpkg-installed-windows-x64-static-${{ hashFiles('vcpkg.json') }}
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11.5
-        with:
-          vcpkgGitCommitId: 66c0373dc7fca549e5803087b9487edfe3aca0a1
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${{ github.workspace }}\\vcpkg")) {
+            git clone https://github.com/microsoft/vcpkg.git "${{ github.workspace }}\\vcpkg"
+          }
+          Set-Location "${{ github.workspace }}\\vcpkg"
+          git fetch --depth 1 origin 66c0373dc7fca549e5803087b9487edfe3aca0a1
+          git checkout --detach 66c0373dc7fca549e5803087b9487edfe3aca0a1
+          .\\bootstrap-vcpkg.bat -disableMetrics
 
       - name: Download Npcap SDK
         run: |
@@ -246,7 +262,14 @@ jobs:
       actions: write
     steps:
       - name: Delete old workflow runs
-        uses: Mattraks/delete-workflow-runs@v2.1.0
-        with:
-          retain_days: 0
-          keep_minimum_runs: 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_ids="$(gh run list --json databaseId --limit 1000 -q '.[1:] | .[].databaseId' || true)"
+          if [ -z "$run_ids" ]; then
+            echo "No extra runs to clean."
+            exit 0
+          fi
+          for run_id in $run_ids; do
+            gh run delete --repo "$GITHUB_REPOSITORY" "$run_id" --yes
+          done
