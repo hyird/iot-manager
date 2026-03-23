@@ -5,7 +5,7 @@
 import type { PageParams } from "./common";
 
 /** 协议类型 */
-export type ProtocolType = "SL651" | "Modbus";
+export type ProtocolType = "SL651" | "Modbus" | "S7";
 
 /** SL651 传输方向 */
 export type SL651Direction = "UP" | "DOWN";
@@ -168,13 +168,46 @@ export interface ModbusConfig {
   registers: ModbusRegister[];
 }
 
+/** S7 连接类型 */
+export type S7ConnectionType = "PG" | "OP" | "S7_BASIC";
+
+/** S7 区域类型 */
+export type S7AreaType = "DB" | "MK" | "PE" | "PA" | "CT" | "TM";
+
+/** S7 区域定义 */
+export interface S7Area {
+  id: string;
+  name: string;
+  area: S7AreaType;
+  dbNumber?: number;
+  start: number;
+  size: number;
+  writable?: boolean;
+  remark?: string;
+}
+
+/** S7 连接配置 */
+export interface S7Connection {
+  host: string;
+  rack: number;
+  slot: number;
+  connectionType?: S7ConnectionType;
+}
+
+/** S7 配置结构 */
+export interface S7Config {
+  connection: S7Connection;
+  pollInterval?: number;
+  areas: S7Area[];
+}
+
 /** 协议配置项 */
 export interface ProtocolConfigItem {
   id: number;
   protocol: ProtocolType;
   name: string;
   enabled: boolean;
-  config: SL651Config | ModbusConfig | Record<string, unknown>;
+  config: SL651Config | ModbusConfig | S7Config | Record<string, unknown>;
   remark?: string;
   created_at?: string;
   updated_at?: string;
@@ -196,7 +229,7 @@ export interface CreateProtocolConfigDto {
   protocol: ProtocolType;
   name: string;
   enabled?: boolean;
-  config: SL651Config | ModbusConfig | Record<string, unknown>;
+  config: SL651Config | ModbusConfig | S7Config | Record<string, unknown>;
   remark?: string;
 }
 
@@ -204,7 +237,7 @@ export interface CreateProtocolConfigDto {
 export interface UpdateProtocolConfigDto {
   name?: string;
   enabled?: boolean;
-  config?: SL651Config | ModbusConfig | Record<string, unknown>;
+  config?: SL651Config | ModbusConfig | S7Config | Record<string, unknown>;
   remark?: string;
 }
 
@@ -241,4 +274,13 @@ export namespace Modbus {
   export type DictConfig = ModbusDictConfig;
   export type Register = ModbusRegister;
   export type Config = ModbusConfig;
+}
+
+/** S7 命名空间 */
+export namespace S7 {
+  export type ConnectionType = S7ConnectionType;
+  export type AreaType = S7AreaType;
+  export type Area = S7Area;
+  export type Connection = S7Connection;
+  export type Config = S7Config;
 }

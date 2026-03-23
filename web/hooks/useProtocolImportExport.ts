@@ -1,6 +1,6 @@
 /**
  * 协议配置导入导出 Hook
- * 支持 SL651 和 Modbus 配置的 JSON 导入导出
+ * 支持 SL651、Modbus 和 S7 配置的 JSON 导入导出
  */
 
 import { useQueryClient } from "@tanstack/react-query";
@@ -117,6 +117,10 @@ export function useProtocolImportExport(protocol: Protocol.Type) {
             !Array.isArray(cfg.registers)
           ) {
             message.error(`第 ${i + 1} 项 config.registers 必须是数组`);
+            return;
+          }
+          if (protocol === "S7" && cfg.areas !== undefined && !Array.isArray(cfg.areas)) {
+            message.error(`第 ${i + 1} 项 config.areas 必须是数组`);
             return;
           }
         }
