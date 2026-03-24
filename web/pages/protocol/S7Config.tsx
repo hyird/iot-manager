@@ -13,11 +13,13 @@ import {
   Input,
   InputNumber,
   Modal,
+  Row,
   Popconfirm,
   Result,
   Select,
   Skeleton,
   Space,
+  Col,
   Switch,
   Table,
   Tag,
@@ -39,6 +41,12 @@ type DeviceTypeFormValues = {
   enabled: boolean;
   remark?: string;
 };
+
+/** 生成唯一 ID（兼容非安全上下文） */
+const generateId = (): string =>
+  "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+    (+c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))).toString(16)
+  );
 
 const defaultConfig = (): S7.Config => ({
   deviceType: "",
@@ -290,14 +298,15 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
     const size = resolvedDataType === "STRING" ? values.size : getDataTypeSize(resolvedDataType);
     const nextDbNumber = parsedAreaType === "DB" ? values.dbNumber : undefined;
     const nextStartBit = isBoolDataType && canUseBoolAddress ? values.startBit : undefined;
-    const nextValues = {
-      ...values,
-      dbNumber: nextDbNumber,
-      startBit: nextStartBit,
-      dataType: resolvedDataType,
-      size,
-      writable: isWritableArea ? values.writable : false,
-    };
+      const nextValues = {
+        ...values,
+        dbNumber: nextDbNumber,
+        startBit: nextStartBit,
+        dataType: resolvedDataType,
+        id: mode === "create" ? generateId() : initialValue?.id || values.id,
+        size,
+        writable: isWritableArea ? values.writable : false,
+      };
     onSubmit(nextValues);
   };
 
@@ -314,7 +323,6 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
         layout="vertical"
         initialValues={
           initialValue ?? {
-            id: "",
             name: "",
             area: "DB",
             dbNumber: 1,
@@ -328,87 +336,90 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
         }
       >
         <Form.Item
-          name="id"
-          label="寄存器 ID"
-          rules={[{ required: true, message: "请输入寄存器 ID" }]}
-        >
-          <Input placeholder="例如: reg_temp" />
-        </Form.Item>
-        <Form.Item
           name="name"
           label="寄存器名称"
           rules={[{ required: true, message: "请输入寄存器名称" }]}
         >
           <Input placeholder="例如: 温度寄存器" />
         </Form.Item>
-        <Form.Item name="area" label="寄存器类型" rules={[{ required: true }]} extra="不同区域类型映射不同读取方式">
-          <Select
-            options={areaTypeOptions}
-            onChange={(value: S7.AreaType) => {
-              const currentDataType = normalizeS7DataType(form.getFieldValue("dataType") as string | undefined);
-              const updates: Partial<S7.Area> = {};
-              const normalizedDataType = value === "CT" || value === "TM"
-                ? currentDataType === "BOOL"
-                  ? "INT16"
-                  : currentDataType
-                : currentDataType;
+        <Row gutter={12}>
+          <Col xs={24} sm={12}>
+            <Form.Item name="area" label="寄存器类型" rules={[{ required: true }]} extra="不同区域类型映射不同读取方式">
+              <Select
+                options={areaTypeOptions}
+                onChange={(value: S7.AreaType) => {
+                  const currentDataType = normalizeS7DataType(form.getFieldValue("dataType") as string | undefined);
+                  const updates: Partial<S7.Area> = {};
+                  const normalizedDataType = value === "CT" || value === "TM"
+                    ? currentDataType === "BOOL"
+                      ? "INT16"
+                      : currentDataType
+                    : currentDataType;
 
-              if (value === "CT" || value === "TM") {
-                updates.dataType = normalizedDataType;
-                updates.size = getDataTypeSize(normalizedDataType);
-              } else if (normalizedDataType !== "STRING") {
-                updates.size = getDataTypeSize(normalizedDataType);
-              }
+                  if (value === "CT" || value === "TM") {
+                    updates.dataType = normalizedDataType;
+                    updates.size = getDataTypeSize(normalizedDataType);
+                  } else if (normalizedDataType !== "STRING") {
+                    updates.size = getDataTypeSize(normalizedDataType);
+                  }
 
-              if (value !== "DB") {
-                updates.dbNumber = undefined;
-              }
-              if (value === "DB" && form.getFieldValue("dbNumber") == null) {
-                updates.dbNumber = 1;
-              }
-              updates.startBit = undefined;
+                  if (value !== "DB") {
+                    updates.dbNumber = undefined;
+                  }
+                  if (value === "DB" && form.getFieldValue("dbNumber") == null) {
+                    updates.dbNumber = 1;
+                  }
+                  updates.startBit = undefined;
 
-              if (Object.keys(updates).length > 0) {
-                form.setFieldsValue(updates);
-              }
-            }}
-          />
-        </Form.Item>
-        <Form.Item name="dataType" label="数据类型" rules={[{ required: true }]} extra="不同数据类型对应不同解析方式">
-          <Select
-            options={
-              areaType === "CT" || areaType === "TM"
-                ? areaDataTypeOptions.filter((item) => item.value !== "BOOL")
-                : areaDataTypeOptions
-            }
-            onChange={(value: S7.AreaDataType) => {
-              const updates: Partial<S7.Area> = {};
-              if (value !== "BOOL") {
-                updates.startBit = undefined;
-              }
-              if (value === "STRING") {
-                const currentSize = form.getFieldValue("size") as number | undefined;
-                if (typeof currentSize !== "number" || Number.isNaN(currentSize)) {
-                  updates.size = 1;
+                  if (Object.keys(updates).length > 0) {
+                    form.setFieldsValue(updates);
+                  }
+                }}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12}>
+            <Form.Item name="dataType" label="数据类型" rules={[{ required: true }]} extra="不同数据类型对应不同解析方式">
+              <Select
+                options={
+                  areaType === "CT" || areaType === "TM"
+                    ? areaDataTypeOptions.filter((item) => item.value !== "BOOL")
+                    : areaDataTypeOptions
                 }
-              } else {
-                updates.size = getDataTypeSize(value);
-              }
-              if (Object.keys(updates).length > 0) {
-                form.setFieldsValue(updates);
-              }
-            }}
-          />
-        </Form.Item>
+                onChange={(value: S7.AreaDataType) => {
+                  const updates: Partial<S7.Area> = {};
+                  if (value !== "BOOL") {
+                    updates.startBit = undefined;
+                  }
+                  if (value === "STRING") {
+                    const currentSize = form.getFieldValue("size") as number | undefined;
+                    if (typeof currentSize !== "number" || Number.isNaN(currentSize)) {
+                      updates.size = 1;
+                    }
+                  } else {
+                    updates.size = getDataTypeSize(value);
+                  }
+                  if (Object.keys(updates).length > 0) {
+                    form.setFieldsValue(updates);
+                  }
+                }}
+              />
+            </Form.Item>
+          </Col>
+        </Row>
         {areaType === "DB" && (
-          <Form.Item
-            name="dbNumber"
-            label="DB 编号"
-            rules={[{ required: true, message: "请输入 DB 编号" }]}
-            extra="示例：S7-300 上可读 DB1~DB999；S7-1200 常见为 DB1、DB100 等"
-          >
-            <InputNumber min={1} className="w-full" />
-          </Form.Item>
+          <Row gutter={12}>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="dbNumber"
+                label="DB 编号"
+                rules={[{ required: true, message: "请输入 DB 编号" }]}
+                extra="示例：S7-300 上可读 DB1~DB999；S7-1200 常见为 DB1、DB100 等"
+              >
+                <InputNumber min={1} className="w-full" />
+              </Form.Item>
+            </Col>
+          </Row>
         )}
         <Flex gap={16} className="w-full" align="flex-start" wrap>
           <Form.Item
@@ -517,7 +528,6 @@ const S7ConfigPage = () => {
   const activeAreas = activeConfig?.areas ?? [];
 
   const areaColumns: ColumnsType<S7.Area> = [
-    { title: "寄存器 ID", dataIndex: "id", ellipsis: true },
     { title: "寄存器名称", dataIndex: "name", ellipsis: true },
     {
       title: "寄存器类型",
