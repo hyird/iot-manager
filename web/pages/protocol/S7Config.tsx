@@ -124,6 +124,17 @@ const getDataTypeSize = (dataType?: S7.AreaDataType) =>
   dataType ? areaDataTypeSizeMap[dataType] ?? 1 : 1;
 
 const writableAreaTypes: S7.AreaType[] = ["DB", "MK", "PA"];
+const bitOnlyAreaTypes: S7.AreaType[] = ["PE", "PA"];
+
+const getAreaDataTypeOptions = (areaType?: S7.AreaType): { value: S7.AreaDataType; label: string }[] => {
+  if (areaType === "CT" || areaType === "TM") {
+    return areaDataTypeOptions.filter((item) => item.value === "UINT16");
+  }
+  if (bitOnlyAreaTypes.includes(areaType || "DB")) {
+    return areaDataTypeOptions.filter((item) => item.value === "BOOL");
+  }
+  return areaDataTypeOptions;
+};
 
 const areaAddressPrefixMap: Record<S7.AreaType, { bool: string; number: string }> = {
   DB: { bool: "X", number: "DB" },
@@ -294,7 +305,12 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
 
   const handleOk = async () => {
     const values = await form.validateFields();
-    const resolvedDataType = parsedAreaType === "CT" || parsedAreaType === "TM" ? values.dataType || "INT16" : values.dataType;
+      const resolvedDataType =
+        parsedAreaType === "CT" || parsedAreaType === "TM"
+          ? values.dataType || "UINT16"
+          : parsedAreaType === "PE" || parsedAreaType === "PA"
+            ? "BOOL"
+            : values.dataType;
     const size = resolvedDataType === "STRING" ? values.size : getDataTypeSize(resolvedDataType);
     const nextDbNumber = parsedAreaType === "DB" ? values.dbNumber : undefined;
     const nextStartBit = isBoolDataType && canUseBoolAddress ? values.startBit : undefined;
@@ -351,14 +367,15 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
                   const currentDataType = normalizeS7DataType(form.getFieldValue("dataType") as string | undefined);
                   const updates: Partial<S7.Area> = {};
                   const normalizedDataType = value === "CT" || value === "TM"
-                    ? currentDataType === "BOOL"
-                      ? "INT16"
-                      : currentDataType
+                    ? "UINT16"
                     : currentDataType;
 
                   if (value === "CT" || value === "TM") {
                     updates.dataType = normalizedDataType;
                     updates.size = getDataTypeSize(normalizedDataType);
+                  } else if (bitOnlyAreaTypes.includes(value)) {
+                    updates.dataType = "BOOL";
+                    updates.size = getDataTypeSize("BOOL");
                   } else if (normalizedDataType !== "STRING") {
                     updates.size = getDataTypeSize(normalizedDataType);
                   }
@@ -381,11 +398,7 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
           <Col xs={24} sm={12}>
             <Form.Item name="dataType" label="数据类型" rules={[{ required: true }]} extra="不同数据类型对应不同解析方式">
               <Select
-                options={
-                  areaType === "CT" || areaType === "TM"
-                    ? areaDataTypeOptions.filter((item) => item.value !== "BOOL")
-                    : areaDataTypeOptions
-                }
+                options={getAreaDataTypeOptions(areaType as S7.AreaType | undefined)}
                 onChange={(value: S7.AreaDataType) => {
                   const updates: Partial<S7.Area> = {};
                   if (value !== "BOOL") {
@@ -919,7 +932,17 @@ const S7ConfigPage = () => {
           editingArea
             ? {
                 ...editingArea,
-                dataType: normalizeS7DataType(editingArea.dataType),
+                dataType: bitOnlyAreaTypes.includes(editingArea.area as S7.AreaType)
+                  ? "BOOL"
+                  : editingArea.area === "CT" || editingArea.area === "TM"
+                  ? "UINT16"
+                  : normalizeS7DataType(editingArea.dataType),
+                size:
+                  bitOnlyAreaTypes.includes(editingArea.area as S7.AreaType)
+                    ? 1
+                    : editingArea.area === "CT" || editingArea.area === "TM"
+                    ? getDataTypeSize("UINT16")
+                    : editingArea.size,
                 startBit: editingArea.startBit,
               }
             : undefined

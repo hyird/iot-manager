@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <iomanip>
 #include <memory>
 #include <mutex>
@@ -25,8 +27,10 @@ struct S7AreaDefinition {
     std::string id;
     std::string name;
     std::string area = "DB";
+    std::string dataType = "INT16";
     int dbNumber = 0;
     int start = 0;
+    int startBit = 0;
     int size = 1;
     bool writable = false;
     std::string remark;
@@ -46,10 +50,62 @@ struct S7DeviceRuntime {
     std::string deviceCode;
     S7ConnectionConfig connection;
     std::vector<S7AreaDefinition> areas;
-    S7Object client = nullptr;
+    S7ClientHandle client = kS7InvalidObject;
     bool connected = false;
     std::chrono::steady_clock::time_point lastConnectAttempt{};
     std::chrono::steady_clock::time_point lastPoll{};
+
+    S7DeviceRuntime() = default;
+
+    ~S7DeviceRuntime() {
+        resetClient();
+    }
+
+    S7DeviceRuntime(const S7DeviceRuntime&) = delete;
+    S7DeviceRuntime& operator=(const S7DeviceRuntime&) = delete;
+
+    S7DeviceRuntime(S7DeviceRuntime&& other) noexcept
+        : deviceId(other.deviceId)
+        , linkId(other.linkId)
+        , deviceCode(std::move(other.deviceCode))
+        , connection(std::move(other.connection))
+        , areas(std::move(other.areas))
+        , client(std::exchange(other.client, kS7InvalidObject))
+        , connected(other.connected)
+        , lastConnectAttempt(other.lastConnectAttempt)
+        , lastPoll(other.lastPoll) {
+        other.connected = false;
+    }
+
+    S7DeviceRuntime& operator=(S7DeviceRuntime&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+
+        resetClient();
+
+        deviceId = other.deviceId;
+        linkId = other.linkId;
+        deviceCode = std::move(other.deviceCode);
+        connection = std::move(other.connection);
+        areas = std::move(other.areas);
+        client = std::exchange(other.client, kS7InvalidObject);
+        connected = other.connected;
+        lastConnectAttempt = other.lastConnectAttempt;
+        lastPoll = other.lastPoll;
+        other.connected = false;
+        return *this;
+    }
+
+    void resetClient() {
+        if (s7IsValidHandle(client)) {
+            s7CliDisconnect(client);
+            s7CliDestroy(client);
+        } else {
+            client = kS7InvalidObject;
+        }
+        connected = false;
+    }
 };
 
 class S7ProtocolAdapter final : public ProtocolAdapter {
@@ -210,6 +266,17 @@ private:
         return value;
     }
 
+    static std::string normalizeDataType(std::string value) {
+        value = toUpper(std::move(value));
+        if (value == "DOUBLE") return "LREAL";
+        if (value == "BOOL" || value == "INT8" || value == "UINT8" || value == "INT16" ||
+            value == "UINT16" || value == "INT32" || value == "UINT32" || value == "FLOAT" ||
+            value == "LREAL" || value == "STRING") {
+            return value;
+        }
+        return "INT16";
+    }
+
     static int areaToCode(const std::string& area) {
         const std::string upper = toUpper(area);
         if (upper == "DB") return S7AreaDB;
@@ -219,6 +286,21 @@ private:
         if (upper == "CT") return S7AreaCT;
         if (upper == "TM") return S7AreaTM;
         return S7AreaDB;
+    }
+
+    static int areaWordLen(const std::string& area) {
+        const std::string upper = toUpper(area);
+        if (upper == "CT") return S7WLCounter;
+        if (upper == "TM") return S7WLTimer;
+        return S7WLByte;
+    }
+
+    static int transferAmount(const std::string& area, size_t size) {
+        const std::string upper = toUpper(area);
+        if (upper == "CT" || upper == "TM") {
+            return std::max(1, static_cast<int>((size + 1) / 2));
+        }
+        return static_cast<int>(size);
     }
 
     static std::optional<std::pair<int, int>> resolvePreset(const std::string& plcModel) {
@@ -234,6 +316,150 @@ private:
             oss << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
         }
         return oss.str();
+    }
+
+    static std::string makeUtcNowString() {
+        auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        auto dp = std::chrono::floor<std::chrono::days>(now);
+        std::chrono::year_month_day ymd{dp};
+        std::chrono::hh_mm_ss hms{now - dp};
+
+        std::ostringstream oss;
+        oss << std::setfill('0')
+            << std::setw(4) << static_cast<int>(ymd.year()) << "-"
+            << std::setw(2) << static_cast<unsigned>(ymd.month()) << "-"
+            << std::setw(2) << static_cast<unsigned>(ymd.day()) << "T"
+            << std::setw(2) << hms.hours().count() << ":"
+            << std::setw(2) << hms.minutes().count() << ":"
+            << std::setw(2) << hms.seconds().count() << "Z";
+        return oss.str();
+    }
+
+    static uint16_t readU16BE(const std::vector<uint8_t>& buffer) {
+        return static_cast<uint16_t>((static_cast<uint16_t>(buffer[0]) << 8) | buffer[1]);
+    }
+
+    static uint32_t readU32BE(const std::vector<uint8_t>& buffer) {
+        return (static_cast<uint32_t>(buffer[0]) << 24)
+            | (static_cast<uint32_t>(buffer[1]) << 16)
+            | (static_cast<uint32_t>(buffer[2]) << 8)
+            | static_cast<uint32_t>(buffer[3]);
+    }
+
+    static uint64_t readU64BE(const std::vector<uint8_t>& buffer) {
+        return (static_cast<uint64_t>(buffer[0]) << 56)
+            | (static_cast<uint64_t>(buffer[1]) << 48)
+            | (static_cast<uint64_t>(buffer[2]) << 40)
+            | (static_cast<uint64_t>(buffer[3]) << 32)
+            | (static_cast<uint64_t>(buffer[4]) << 24)
+            | (static_cast<uint64_t>(buffer[5]) << 16)
+            | (static_cast<uint64_t>(buffer[6]) << 8)
+            | static_cast<uint64_t>(buffer[7]);
+    }
+
+    static Json::Value decodeAreaValue(const S7AreaDefinition& area, const std::vector<uint8_t>& buffer) {
+        const std::string dataType = normalizeDataType(area.dataType);
+
+        if ((area.area == "CT" || area.area == "TM") && buffer.size() >= 2) {
+            return Json::Value(static_cast<Json::UInt64>(readU16BE(buffer)));
+        }
+
+        if (dataType == "BOOL") {
+            if (buffer.empty()) {
+                return Json::nullValue;
+            }
+            const int bit = std::clamp(area.startBit, 0, 7);
+            return Json::Value((buffer[0] >> bit) & 0x01);
+        }
+
+        if (dataType == "INT8") {
+            if (buffer.empty()) return Json::nullValue;
+            return Json::Value(static_cast<Json::Int64>(static_cast<int8_t>(buffer[0])));
+        }
+        if (dataType == "UINT8") {
+            if (buffer.empty()) return Json::nullValue;
+            return Json::Value(static_cast<Json::UInt64>(buffer[0]));
+        }
+        if (dataType == "INT16") {
+            if (buffer.size() < 2) return Json::nullValue;
+            return Json::Value(static_cast<Json::Int64>(static_cast<int16_t>(readU16BE(buffer))));
+        }
+        if (dataType == "UINT16") {
+            if (buffer.size() < 2) return Json::nullValue;
+            return Json::Value(static_cast<Json::UInt64>(readU16BE(buffer)));
+        }
+        if (dataType == "INT32") {
+            if (buffer.size() < 4) return Json::nullValue;
+            return Json::Value(static_cast<Json::Int64>(static_cast<int32_t>(readU32BE(buffer))));
+        }
+        if (dataType == "UINT32") {
+            if (buffer.size() < 4) return Json::nullValue;
+            return Json::Value(static_cast<Json::UInt64>(readU32BE(buffer)));
+        }
+        if (dataType == "FLOAT") {
+            if (buffer.size() < 4) return Json::nullValue;
+            float value = 0.0f;
+            uint32_t raw = readU32BE(buffer);
+            std::memcpy(&value, &raw, sizeof(value));
+            return Json::Value(value);
+        }
+        if (dataType == "LREAL") {
+            if (buffer.size() < 8) return Json::nullValue;
+            double value = 0.0;
+            uint64_t raw = readU64BE(buffer);
+            std::memcpy(&value, &raw, sizeof(value));
+            return Json::Value(value);
+        }
+        if (dataType == "STRING") {
+            std::string value(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+            size_t zero = value.find('\0');
+            if (zero != std::string::npos) {
+                value.resize(zero);
+            }
+            return Json::Value(value);
+        }
+        return Json::Value(bytesToHex(buffer));
+    }
+
+    static ParsedFrameResult buildReadResult(const S7DeviceRuntime& runtime,
+                                             const S7AreaDefinition& area,
+                                             const std::vector<uint8_t>& buffer) {
+        ParsedFrameResult result;
+        result.deviceId = runtime.deviceId;
+        result.linkId = runtime.linkId;
+        result.protocol = Constants::PROTOCOL_S7;
+        result.funcCode = area.id;
+        result.reportTime = makeUtcNowString();
+
+        Json::Value payload(Json::objectValue);
+        payload["funcCode"] = area.id;
+        payload["funcName"] = area.name;
+        payload["direction"] = "UP";
+
+        Json::Value data(Json::objectValue);
+        Json::Value element(Json::objectValue);
+        element["name"] = area.name;
+        element["value"] = decodeAreaValue(area, buffer);
+        element["hex"] = bytesToHex(buffer);
+        element["area"] = area.area;
+        element["dataType"] = normalizeDataType(area.dataType);
+        element["dbNumber"] = area.dbNumber;
+        element["start"] = area.start;
+        element["size"] = area.size;
+        if (normalizeDataType(area.dataType) == "BOOL") {
+            element["startBit"] = area.startBit;
+        }
+        if (area.writable) {
+            element["writable"] = true;
+        }
+        if (!area.remark.empty()) {
+            element["remark"] = area.remark;
+        }
+
+        data[area.id] = std::move(element);
+        payload["data"] = std::move(data);
+        result.data = std::move(payload);
+        return result;
     }
 
     static std::vector<uint8_t> parseBytes(const Json::Value& element) {
@@ -289,11 +515,17 @@ private:
         for (const auto& area : *areas) {
             if (!area.isObject()) continue;
             S7AreaDefinition def;
+            const std::string areaType = toUpper(area.get("area", "DB").asString());
             def.id = area.get("id", "").asString();
             def.name = area.get("name", def.id).asString();
-            def.area = toUpper(area.get("area", "DB").asString());
+            def.area = areaType;
+            def.dataType = normalizeDataType(area.get("dataType", (areaType == "CT" || areaType == "TM") ? "UINT16" : "INT16").asString());
+            if (areaType == "CT" || areaType == "TM") {
+                def.dataType = "UINT16";
+            }
             def.dbNumber = area.get("dbNumber", 0).asInt();
             def.start = area.get("start", 0).asInt();
+            def.startBit = std::clamp(area.get("startBit", 0).asInt(), 0, 7);
             def.size = std::max(1, area.get("size", 1).asInt());
             def.writable = area.get("writable", false).asBool();
             def.remark = area.get("remark", "").asString();
@@ -340,75 +572,63 @@ private:
     }
 
     bool ensureConnected(S7DeviceRuntime& runtime, std::chrono::steady_clock::time_point now) {
-        if (runtime.connected && runtime.client && Cli_GetConnected(runtime.client)) {
+        if (runtime.connected && s7IsValidHandle(runtime.client) && s7CliGetConnected(runtime.client)) {
             return true;
         }
 
-        if (runtime.client) {
-            Cli_Disconnect(runtime.client);
-            Cli_Destroy(runtime.client);
-            runtime.client = nullptr;
-        }
-        runtime.client = Cli_Create();
-        if (!runtime.client) {
+        runtime.resetClient();
+        runtime.client = s7CliCreate();
+        if (!s7IsValidHandle(runtime.client)) {
             runtime.connected = false;
             return false;
         }
 
+        if (s7CliSetConnectionType(runtime.client, runtime.connection.connectionType) != 0) {
+            runtime.resetClient();
+            return false;
+        }
+
         runtime.lastConnectAttempt = now;
-        int rc = Cli_ConnectTo(runtime.client, runtime.connection.host.c_str(), runtime.connection.rack, runtime.connection.slot);
-        runtime.connected = (rc == 0) && Cli_GetConnected(runtime.client);
+        int rc = s7CliConnectTo(runtime.client, runtime.connection.host.c_str(), runtime.connection.rack, runtime.connection.slot);
+        runtime.connected = (rc == 0) && s7CliGetConnected(runtime.client);
+        if (!runtime.connected) {
+            runtime.resetClient();
+        }
         return runtime.connected;
     }
 
     void pollDevice(S7DeviceRuntime& runtime, std::vector<ParsedFrameResult>& results) {
         for (const auto& area : runtime.areas) {
-            if (!area.writable && area.size <= 0) continue;
+            if (area.size <= 0) continue;
 
             std::vector<uint8_t> buffer(static_cast<size_t>(area.size), 0);
-            int rc = readArea(runtime, area.area, area.dbNumber, area.start, buffer);
+            int rc = readArea(runtime, area, buffer);
             if (rc != 0) {
-                runtime.connected = false;
-                if (runtime.client) {
-                    Cli_Disconnect(runtime.client);
-                }
+                runtime.resetClient();
                 break;
             }
 
-            ParsedFrameResult result;
-            result.deviceId = runtime.deviceId;
-            result.linkId = runtime.linkId;
-            result.protocol = Constants::PROTOCOL_S7;
-            result.funcCode = area.id;
-            result.reportTime = "";
-            result.data["area"] = area.area;
-            result.data["dbNumber"] = area.dbNumber;
-            result.data["start"] = area.start;
-            result.data["size"] = area.size;
-            result.data["name"] = area.name;
-            result.data["remark"] = area.remark;
-            result.data["hex"] = bytesToHex(buffer);
-            results.push_back(std::move(result));
+            results.push_back(buildReadResult(runtime, area, buffer));
         }
     }
 
-    int readArea(const S7DeviceRuntime& runtime, const std::string& area, int dbNumber,
-                 int start, std::vector<uint8_t>& buffer) const {
-            if (!runtime.client) {
-                return -1;
-            }
-        return Cli_ReadArea(runtime.client, areaToCode(area), dbNumber, start,
-            static_cast<int>(buffer.size()), S7WLByte, buffer.data());
+    int readArea(const S7DeviceRuntime& runtime, const S7AreaDefinition& area,
+                 std::vector<uint8_t>& buffer) const {
+        if (!s7IsValidHandle(runtime.client)) {
+            return -1;
+        }
+        return s7CliReadArea(runtime.client, areaToCode(area.area), area.dbNumber, area.start,
+            transferAmount(area.area, buffer.size()), areaWordLen(area.area), buffer.data());
     }
 
     int writeArea(const S7DeviceRuntime& runtime, const std::string& area, int dbNumber,
                   int start, const std::vector<uint8_t>& buffer) const {
-        if (!runtime.client) {
+        if (!s7IsValidHandle(runtime.client)) {
             return -1;
         }
         auto writable = buffer;
-        return Cli_WriteArea(runtime.client, areaToCode(area), dbNumber, start,
-            static_cast<int>(writable.size()), S7WLByte, writable.data());
+        return s7CliWriteArea(runtime.client, areaToCode(area), dbNumber, start,
+            transferAmount(area, writable.size()), areaWordLen(area), writable.data());
     }
 
     mutable std::mutex devicesMutex_;

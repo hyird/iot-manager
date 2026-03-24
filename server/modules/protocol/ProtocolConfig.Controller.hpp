@@ -154,9 +154,16 @@ private:
                         throw ValidationException("S7 配置的区域名称不能为空");
                     }
                     std::string areaType = area.get("area", "").asString();
+                    std::string dataType = area.get("dataType", (areaType == "CT" || areaType == "TM") ? "UINT16" : "INT16").asString();
                     if (areaType != "DB" && areaType != "MK" && areaType != "PE" &&
                         areaType != "PA" && areaType != "CT" && areaType != "TM") {
                         throw ValidationException("S7 区域 area 仅支持 DB、MK、PE、PA、CT、TM");
+                    }
+                    if ((areaType == "PE" || areaType == "PA") && dataType != "BOOL") {
+                        throw ValidationException("S7 区域 PE/PA 仅支持 BOOL 数据类型");
+                    }
+                    if ((areaType == "CT" || areaType == "TM") && dataType != "UINT16") {
+                        throw ValidationException("S7 区域 CT/TM 仅支持 UINT16 数据类型");
                     }
                     if (areaType == "DB" && area.get("dbNumber", 0).asInt() < 0) {
                         throw ValidationException("S7 DB 区域的 dbNumber 不能小于 0");
