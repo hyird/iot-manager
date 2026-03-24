@@ -32,6 +32,62 @@ project(iot-manager CXX)
 # ============== 构建选项 ==============
 option(BUILD_FRONTEND "Build and copy frontend" ON)
 
+# 当在非 Visual Studio 开发环境（如普通 CMD/Powershell）调用 MSVC 时，
+# 环境变量 INCLUDE 可能不存在，导致 cl 无法找到标准库头文件。这里尝试自动补齐
+# MSVC 与 Windows SDK 的默认头文件路径，避免 C1083: string not found。
+# if(MSVC)
+#     if(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES STREQUAL "")
+#         message(WARNING "未检测到 C++ 自动包含目录，尝试自动补齐 MSVC/Windows SDK 头文件路径。")
+
+#         string(REGEX REPLACE "[\\/]+bin[\\/].*$" "" _MSVC_TOOL_ROOT "${CMAKE_CXX_COMPILER}")
+#         set(_IOT_MANAGER_EXTRA_INCLUDE_DIRS "")
+
+#         if(EXISTS "${_MSVC_TOOL_ROOT}/include")
+#             list(APPEND _IOT_MANAGER_EXTRA_INCLUDE_DIRS "${_MSVC_TOOL_ROOT}/include")
+#         endif()
+
+#         set(_IOT_MANAGER_PROGRAM_FILES_X86 "$ENV{ProgramFiles(x86)}")
+#         if(_IOT_MANAGER_PROGRAM_FILES_X86 STREQUAL "")
+#             set(_IOT_MANAGER_PROGRAM_FILES_X86 "$ENV{ProgramW6432}")
+#         endif()
+#         if(_IOT_MANAGER_PROGRAM_FILES_X86 STREQUAL "")
+#             set(_IOT_MANAGER_PROGRAM_FILES_X86 "$ENV{ProgramFiles}")
+#         endif()
+
+#         file(GLOB _IOT_MANAGER_WINSDK_ROOTS
+#             "${_IOT_MANAGER_PROGRAM_FILES_X86}/Windows Kits/10/Include/*"
+#         )
+#         if(NOT _IOT_MANAGER_WINSDK_ROOTS)
+#             file(GLOB _IOT_MANAGER_WINSDK_ROOTS
+#                 "$ENV{ProgramFiles}/Windows Kits/10/Include/*"
+#             )
+#         endif()
+#         if(_IOT_MANAGER_WINSDK_ROOTS)
+#             list(SORT _IOT_MANAGER_WINSDK_ROOTS)
+#             list(GET _IOT_MANAGER_WINSDK_ROOTS -1 _IOT_MANAGER_WINSDK_ROOT)
+#             foreach(_IOT_MANAGER_WINSDK_SUBDIR IN ITEMS ucrt shared um)
+#                 if(EXISTS "${_IOT_MANAGER_WINSDK_ROOT}/${_IOT_MANAGER_WINSDK_SUBDIR}")
+#                     list(APPEND _IOT_MANAGER_EXTRA_INCLUDE_DIRS
+#                         "${_IOT_MANAGER_WINSDK_ROOT}/${_IOT_MANAGER_WINSDK_SUBDIR}"
+#                     )
+#                 endif()
+#             endforeach()
+#         endif()
+
+#         if(_IOT_MANAGER_EXTRA_INCLUDE_DIRS)
+#             include_directories(${_IOT_MANAGER_EXTRA_INCLUDE_DIRS})
+#             message(STATUS "已自动添加 MSVC/SDK include 目录：${_IOT_MANAGER_EXTRA_INCLUDE_DIRS}")
+#         else()
+#             message(WARNING "未能自动定位 MSVC/Windows SDK include 目录，请在 VS Developer Command Prompt 中构建。")
+#         endif()
+#         unset(_IOT_MANAGER_WINSDK_ROOTS)
+#         unset(_IOT_MANAGER_EXTRA_INCLUDE_DIRS)
+#         unset(_IOT_MANAGER_PROGRAM_FILES_X86)
+#         unset(_MSVC_TOOL_ROOT)
+#         unset(_IOT_MANAGER_WINSDK_ROOT)
+#     endif()
+# endif()
+
 # C++ 标准
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
