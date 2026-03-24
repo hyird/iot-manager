@@ -82,6 +82,7 @@ const SL651ConfigPage = () => {
 
   // 设备类型列表（使用 useMemo 保持引用稳定）
   const types = useMemo(() => configPage?.list || [], [configPage?.list]);
+  const emptyTypeDesc = types.length ? "未选择设备类型" : "暂无设备类型";
 
   // 计算当前激活的类型 ID：优先用户选择，否则默认第一个
   const activeTypeId = useMemo(() => {
@@ -421,7 +422,9 @@ const SL651ConfigPage = () => {
         {/* 右侧：功能码配置 */}
         <div className="flex-1 min-w-0 h-full">
           <Card
-            title={activeTypeId ? "功能码配置" : "请选择设备类型"}
+            title={
+              activeTypeId ? "功能码配置" : types.length > 0 ? "请选择设备类型" : "暂无设备类型"
+            }
             className="h-full flex flex-col"
             styles={{ body: { flex: 1, overflow: "auto", padding: 0 } }}
             extra={
@@ -437,7 +440,7 @@ const SL651ConfigPage = () => {
             }
           >
             {!activeTypeId ? (
-              <Empty description="未选择设备类型" />
+              <Empty description={emptyTypeDesc} />
             ) : (
               <div style={{ "--ant-table-header-border-radius": 0 } as React.CSSProperties}>
                 <Table

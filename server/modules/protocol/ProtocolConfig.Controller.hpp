@@ -137,14 +137,8 @@ private:
                 throw ValidationException("S7 配置的 plcModel 仅支持 S7-300、S7-400、S7-1200、S7-1500");
             }
 
-            if (!config.isMember("connection") || !config["connection"].isObject()) {
+            if (config.isMember("connection") && !config["connection"].isObject()) {
                 throw ValidationException("S7 配置的 connection 必须是对象");
-            }
-            const auto& connection = config["connection"];
-            int rack = connection.get("rack", 0).asInt();
-            int slot = connection.get("slot", 1).asInt();
-            if (rack != preset->first || slot != preset->second) {
-                throw ValidationException("S7 配置的 Rack/Slot 必须与所选 PLC 型号匹配");
             }
 
             if (config.isMember("areas")) {

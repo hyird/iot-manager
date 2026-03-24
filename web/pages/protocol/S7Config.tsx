@@ -3,7 +3,7 @@
  * 布局：左侧设备类型列表 + 右侧寄存器配置
  */
 
-import { PlusOutlined } from "@ant-design/icons";
+import { DownloadOutlined, UploadOutlined } from "@ant-design/icons";
 import {
   Button,
   Card,
@@ -22,23 +22,22 @@ import {
   Table,
   Tag,
   Tooltip,
+  Tree,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
-import type { Protocol, S7 } from "@/types";
+import type { S7 } from "@/types";
 
-type DraftItem = Protocol.Item & { config: S7.Config };
-
-type ConnectionFormValues = {
+type DeviceTypeFormValues = {
   deviceType: string;
   plcModel: S7.PlcModel;
-  rack: number;
-  slot: number;
   connectionType: S7.ConnectionType;
   pollInterval: number;
+  enabled: boolean;
+  remark?: string;
 };
 
 const defaultConfig = (): S7.Config => ({
@@ -63,35 +62,182 @@ const plcModelOptions: { value: S7.PlcModel; label: string; rack: number; slot: 
 const getPlcPreset = (plcModel: S7.PlcModel) =>
   plcModelOptions.find((option) => option.value === plcModel) ?? plcModelOptions[2];
 
-const cloneDraft = (item: Protocol.Item): DraftItem => ({
-  ...item,
-  config: {
-    deviceType: (item.config as S7.Config)?.deviceType ?? "",
-    plcModel: (item.config as S7.Config)?.plcModel ?? "S7-1200",
-    connection: {
-      rack: (item.config as S7.Config)?.connection?.rack ?? 0,
-      slot: (item.config as S7.Config)?.connection?.slot ?? 1,
-      connectionType: (item.config as S7.Config)?.connection?.connectionType ?? "PG",
-    },
-    pollInterval: (item.config as S7.Config)?.pollInterval ?? 5,
-    areas: ((item.config as S7.Config)?.areas ?? []).map((area) => ({ ...area })),
-  },
-});
-
-const areaTypeOptions: { value: S7.AreaType; label: string }[] = [
-  { value: "DB", label: "DB" },
-  { value: "MK", label: "MK" },
-  { value: "PE", label: "PE" },
-  { value: "PA", label: "PA" },
-  { value: "CT", label: "CT" },
-  { value: "TM", label: "TM" },
-];
-
 const connectionTypeOptions: { value: S7.ConnectionType; label: string }[] = [
   { value: "PG", label: "PG" },
   { value: "OP", label: "OP" },
-  { value: "S7_BASIC", label: "S7 Basic" },
+  { value: "S7_BASIC", label: "S7BASIC" },
 ];
+
+const connectionTypeTips: Record<S7.ConnectionType, string> = {
+  PG: "PG（编程）模式，常用于本地接线连接与离线调试",
+  OP: "OP（操作）模式，适合上位机常态采集场景",
+  S7_BASIC: "S7 Basic，兼容部分第三方网关的轻量模式",
+};
+
+const getConnectionTypeLabel = (connectionType?: S7.ConnectionType) =>
+  connectionTypeOptions.find((item) => item.value === connectionType)?.label || "PG";
+
+const areaTypeOptions: { value: S7.AreaType; label: string }[] = [
+  { value: "DB", label: "DB（数据块）" },
+  { value: "MK", label: "M（MK，标记位）" },
+  { value: "PE", label: "I（PE，系统输入）" },
+  { value: "PA", label: "Q（PA，系统输出）" },
+  { value: "CT", label: "C（CT，计数器）" },
+  { value: "TM", label: "T（TM，定时器）" },
+];
+
+const areaDataTypeOptions: { value: S7.AreaDataType; label: string }[] = [
+  { value: "BOOL", label: "布尔（BOOL）" },
+  { value: "INT8", label: "8位整型（INT8）" },
+  { value: "UINT8", label: "8位无符号整型（UINT8）" },
+  { value: "INT16", label: "16位有符号整型（INT16）" },
+  { value: "UINT16", label: "16位无符号整型（UINT16）" },
+  { value: "INT32", label: "32位有符号整型（INT32）" },
+  { value: "UINT32", label: "32位无符号整型（UINT32）" },
+  { value: "FLOAT", label: "浮点（FLOAT）" },
+  { value: "LREAL", label: "双精度（LREAL）" },
+  { value: "STRING", label: "字符串（STRING）" },
+];
+
+const areaDataTypeSizeMap: Record<S7.AreaDataType, number> = {
+  BOOL: 1,
+  INT8: 1,
+  UINT8: 1,
+  INT16: 2,
+  UINT16: 2,
+  INT32: 4,
+  UINT32: 4,
+  FLOAT: 4,
+  LREAL: 8,
+  STRING: 1,
+};
+
+const getDataTypeSize = (dataType?: S7.AreaDataType) =>
+  dataType ? areaDataTypeSizeMap[dataType] ?? 1 : 1;
+
+const writableAreaTypes: S7.AreaType[] = ["DB", "MK", "PA"];
+
+const areaAddressPrefixMap: Record<S7.AreaType, { bool: string; number: string }> = {
+  DB: { bool: "X", number: "DB" },
+  MK: { bool: "M", number: "M" },
+  PE: { bool: "I", number: "I" },
+  PA: { bool: "Q", number: "Q" },
+  CT: { bool: "C", number: "C" },
+  TM: { bool: "T", number: "T" },
+};
+
+const areaAddressHintMap: Record<S7.AreaType, string> = {
+  DB: "DB1.DBX0.0、DB1.DBW10、DB1.DBD0、DB1.DBD1（LREAL，DBD 为4字节）",
+  MK: "M0.0、MB10、MW20、MD30",
+  PE: "I0.0、IB10、IW20、ID30",
+  PA: "Q0.0、QB10、QW20、QD30",
+  CT: "C0、C1",
+  TM: "T0、T1",
+};
+
+const areaAddressTypeMap: Record<S7.AreaDataType, string> = {
+  BOOL: "X",
+  INT8: "B",
+  UINT8: "B",
+  INT16: "W",
+  UINT16: "W",
+  INT32: "D",
+  UINT32: "D",
+  FLOAT: "D",
+  LREAL: "D",
+  STRING: "B",
+};
+
+const normalizeS7DataType = (value?: string): S7.AreaDataType => {
+  if (value === "LREAL" || value === "DOUBLE") {
+    return "LREAL";
+  }
+  if (
+    value === "BOOL" ||
+    value === "INT8" ||
+    value === "UINT8" ||
+    value === "INT16" ||
+    value === "UINT16" ||
+    value === "INT32" ||
+    value === "UINT32" ||
+    value === "FLOAT" ||
+    value === "STRING"
+  ) {
+    return value;
+  }
+  return "INT16";
+};
+
+const getAreaAddressSample = (
+  areaType?: S7.AreaType,
+  dataType?: S7.AreaDataType,
+  dbNumber?: number,
+  start?: number,
+  bit?: number
+) => {
+  if (!areaType) return "";
+  const safeStart = typeof start === "number" ? start : 0;
+  const safeBit = typeof bit === "number" ? bit : 0;
+  const area = areaAddressPrefixMap[areaType];
+  const suffix = areaAddressTypeMap[dataType || "INT16"];
+  if (areaType === "CT" || areaType === "TM") {
+    return `${area.number}${safeStart}`;
+  }
+  if (areaType === "DB") {
+    if (!dbNumber) return "";
+    if (suffix === "X") return `DB${dbNumber}.DBX${safeStart}.${safeBit}`;
+    return `DB${dbNumber}.DB${suffix}${safeStart}`;
+  }
+  if (suffix === "X") return `${area.bool}${safeStart}.${safeBit}`;
+  return `${area.number}${suffix}${safeStart}`;
+};
+
+const getAddressSuffixExample = (areaType?: S7.AreaType, dataType?: S7.AreaDataType) => {
+  if (!areaType) return "";
+  const area = areaAddressPrefixMap[areaType];
+  if (areaType === "CT" || areaType === "TM") return "";
+  const suffix = areaAddressTypeMap[dataType || "INT16"];
+  if (suffix === "X") return `${area.bool}X.0`;
+  return `${area.number}${suffix}0`;
+};
+
+const supportsBitAddress = (areaType?: S7.AreaType, dataType?: S7.AreaDataType) =>
+  dataType === "BOOL" && !!areaType && areaType !== "CT" && areaType !== "TM";
+
+const getAddressRuleText = (areaType: S7.AreaType | undefined, isBool: boolean) => {
+  if (areaType === "DB") {
+    return isBool ? "请输入 DB 位号（如 DB1.DBX0.0）" : "请输入 DB 字节偏移（如 DB1.DBW10）";
+  }
+  if (areaType === "CT") {
+    return "请输入计数器地址（如 C0）";
+  }
+  if (areaType === "TM") {
+    return "请输入定时器地址（如 T0）";
+  }
+  return isBool ? "请输入位地址（如 M0.0/I0.1/Q1.2）" : "请输入字节偏移";
+};
+
+const getAreaAddressRangeText = (area: S7.Area) => {
+  const dataType = normalizeS7DataType(area.dataType);
+  const start = typeof area.start === "number" && area.start >= 0 ? area.start : 0;
+  const size =
+    typeof area.size === "number" && area.size > 0 ? area.size : getDataTypeSize(dataType) || 1;
+  const end =
+    dataType === "STRING"
+      ? start + Math.max(size, 1) - 1
+      : dataType === "LREAL"
+        ? start + 1
+        : start;
+  const startBit = typeof area.startBit === "number" ? area.startBit : 0;
+
+  const startAddress = getAreaAddressSample(area.area, dataType, area.dbNumber, start, startBit);
+  const endAddress = getAreaAddressSample(area.area, dataType, area.dbNumber, end, startBit);
+
+  return {
+    start: startAddress || "地址异常",
+    end: endAddress || "地址异常",
+  };
+};
 
 interface AreaModalProps {
   open: boolean;
@@ -103,10 +249,56 @@ interface AreaModalProps {
 
 function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalProps) {
   const [form] = Form.useForm<S7.Area>();
+  const areaType = Form.useWatch("area", form);
+  const dataType = normalizeS7DataType(Form.useWatch("dataType", form) as string | undefined);
+  const dbNumber = Form.useWatch("dbNumber", form);
+  const startAddress = Form.useWatch("start", form);
+  const startBit = Form.useWatch("startBit", form);
+  const stringLength = Form.useWatch("size", form);
+  const parsedAreaType = areaType as S7.AreaType | undefined;
+  const isStringType = dataType === "STRING";
+  const isBoolDataType = dataType === "BOOL";
+  const isWritableArea = writableAreaTypes.includes(parsedAreaType as S7.AreaType);
+  const showBitInput = supportsBitAddress(parsedAreaType, dataType);
+  const addressExample = getAddressSuffixExample(parsedAreaType, dataType);
+  const calcPreviewSize =
+    dataType === "STRING"
+      ? typeof stringLength === "number" && stringLength > 0
+        ? stringLength
+        : 1
+      : getDataTypeSize(dataType);
+  const startOffset = typeof startAddress === "number" && startAddress >= 0 ? startAddress : 0;
+  const endOffset =
+    dataType === "STRING"
+      ? startOffset + Math.max(calcPreviewSize, 1) - 1
+      : dataType === "LREAL"
+        ? startOffset + 1
+        : startOffset;
+  const addressSample = getAreaAddressSample(parsedAreaType, dataType, dbNumber, startOffset, startBit);
+  const endAddressSample = getAreaAddressSample(
+    parsedAreaType,
+    dataType,
+    dbNumber,
+    endOffset,
+    startBit
+  );
+  const canUseBoolAddress = parsedAreaType === "DB" || parsedAreaType === "MK" || parsedAreaType === "PE" || parsedAreaType === "PA";
 
   const handleOk = async () => {
     const values = await form.validateFields();
-    onSubmit(values);
+    const resolvedDataType = parsedAreaType === "CT" || parsedAreaType === "TM" ? values.dataType || "INT16" : values.dataType;
+    const size = resolvedDataType === "STRING" ? values.size : getDataTypeSize(resolvedDataType);
+    const nextDbNumber = parsedAreaType === "DB" ? values.dbNumber : undefined;
+    const nextStartBit = isBoolDataType && canUseBoolAddress ? values.startBit : undefined;
+    const nextValues = {
+      ...values,
+      dbNumber: nextDbNumber,
+      startBit: nextStartBit,
+      dataType: resolvedDataType,
+      size,
+      writable: isWritableArea ? values.writable : false,
+    };
+    onSubmit(nextValues);
   };
 
   return (
@@ -126,10 +318,12 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
             name: "",
             area: "DB",
             dbNumber: 1,
+            dataType: "INT16",
             start: 0,
             size: 1,
             writable: false,
             remark: "",
+            startBit: undefined,
           }
         }
       >
@@ -147,25 +341,133 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
         >
           <Input placeholder="例如: 温度寄存器" />
         </Form.Item>
-        <Form.Item name="area" label="寄存器类型" rules={[{ required: true }]}>
-          <Select options={areaTypeOptions} />
+        <Form.Item name="area" label="寄存器类型" rules={[{ required: true }]} extra="不同区域类型映射不同读取方式">
+          <Select
+            options={areaTypeOptions}
+            onChange={(value: S7.AreaType) => {
+              const currentDataType = normalizeS7DataType(form.getFieldValue("dataType") as string | undefined);
+              const updates: Partial<S7.Area> = {};
+              const normalizedDataType = value === "CT" || value === "TM"
+                ? currentDataType === "BOOL"
+                  ? "INT16"
+                  : currentDataType
+                : currentDataType;
+
+              if (value === "CT" || value === "TM") {
+                updates.dataType = normalizedDataType;
+                updates.size = getDataTypeSize(normalizedDataType);
+              } else if (normalizedDataType !== "STRING") {
+                updates.size = getDataTypeSize(normalizedDataType);
+              }
+
+              if (value !== "DB") {
+                updates.dbNumber = undefined;
+              }
+              if (value === "DB" && form.getFieldValue("dbNumber") == null) {
+                updates.dbNumber = 1;
+              }
+              updates.startBit = undefined;
+
+              if (Object.keys(updates).length > 0) {
+                form.setFieldsValue(updates);
+              }
+            }}
+          />
         </Form.Item>
-        <Form.Item name="dbNumber" label="DB 编号">
-          <InputNumber min={0} className="w-full" />
+        <Form.Item name="dataType" label="数据类型" rules={[{ required: true }]} extra="不同数据类型对应不同解析方式">
+          <Select
+            options={
+              areaType === "CT" || areaType === "TM"
+                ? areaDataTypeOptions.filter((item) => item.value !== "BOOL")
+                : areaDataTypeOptions
+            }
+            onChange={(value: S7.AreaDataType) => {
+              const updates: Partial<S7.Area> = {};
+              if (value !== "BOOL") {
+                updates.startBit = undefined;
+              }
+              if (value === "STRING") {
+                const currentSize = form.getFieldValue("size") as number | undefined;
+                if (typeof currentSize !== "number" || Number.isNaN(currentSize)) {
+                  updates.size = 1;
+                }
+              } else {
+                updates.size = getDataTypeSize(value);
+              }
+              if (Object.keys(updates).length > 0) {
+                form.setFieldsValue(updates);
+              }
+            }}
+          />
         </Form.Item>
-        <Space size="middle" className="w-full">
-          <Form.Item name="start" label="起始地址" rules={[{ required: true }]} className="flex-1">
-            <InputNumber min={0} className="w-full" />
-          </Form.Item>
-          <Form.Item name="size" label="长度" rules={[{ required: true }]} className="flex-1">
+        {areaType === "DB" && (
+          <Form.Item
+            name="dbNumber"
+            label="DB 编号"
+            rules={[{ required: true, message: "请输入 DB 编号" }]}
+            extra="示例：S7-300 上可读 DB1~DB999；S7-1200 常见为 DB1、DB100 等"
+          >
             <InputNumber min={1} className="w-full" />
           </Form.Item>
-        </Space>
-        <Form.Item name="writable" label="可写" valuePropName="checked">
-          <Switch />
-        </Form.Item>
+        )}
+        <Flex gap={16} className="w-full" align="flex-start" wrap>
+          <Form.Item
+            name="start"
+            label="起始偏移"
+            rules={[
+              { required: true, message: getAddressRuleText(parsedAreaType, isBoolDataType) },
+              { type: "number", min: 0, message: "偏移不能小于 0" },
+            ]}
+            className="flex-1"
+          >
+            <InputNumber min={0} className="!w-full" />
+          </Form.Item>
+          {showBitInput && (
+            <Form.Item
+              name="startBit"
+              label="位号"
+              rules={
+                isBoolDataType
+                  ? [
+                      { required: true, message: "请输入位号" },
+                      { type: "number", min: 0, max: 7, message: "位号只能是 0~7" },
+                    ]
+                  : undefined
+              }
+              className="flex-1"
+            >
+              <InputNumber min={0} max={7} className="!w-full" />
+            </Form.Item>
+          )}
+          {isStringType && (
+            <Form.Item
+              name="size"
+              label="长度（字节）"
+              rules={[{ required: true, message: "请输入字符串长度" }]}
+              className="flex-1"
+              extra="字符串长度单位为字节"
+            >
+              <InputNumber min={1} className="!w-full" />
+            </Form.Item>
+          )}
+        </Flex>
+          <Form.Item label="地址示例">
+            <div className="text-xs text-gray-500">
+              参考示例：{addressExample || (parsedAreaType ? "按区域规则自动拼接" : "请先选择寄存器类型")}
+            </div>
+            <div className="text-xs text-gray-500">
+              {areaType ? `示例：${areaAddressHintMap[areaType]}` : "请先选择寄存器类型"}
+            </div>
+            <div className="text-xs text-gray-500">当前起始地址：{addressSample || "暂无"}</div>
+            <div className="text-xs text-gray-500">当前结束地址：{endAddressSample || "暂无"}</div>
+          </Form.Item>
+        {isWritableArea && (
+          <Form.Item name="writable" label="可写" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        )}
         <Form.Item name="remark" label="备注">
-          <Input.TextArea rows={3} placeholder="备注" />
+          <Input.TextArea rows={3} placeholder="备注说明" />
         </Form.Item>
       </Form>
     </Modal>
@@ -182,7 +484,7 @@ const S7ConfigPage = () => {
 
   const {
     data: configPage,
-    isLoading,
+    isLoading: loadingTypes,
     refetch,
   } = useProtocolConfigList({ protocol: "S7" }, { enabled: canQuery });
   const saveMutation = useProtocolConfigSave();
@@ -190,16 +492,17 @@ const S7ConfigPage = () => {
   const { exportConfigs, triggerImport, importing } = useProtocolImportExport("S7");
 
   const [selectedTypeId, setSelectedTypeId] = useState<number>();
-  const [draft, setDraft] = useState<DraftItem | null>(null);
-  const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [createForm] = Form.useForm<{ deviceType: string; plcModel: S7.PlcModel }>();
-  const [connectionForm] = Form.useForm<ConnectionFormValues>();
-  const watchedCreatePlcModel = Form.useWatch("plcModel", createForm) ?? "S7-1200";
-
+  const [deviceTypeModalOpen, setDeviceTypeModalOpen] = useState(false);
+  const [editingDeviceType, setEditingDeviceType] = useState<boolean>(false);
+  const [createForm] = Form.useForm<DeviceTypeFormValues>();
   const [areaModalOpen, setAreaModalOpen] = useState(false);
   const [editingAreaId, setEditingAreaId] = useState<string | null>(null);
 
   const types = useMemo(() => configPage?.list || [], [configPage?.list]);
+  const emptyTypeDesc = types.length ? "未选择设备类型" : "暂无设备类型";
+  const selectedConnectionType =
+    Form.useWatch("connectionType", createForm) as S7.ConnectionType | undefined;
+  const connectionTypeTip = connectionTypeTips[selectedConnectionType || "PG"];
 
   const activeTypeId = useMemo(() => {
     if (selectedTypeId && types.some((t) => t.id === selectedTypeId)) {
@@ -210,50 +513,8 @@ const S7ConfigPage = () => {
 
   const activeType = useMemo(() => types.find((t) => t.id === activeTypeId), [activeTypeId, types]);
 
-  useEffect(() => {
-    if (!activeType) {
-      setDraft(null);
-      return;
-    }
-    setDraft(cloneDraft(activeType));
-  }, [activeType]);
-
-  useEffect(() => {
-    if (!draft) return;
-    connectionForm.setFieldsValue({
-      deviceType: draft.config.deviceType,
-      plcModel: draft.config.plcModel,
-      rack: draft.config.connection.rack,
-      slot: draft.config.connection.slot,
-      connectionType: draft.config.connection.connectionType,
-      pollInterval: draft.config.pollInterval ?? 5,
-    });
-  }, [activeTypeId, connectionForm]);
-
-  useEffect(() => {
-    if (!draft) return;
-    const preset = getPlcPreset(draft.config.plcModel);
-    if (
-      draft.config.connection.rack !== preset.rack ||
-      draft.config.connection.slot !== preset.slot
-    ) {
-      updateDraft((current) => ({
-        ...current,
-        config: {
-          ...current.config,
-          connection: {
-            ...current.config.connection,
-            rack: preset.rack,
-            slot: preset.slot,
-          },
-        },
-      }));
-    }
-  }, [draft?.config.plcModel]);
-
-  const updateDraft = (updater: (current: DraftItem) => DraftItem) => {
-    setDraft((current) => (current ? updater(current) : current));
-  };
+  const activeConfig = (activeType?.config as S7.Config) ?? null;
+  const activeAreas = activeConfig?.areas ?? [];
 
   const areaColumns: ColumnsType<S7.Area> = [
     { title: "寄存器 ID", dataIndex: "id", ellipsis: true },
@@ -263,9 +524,16 @@ const S7ConfigPage = () => {
       dataIndex: "area",
       render: (value: S7.AreaType) => <Tag color="blue">{value}</Tag>,
     },
+    {
+      title: "数据类型",
+      dataIndex: "dataType",
+      ellipsis: true,
+      render: (value?: string) => (value ? normalizeS7DataType(value) : "-"),
+    },
     { title: "DB 编号", dataIndex: "dbNumber", render: (value?: number) => value ?? "-" },
-    { title: "起始地址", dataIndex: "start" },
-    { title: "长度", dataIndex: "size" },
+    { title: "起始地址", render: (_, record: S7.Area) => getAreaAddressRangeText(record).start },
+    { title: "结束地址", render: (_, record: S7.Area) => getAreaAddressRangeText(record).end },
+    { title: "长度（字节）", dataIndex: "size" },
     {
       title: "可写",
       dataIndex: "writable",
@@ -292,15 +560,18 @@ const S7ConfigPage = () => {
           {canDelete && (
             <Popconfirm
               title="确认删除该寄存器？"
-              onConfirm={() => {
-                if (!draft) return;
-                updateDraft((current) => ({
-                  ...current,
+              onConfirm={async () => {
+                if (!activeTypeId || !activeConfig) return;
+                const nextAreas = activeConfig.areas.filter((item) => item.id !== record.id);
+                await saveMutation.mutateAsync({
+                  id: activeTypeId,
+                  protocol: "S7",
                   config: {
-                    ...current.config,
-                    areas: current.config.areas.filter((item) => item.id !== record.id),
+                    ...activeConfig,
+                    areas: nextAreas,
                   },
-                }));
+                });
+                await refetch();
               }}
             >
               <Button size="small" danger type="link">
@@ -319,334 +590,345 @@ const S7ConfigPage = () => {
     const nextType = types[idx + 1] ?? types[idx - 1];
     await deleteMutation.mutateAsync(activeTypeId);
     setSelectedTypeId(nextType?.id);
-  };
-
-  const handleSave = async () => {
-    if (!draft) return;
-    await connectionForm.validateFields();
-    await saveMutation.mutateAsync({
-      id: draft.id,
-      protocol: "S7",
-      name: draft.name,
-      enabled: draft.enabled,
-      config: draft.config,
-      remark: draft.remark,
-    });
     await refetch();
   };
 
-  const handleCreate = async () => {
-    const values = await createForm.validateFields();
-    const preset = getPlcPreset(values.plcModel);
-    const config = defaultConfig();
-    await saveMutation.mutateAsync({
-      protocol: "S7",
-      name: values.deviceType,
+  const handleOpenCreateType = () => {
+    setEditingDeviceType(false);
+    setDeviceTypeModalOpen(true);
+    createForm.setFieldsValue({
+      deviceType: "",
+      plcModel: "S7-1200",
+      connectionType: "PG",
+      pollInterval: 5,
       enabled: true,
-      config: {
+      remark: "",
+    });
+  };
+
+  const handleOpenEditType = () => {
+    if (!activeType) return;
+    setEditingDeviceType(true);
+    setDeviceTypeModalOpen(true);
+    createForm.setFieldsValue({
+      deviceType: activeType.name,
+      plcModel: (activeType.config as S7.Config)?.plcModel ?? "S7-1200",
+      connectionType: (activeType.config as S7.Config)?.connection?.connectionType ?? "PG",
+      pollInterval: (activeType.config as S7.Config)?.pollInterval ?? 5,
+      enabled: activeType.enabled,
+      remark: activeType.remark,
+    });
+  };
+
+  const handleSaveDeviceType = async () => {
+    const values = await createForm.validateFields();
+    if (editingDeviceType) {
+      if (!activeTypeId || !activeType) return;
+      const preset = getPlcPreset(values.plcModel);
+      const currentConfig = (activeType.config as S7.Config) ?? defaultConfig();
+      const nextConfig: S7.Config = {
+        ...currentConfig,
+        plcModel: values.plcModel,
+        connection: {
+          ...currentConfig.connection,
+          rack: preset.rack,
+          slot: preset.slot,
+          connectionType: values.connectionType,
+        },
+        pollInterval: values.pollInterval,
+      };
+      await saveMutation.mutateAsync({
+        id: activeTypeId,
+        protocol: "S7",
+        name: values.deviceType,
+        enabled: values.enabled,
+        config: nextConfig,
+        remark: values.remark,
+      });
+    } else {
+      const preset = getPlcPreset(values.plcModel);
+      const config = defaultConfig();
+      const nextConfig: S7.Config = {
         ...config,
         deviceType: values.deviceType,
         plcModel: values.plcModel,
+        pollInterval: values.pollInterval,
         connection: {
           ...config.connection,
           rack: preset.rack,
           slot: preset.slot,
+          connectionType: values.connectionType,
         },
-      },
-    });
-    setCreateModalOpen(false);
+      };
+      await saveMutation.mutateAsync({
+        protocol: "S7",
+        name: values.deviceType,
+        enabled: values.enabled,
+        config: nextConfig,
+        remark: values.remark,
+      });
+    }
+    setDeviceTypeModalOpen(false);
+    setEditingDeviceType(false);
     createForm.resetFields();
     await refetch();
   };
 
-  const editingArea = draft?.config.areas.find((area) => area.id === editingAreaId);
+  const loadingAreas = loadingTypes;
+  const editingArea = activeConfig?.areas.find((area) => area.id === editingAreaId);
+
+  if (!canQuery) {
+    return (
+      <PageContainer title="S7配置">
+        <Result status="403" title="无权访问" subTitle="您没有权限访问此页面" />
+      </PageContainer>
+    );
+  }
 
   return (
-    <PageContainer title="S7协议配置">
-      <Flex gap="middle" align="stretch" className="h-full">
-        <Card
-          className="w-[360px] shrink-0"
-          title="设备类型"
-          extra={
-            <Space>
-              {canAdd && (
-                <Button type="primary" size="small" onClick={() => setCreateModalOpen(true)}>
-                  新建设备类型
-                </Button>
-              )}
-              {canImport && (
-                <Button
-                  size="small"
-                  icon={<PlusOutlined />}
-                  onClick={triggerImport}
-                  loading={importing}
-                >
-                  导入
-                </Button>
-              )}
-              {canExport && (
-                <Button size="small" onClick={() => exportConfigs(types)}>
-                  导出
-                </Button>
-              )}
-            </Space>
-          }
-        >
-          {isLoading ? (
-            <Skeleton active paragraph={{ rows: 6 }} />
-          ) : types.length ? (
-            <Table
-              size="small"
-              rowKey="id"
-              pagination={false}
-              dataSource={types}
-              rowSelection={undefined}
-              columns={[
-                {
-                  title: "设备类型",
-                  dataIndex: "name",
-                  ellipsis: true,
-                  render: (_, row) => (row.config as S7.Config)?.deviceType || row.name,
-                },
-                {
-                  title: "状态",
-                  dataIndex: "enabled",
-                  width: 80,
-                  render: (enabled: boolean) =>
-                    enabled ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>,
-                },
-                {
-                  title: "操作",
-                  width: 90,
-                  render: (_, row) => (
-                    <Button type="link" size="small" onClick={() => setSelectedTypeId(row.id)}>
-                      查看
-                    </Button>
-                  ),
-                },
-              ]}
-              onRow={(record) => ({
-                onClick: () => setSelectedTypeId(record.id),
-              })}
-            />
-          ) : (
-            <Empty description="暂无 S7 配置" />
-          )}
-        </Card>
-
-        <Card className="flex-1 min-w-0" title="寄存器配置">
-          {!draft ? (
-            <Result status="info" title="请选择或创建一个 S7 配置" />
-          ) : (
-            <Space direction="vertical" className="w-full" size="large">
-              <Space wrap>
-                <Input
-                  value={draft.config.deviceType || draft.name}
-                  style={{ width: 280 }}
-                  disabled={!canEdit}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    connectionForm.setFieldsValue({ deviceType: value });
-                    setDraft({
-                      ...draft,
-                      name: value,
-                      config: { ...draft.config, deviceType: value },
-                    });
-                  }}
-                />
-                <Space>
-                  <span>启用</span>
-                  <Switch
-                    checked={draft.enabled}
-                    disabled={!canEdit}
-                    onChange={(checked) => setDraft({ ...draft, enabled: checked })}
-                  />
-                </Space>
-                <Input
-                  value={draft.remark}
-                  placeholder="备注"
-                  style={{ width: 320 }}
-                  disabled={!canEdit}
-                  onChange={(e) => setDraft({ ...draft, remark: e.target.value })}
-                />
-                {canDelete && (
-                  <Button danger onClick={handleDeleteType}>
-                    删除配置
+    <PageContainer title="S7配置">
+      <div className="h-full flex">
+        <div className="w-[360px] shrink-0 pr-3 h-full">
+          <Card
+            title="设备类型"
+            className="h-full flex flex-col"
+            styles={{ body: { flex: 1, overflow: "auto", padding: 16 } }}
+            extra={
+              <Space size={4}>
+                {canAdd && (
+                  <Button size="small" type="primary" onClick={handleOpenCreateType}>
+                    新增
                   </Button>
                 )}
                 {canEdit && (
-                  <Button type="primary" onClick={handleSave} loading={saveMutation.isPending}>
-                    保存配置
+                  <Button
+                    size="small"
+                    disabled={!activeTypeId}
+                    onClick={handleOpenEditType}
+                  >
+                    编辑
                   </Button>
                 )}
-              </Space>
-
-              <Card size="small" title="连接参数">
-                <Form
-                  form={connectionForm}
-                  layout="vertical"
-                  disabled={!canEdit}
-                  onValuesChange={(_, values) =>
-                    updateDraft((current) => ({
-                      ...current,
-                      config: {
-                        ...current.config,
-                        deviceType: values.deviceType,
-                        plcModel: values.plcModel,
-                        connection: {
-                          ...current.config.connection,
-                          rack: values.rack,
-                          slot: values.slot,
-                          connectionType: values.connectionType,
-                        },
-                        pollInterval: values.pollInterval,
-                      },
-                    }))
-                  }
-                >
-                  <Space direction="vertical" className="w-full" size="middle">
-                    <Form.Item
-                      name="deviceType"
-                      label="设备类型"
-                      rules={[{ required: true, message: "请输入设备类型" }]}
-                    >
-                      <Input placeholder="例如：S7-1200" />
-                    </Form.Item>
-                    <Form.Item
-                      name="plcModel"
-                      label="PLC型号"
-                      rules={[{ required: true, message: "请选择PLC型号" }]}
-                    >
-                      <Select
-                        options={plcModelOptions.map(({ value, label }) => ({ value, label }))}
-                        onChange={(value: S7.PlcModel) => {
-                          const preset = getPlcPreset(value);
-                          connectionForm.setFieldsValue({ rack: preset.rack, slot: preset.slot });
-                          updateDraft((current) => ({
-                            ...current,
-                            config: {
-                              ...current.config,
-                              plcModel: value,
-                              connection: {
-                                ...current.config.connection,
-                                rack: preset.rack,
-                                slot: preset.slot,
-                              },
-                            },
-                          }));
-                        }}
-                      />
-                    </Form.Item>
-                    <Space wrap className="w-full">
-                      <Form.Item name="rack" label="Rack">
-                        <InputNumber min={0} className="w-full" disabled />
-                      </Form.Item>
-                      <Form.Item name="slot" label="Slot">
-                        <InputNumber min={0} className="w-full" disabled />
-                      </Form.Item>
-                      <Form.Item name="connectionType" label="连接类型" className="min-w-[160px]">
-                        <Select options={connectionTypeOptions} />
-                      </Form.Item>
-                      <Form.Item name="pollInterval" label="轮询(秒)">
-                        <InputNumber min={1} className="w-full" />
-                      </Form.Item>
-                    </Space>
-                    <Tooltip title="S7 适配器会按这个间隔轮询区域并回传原始字节数据">
-                      <Tag color="blue">registers={draft.config.areas.length}</Tag>
-                    </Tooltip>
-                  </Space>
-                </Form>
-              </Card>
-
-              <Card
-                size="small"
-                title="寄存器配置"
-                extra={
-                  canEdit ? (
+                {canDelete && (
+                  <Popconfirm
+                    title="确认删除该设备类型？"
+                    onConfirm={handleDeleteType}
+                    disabled={!activeTypeId}
+                  >
+                    <Button size="small" danger disabled={!activeTypeId}>
+                      删除
+                    </Button>
+                  </Popconfirm>
+                )}
+                {canExport && (
+                  <Tooltip title="导出">
                     <Button
                       size="small"
-                      type="primary"
-                      onClick={() => {
-                        setEditingAreaId(null);
-                        setAreaModalOpen(true);
-                      }}
-                    >
-                      新增寄存器
-                    </Button>
-                  ) : null
-                }
-              >
-                <Table
+                      icon={<DownloadOutlined />}
+                      disabled={!types.length}
+                      onClick={() => exportConfigs(types)}
+                    />
+                  </Tooltip>
+                )}
+                {canImport && (
+                  <Tooltip title="导入">
+                    <Button
+                      size="small"
+                      icon={<UploadOutlined />}
+                      loading={importing}
+                      onClick={triggerImport}
+                    />
+                  </Tooltip>
+                )}
+              </Space>
+            }
+          >
+            {loadingTypes ? (
+              <Skeleton active paragraph={{ rows: 6 }} />
+            ) : types.length === 0 ? (
+              <Empty description="暂无设备类型" />
+            ) : (
+                <Tree
+                  blockNode
+                  className="[&_.ant-tree-switcher]:hidden"
+                  selectedKeys={activeTypeId ? [String(activeTypeId)] : []}
+                onSelect={(keys) => {
+                  if (keys.length > 0) {
+                    setSelectedTypeId(Number(keys[0]));
+                  }
+                }}
+                treeData={types.map((t) => {
+                  const config = t.config as S7.Config;
+                  const regCount = config?.areas?.length || 0;
+                  return {
+                    key: String(t.id),
+                    title: (
+                      <Tooltip title={t.remark || "暂无备注"} placement="right">
+                        <Flex justify="space-between" align="center" className="h-8 p-1">
+                          <Space size={4}>
+                            <span>{t.name}</span>
+                            <Tag color="blue">{regCount}个寄存器</Tag>
+                          </Space>
+                          {t.enabled ? <Tag color="green">启用</Tag> : <Tag color="red">禁用</Tag>}
+                        </Flex>
+                      </Tooltip>
+                    ),
+                  };
+                })}
+              />
+            )}
+          </Card>
+        </div>
+
+        <div className="flex-1 min-w-0 h-full">
+          <Card
+            title={
+                activeType ? (
+                  <Space>
+                    <span>寄存器配置</span>
+                    {activeType?.enabled ? <Tag color="green">启用</Tag> : <Tag color="red">禁用</Tag>}
+                    <Tag color="blue">
+                      {getConnectionTypeLabel((activeType.config as S7.Config)?.connection?.connectionType)}
+                    </Tag>
+                    <Tag>读取间隔 {(activeType.config as S7.Config)?.pollInterval ?? 5}s</Tag>
+                  </Space>
+                ) : (
+                  types.length > 0 ? "请选择设备类型" : "暂无设备类型"
+                )
+            }
+            className="h-full flex flex-col"
+            styles={{ body: { flex: 1, overflow: "auto", padding: 0 } }}
+            extra={
+              canAdd &&
+              activeTypeId && (
+                <Button
                   size="small"
-                  rowKey="id"
-                  pagination={false}
-                  dataSource={draft.config.areas}
-                  columns={areaColumns}
-                  locale={{ emptyText: <Empty description="暂无寄存器" /> }}
-                />
-              </Card>
-            </Space>
-          )}
-        </Card>
-      </Flex>
+                  type="primary"
+                  onClick={() => {
+                    setEditingAreaId(null);
+                    setAreaModalOpen(true);
+                  }}
+                >
+                  新增寄存器
+                </Button>
+              )
+            }
+          >
+            {!activeType ? (
+              <Empty description={emptyTypeDesc} />
+            ) : (
+              <Space direction="vertical" className="w-full p-4" size="large">
+                <div style={{ "--ant-table-header-border-radius": 0 } as CSSProperties}>
+                  <Table
+                    size="small"
+                    rowKey="id"
+                    pagination={false}
+                    loading={loadingAreas}
+                    dataSource={activeAreas}
+                    columns={areaColumns}
+                    locale={{ emptyText: <Empty description="暂无寄存器" /> }}
+                    sticky
+                    scroll={{ x: "max-content" }}
+                  />
+                </div>
+              </Space>
+            )}
+          </Card>
+        </div>
+      </div>
 
       <Modal
-        title="新建设备类型"
-        open={createModalOpen}
-        onCancel={() => setCreateModalOpen(false)}
-        onOk={handleCreate}
+        title={editingDeviceType ? "编辑设备类型" : "新建设备类型"}
+        open={deviceTypeModalOpen}
+        confirmLoading={saveMutation.isPending}
+        onCancel={() => {
+          setDeviceTypeModalOpen(false);
+          setEditingDeviceType(false);
+          createForm.resetFields();
+        }}
+        onOk={handleSaveDeviceType}
         destroyOnHidden
       >
         <Form
           form={createForm}
           layout="vertical"
-          initialValues={{ deviceType: "", plcModel: "S7-1200" }}
+          initialValues={{
+            deviceType: "",
+            plcModel: "S7-1200",
+            connectionType: "PG",
+            pollInterval: 5,
+            enabled: true,
+            remark: "",
+          }}
         >
           <Form.Item
             name="deviceType"
-            label="设备类型"
-            rules={[{ required: true, message: "请输入设备类型" }]}
+            label="名称"
+            rules={[{ required: true, message: "请输入名称" }]}
+            extra="用于区分同一协议下不同设备类别"
           >
-            <Input placeholder="例如: S7-1200" />
+            <Input placeholder="例如: 温湿度传感器" />
           </Form.Item>
           <Form.Item
             name="plcModel"
             label="PLC型号"
             rules={[{ required: true, message: "请选择PLC型号" }]}
+            extra="切换型号会自动带入对应的默认 Rack/Slot"
           >
             <Select options={plcModelOptions.map(({ value, label }) => ({ value, label }))} />
           </Form.Item>
-          <Space size="middle" className="w-full">
-            <Form.Item label="Rack" className="flex-1">
-              <InputNumber
-                value={getPlcPreset(watchedCreatePlcModel).rack}
-                disabled
-                className="w-full"
-              />
-            </Form.Item>
-            <Form.Item label="Slot" className="flex-1">
-              <InputNumber
-                value={getPlcPreset(watchedCreatePlcModel).slot}
-                disabled
-                className="w-full"
-              />
-            </Form.Item>
-          </Space>
+          <Form.Item
+            name="connectionType"
+            label="连接类型"
+            rules={[{ required: true, message: "请选择连接类型" }]}
+            extra={connectionTypeTip}
+          >
+            <Select options={connectionTypeOptions} />
+          </Form.Item>
+          <Form.Item
+            name="pollInterval"
+            label="轮询间隔（秒）"
+            rules={[{ required: true, message: "请输入轮询间隔" }]}
+            extra="数值越小采集越频繁，建议 1~300 秒之间按实际场景调整"
+          >
+            <InputNumber min={1} max={3600} className="w-full" addonAfter="秒" />
+          </Form.Item>
+          <Form.Item name="remark" label="备注">
+            <Input.TextArea rows={3} placeholder="备注说明" />
+          </Form.Item>
+          <Form.Item name="enabled" label="启用" valuePropName="checked">
+            <Switch />
+          </Form.Item>
         </Form>
       </Modal>
 
       <AreaModal
         open={areaModalOpen}
         mode={editingArea ? "edit" : "create"}
-        initialValue={editingArea}
+        initialValue={
+          editingArea
+            ? {
+                ...editingArea,
+                dataType: normalizeS7DataType(editingArea.dataType),
+                startBit: editingArea.startBit,
+              }
+            : undefined
+        }
         onCancel={() => setAreaModalOpen(false)}
-        onSubmit={(value) => {
-          updateDraft((current) => {
-            const areas = current.config.areas.some((area) => area.id === value.id)
-              ? current.config.areas.map((area) => (area.id === value.id ? value : area))
-              : [...current.config.areas, value];
-            return { ...current, config: { ...current.config, areas } };
+        onSubmit={async (value) => {
+          if (!activeTypeId || !activeConfig) return;
+          const nextAreas = activeConfig.areas.some((area) => area.id === value.id)
+            ? activeConfig.areas.map((area) => (area.id === value.id ? value : area))
+            : [...activeConfig.areas, value];
+          await saveMutation.mutateAsync({
+            id: activeTypeId,
+            protocol: "S7",
+            config: {
+              ...activeConfig,
+              areas: nextAreas,
+            },
           });
+          await refetch();
           setAreaModalOpen(false);
           setEditingAreaId(null);
         }}

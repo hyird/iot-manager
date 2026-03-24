@@ -177,13 +177,28 @@ export type S7PlcModel = "S7-300" | "S7-400" | "S7-1200" | "S7-1500";
 /** S7 区域类型 */
 export type S7AreaType = "DB" | "MK" | "PE" | "PA" | "CT" | "TM";
 
+/** S7 数据类型 */
+export type S7AreaDataType =
+  | "BOOL"
+  | "INT8"
+  | "UINT8"
+  | "INT16"
+  | "UINT16"
+  | "INT32"
+  | "UINT32"
+  | "FLOAT"
+  | "LREAL"
+  | "STRING";
+
 /** S7 区域定义 */
 export interface S7Area {
   id: string;
   name: string;
   area: S7AreaType;
+  dataType?: S7AreaDataType;
   dbNumber?: number;
   start: number;
+  startBit?: number;
   size: number;
   writable?: boolean;
   remark?: string;
@@ -285,6 +300,7 @@ export namespace S7 {
   export type ConnectionType = S7ConnectionType;
   export type PlcModel = S7PlcModel;
   export type AreaType = S7AreaType;
+  export type AreaDataType = S7AreaDataType;
   export type Area = S7Area;
   export type Connection = S7Connection;
   export type Config = S7Config;

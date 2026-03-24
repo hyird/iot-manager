@@ -221,6 +221,13 @@ private:
         return S7AreaDB;
     }
 
+    static std::optional<std::pair<int, int>> resolvePreset(const std::string& plcModel) {
+        if (plcModel == "S7-300") return std::make_pair(0, 2);
+        if (plcModel == "S7-400") return std::make_pair(0, 3);
+        if (plcModel == "S7-1200" || plcModel == "S7-1500") return std::make_pair(0, 1);
+        return std::nullopt;
+    }
+
     static std::string bytesToHex(const std::vector<uint8_t>& bytes) {
         std::ostringstream oss;
         for (uint8_t b : bytes) {
@@ -249,13 +256,19 @@ private:
         return bytes;
     }
 
-    static S7ConnectionConfig parseConnection(const Json::Value& config) {
+    static S7ConnectionConfig parseConnection(const Json::Value& config, const std::string& plcModel) {
         S7ConnectionConfig connection;
+        auto preset = resolvePreset(plcModel);
+        if (preset) {
+            connection.rack = preset->first;
+            connection.slot = preset->second;
+        }
+
         if (config.isMember("connection") && config["connection"].isObject()) {
             const auto& conn = config["connection"];
             connection.host = conn.get("host", "").asString();
-            connection.rack = conn.get("rack", 0).asInt();
-            connection.slot = conn.get("slot", 1).asInt();
+            connection.rack = conn.get("rack", connection.rack).asInt();
+            connection.slot = conn.get("slot", connection.slot).asInt();
             connection.connectionType = conn.get("connectionType", "PG").asString();
         }
         connection.pollIntervalSec = config.get("pollInterval", 5).asInt();
@@ -299,7 +312,8 @@ private:
         runtime->deviceId = device.id;
         runtime->linkId = device.linkId;
         runtime->deviceCode = device.deviceCode.empty() ? ("s7_" + std::to_string(device.id)) : device.deviceCode;
-        runtime->connection = parseConnection(device.protocolConfig);
+        const std::string plcModel = device.protocolConfig.get("plcModel", "").asString();
+        runtime->connection = parseConnection(device.protocolConfig, plcModel);
         if (!device.linkIp.empty()) {
             runtime->connection.host = device.linkIp;
         }

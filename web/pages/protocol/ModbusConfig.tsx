@@ -141,6 +141,7 @@ const ModbusConfigPage = () => {
 
   // 设备类型列表（使用 useMemo 保持引用稳定）
   const types = useMemo(() => configPage?.list || [], [configPage?.list]);
+  const emptyTypeDesc = types.length ? "未选择设备类型" : "暂无设备类型";
 
   // 计算当前激活的类型 ID：优先用户选择，否则默认第一个
   const activeTypeId = useMemo(() => {
@@ -397,7 +398,7 @@ const ModbusConfigPage = () => {
                   <Tag>间隔 {(activeType.config as Modbus.Config)?.readInterval ?? 1}s</Tag>
                 </Space>
               ) : (
-                "请选择设备类型"
+                types.length > 0 ? "请选择设备类型" : "暂无设备类型"
               )
             }
             className="h-full flex flex-col"
@@ -415,7 +416,7 @@ const ModbusConfigPage = () => {
             }
           >
             {!activeTypeId ? (
-              <Empty description="未选择设备类型" />
+              <Empty description={emptyTypeDesc} />
             ) : (
               <div style={{ "--ant-table-header-border-radius": 0 } as React.CSSProperties}>
                 <Table
@@ -528,17 +529,22 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
             label="字节序"
             name="byteOrder"
             rules={[{ required: true, message: "请选择字节序" }]}
+            extra="不同字节序将影响寄存器值解析"
           >
             <Select options={ByteOrderOptions} />
           </Form.Item>
-          <Form.Item label="读取间隔" name="readInterval" extra="轮询读取寄存器的时间间隔">
+          <Form.Item
+            label="读取间隔（秒）"
+            name="readInterval"
+            extra="数值越小采集越频繁，建议按设备负载设置间隔"
+          >
             <InputNumber min={1} max={3600} className="!w-full" addonAfter="秒" />
+          </Form.Item>
+          <Form.Item label="备注" name="remark">
+            <Input.TextArea rows={3} placeholder="备注说明" />
           </Form.Item>
           <Form.Item label="启用" name="enabled" valuePropName="checked">
             <Switch />
-          </Form.Item>
-          <Form.Item label="备注" name="remark">
-            <Input.TextArea rows={3} />
           </Form.Item>
         </Form>
       </Modal>
