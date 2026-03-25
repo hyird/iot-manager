@@ -4,9 +4,11 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <iomanip>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -387,6 +389,22 @@ private:
         return std::string(ip) + ":" + std::to_string(ntohs(addr.sin_port));
     }
 
+    static std::string bytesToHex(const std::uint8_t* data, std::size_t size) {
+        if (!data || size == 0) {
+            return {};
+        }
+
+        std::ostringstream oss;
+        oss << std::hex << std::uppercase << std::setfill('0');
+        for (std::size_t i = 0; i < size; ++i) {
+            if (i > 0) {
+                oss << ' ';
+            }
+            oss << std::setw(2) << static_cast<int>(data[i]);
+        }
+        return oss.str();
+    }
+
     bool sendToClient(const std::string& clientAddr, const std::uint8_t* data, std::size_t size) {
         if (size == 0) {
             return true;
@@ -415,6 +433,8 @@ private:
             socket = state->socket;
         }
 
+        LOG_DEBUG << "[S7][Proxy] TX " << size << "B to " << clientAddr
+                  << ", hex=" << bytesToHex(data, size);
         return sendAll(socket, data, size);
     }
 
@@ -505,7 +525,8 @@ private:
                 break;
             }
 
-            LOG_TRACE << "[S7][Proxy] RX " << received << "B from " << state->clientAddr;
+            LOG_DEBUG << "[S7][Proxy] RX " << received << "B from " << state->clientAddr
+                      << ", hex=" << bytesToHex(buffer.data(), static_cast<std::size_t>(received));
             if (dataCallback_) {
                 dataCallback_(
                     state->clientAddr,

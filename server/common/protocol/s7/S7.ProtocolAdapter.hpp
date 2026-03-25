@@ -50,6 +50,9 @@ struct S7ConnectionConfig {
     int slot = 1;
     std::uint16_t localTSAP = 0x0100;
     std::uint16_t remoteTSAP = 0x0100;
+    int pingTimeoutMs = 10000;
+    int sendTimeoutMs = 10000;
+    int recvTimeoutMs = 10000;
     int pollIntervalSec = 5;
     std::string connectionType = "PG";
 };
@@ -236,6 +239,11 @@ public:
         if (definitions.empty()) {
             return;
         }
+
+        LOG_DEBUG << "[S7][Adapter] RX DTU linkId=" << linkId
+                  << ", client=" << clientAddr
+                  << ", bytes=" << bytes.size()
+                  << ", hex=" << bytesToHex(bytes);
 
         auto normalized = bridgeNormalizer_->normalize(linkId, clientAddr, bytes);
         if (normalized.kind == RegistrationMatchKind::Conflict) {
@@ -553,9 +561,17 @@ private:
     }
 
     static std::string bytesToHex(const std::vector<uint8_t>& bytes) {
+        if (bytes.empty()) {
+            return {};
+        }
+
         std::ostringstream oss;
-        for (uint8_t b : bytes) {
-            oss << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
+        oss << std::hex << std::uppercase << std::setfill('0');
+        for (std::size_t i = 0; i < bytes.size(); ++i) {
+            if (i > 0) {
+                oss << ' ';
+            }
+            oss << std::setw(2) << static_cast<int>(bytes[i]);
         }
         return oss.str();
     }
@@ -824,6 +840,18 @@ private:
             if (auto remoteTSAP = parseTsapHex(conn["remoteTSAP"])) {
                 connection.remoteTSAP = *remoteTSAP;
             }
+            connection.pingTimeoutMs = conn.get("pingTimeout", connection.pingTimeoutMs).asInt();
+            connection.sendTimeoutMs = conn.get("sendTimeout", connection.sendTimeoutMs).asInt();
+            connection.recvTimeoutMs = conn.get("recvTimeout", connection.recvTimeoutMs).asInt();
+            if (connection.pingTimeoutMs <= 0) connection.pingTimeoutMs = 10000;
+            if (connection.sendTimeoutMs <= 0) connection.sendTimeoutMs = 10000;
+            if (connection.recvTimeoutMs <= 0) connection.recvTimeoutMs = 10000;
+            if (connection.recvTimeoutMs < connection.sendTimeoutMs) {
+                connection.recvTimeoutMs = connection.sendTimeoutMs;
+            }
+            if (connection.pingTimeoutMs < connection.recvTimeoutMs) {
+                connection.pingTimeoutMs = connection.recvTimeoutMs;
+            }
         }
         if (isS7_200) {
             connection.mode = "TSAP";
@@ -958,17 +986,20 @@ private:
         LOG_DEBUG << "[S7][Adapter] Connecting device " << runtime.deviceId
                   << " to " << runtime.connection.host
                   << " mode=" << runtime.connection.mode
-                  << (runtime.bridgeMode ? " (bridge)" : "");
+                  << (runtime.bridgeMode ? " (bridge)" : "")
+                  << ", pingTimeout=" << runtime.connection.pingTimeoutMs << "ms"
+                  << ", sendTimeout=" << runtime.connection.sendTimeoutMs << "ms"
+                  << ", recvTimeout=" << runtime.connection.recvTimeoutMs << "ms";
 
         runtime.resetClient();
         runtime.client = s7CliCreate();
         if (!s7IsValidHandle(runtime.client)) {
             runtime.connected = false;
-            runtime.proxyClientAddr.clear();
             return false;
         }
 
         runtime.lastConnectAttempt = now;
+        applyConnectionTimeouts(runtime.client, runtime.connection);
         std::unique_lock<std::mutex> connectLock;
         if (runtime.bridgeMode) {
             connectLock = std::unique_lock<std::mutex>(connectMutex_);
@@ -1001,13 +1032,23 @@ private:
         }
         runtime.connected = (rc == 0) && s7CliGetConnected(runtime.client);
         if (!runtime.connected) {
+            if (runtime.bridgeMode) {
+                std::uint16_t localPort = 0;
+                if (s7CliGetParam(runtime.client, p_u16_LocalPort, &localPort) == 0 && localPort != 0) {
+                    runtime.proxyClientAddr = "127.0.0.1:" + std::to_string(localPort);
+                }
+            }
             LOG_WARN << "[S7][Adapter] Connect failed for device " << runtime.deviceId
                      << ", rc=" << rc
                      << ", host=" << runtime.connection.host
                      << ", mode=" << runtime.connection.mode;
             runtime.resetClient();
             if (runtime.bridgeMode) {
-                runtime.proxyClientAddr.clear();
+                LOG_DEBUG << "[S7][Adapter] Keep pending proxy association after connect failure: device "
+                          << runtime.deviceId
+                          << ", proxy=" << (runtime.proxyClientAddr.empty()
+                              ? "<pending>"
+                              : runtime.proxyClientAddr);
             }
             return false;
         }
@@ -1075,6 +1116,28 @@ private:
 
     static std::string bytesToString(const std::vector<uint8_t>& bytes) {
         return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    }
+
+    static void applyConnectionTimeouts(S7ClientHandle client, const S7ConnectionConfig& connection) {
+        if (!s7IsValidHandle(client)) {
+            return;
+        }
+
+        const auto setTimeout = [&](int param, int value, const char* name) {
+            if (value <= 0) {
+                return;
+            }
+            int32_t timeout = value;
+            if (s7CliSetParam(client, param, &timeout) != 0) {
+                LOG_DEBUG << "[S7][Adapter] Failed to set " << name
+                          << " for host=" << connection.host
+                          << ", value=" << value;
+            }
+        };
+
+        setTimeout(p_i32_PingTimeout, connection.pingTimeoutMs, "PingTimeout");
+        setTimeout(p_i32_SendTimeout, connection.sendTimeoutMs, "SendTimeout");
+        setTimeout(p_i32_RecvTimeout, connection.recvTimeoutMs, "RecvTimeout");
     }
 
     bool isBridgeReadyLocked(int deviceId) const {
@@ -1296,6 +1359,11 @@ private:
 
         if (shouldBroadcast) {
             const std::size_t byteCount = bytes.size();
+            LOG_DEBUG << "[S7][Adapter] TX probe to DTU linkId=" << requestLinkId
+                      << ", proxy=" << clientAddr
+                      << ", bytes=" << byteCount
+                      << ", excluded=" << excludeAddrs.size()
+                      << ", hex=" << bytesToHex(bytes);
             const bool sent = excludeAddrs.empty()
                 ? LinkTransportFacade::instance().sendData(requestLinkId, payload)
                 : LinkTransportFacade::instance().sendDataExcluding(requestLinkId, payload, excludeAddrs);
@@ -1325,6 +1393,10 @@ private:
         }
 
         const std::size_t byteCount = bytes.size();
+        LOG_DEBUG << "[S7][Adapter] TX DTU client=" << bridgeClientAddr
+                  << ", linkId=" << bridgeLinkId
+                  << ", bytes=" << byteCount
+                  << ", hex=" << bytesToHex(bytes);
         if (!LinkTransportFacade::instance().sendToClient(bridgeLinkId, bridgeClientAddr, payload)) {
             std::lock_guard lock(devicesMutex_);
             auto* runtime = findRuntimeLocked(deviceId);
@@ -1384,6 +1456,10 @@ private:
             return proxy_.sendToClient(proxyClientAddr, frame);
         });
         auto remainingToDtu = sendPending(pendingToDtu, [&](const std::vector<uint8_t>& frame) {
+            LOG_DEBUG << "[S7][Adapter] TX DTU client=" << bridgeClientAddr
+                      << ", linkId=" << bridgeLinkId
+                      << ", bytes=" << frame.size()
+                      << ", hex=" << bytesToHex(frame);
             return LinkTransportFacade::instance().sendToClient(bridgeLinkId, bridgeClientAddr, bytesToString(frame));
         });
 
