@@ -89,9 +89,6 @@ const LinkPage = () => {
   const handleModeChange = (mode: Link.Mode) => {
     if (mode === "TCP Server") {
       form.setFieldValue("ip", "0.0.0.0");
-      if (form.getFieldValue("protocol") === "S7") {
-        form.setFieldValue("protocol", "SL651");
-      }
     } else {
       const currentIp = form.getFieldValue("ip");
       if (currentIp === "0.0.0.0") {
@@ -236,9 +233,9 @@ const LinkPage = () => {
     },
   ];
 
-  const protocolOptions = (mode: Link.Mode | undefined) => {
+  const protocolOptions = (_mode: Link.Mode | undefined) => {
     const protocols = linkEnums?.protocols || ["SL651", "Modbus", "Modbus TCP", "Modbus RTU", "S7"];
-    return mode === "TCP Server" ? protocols.filter((protocol) => protocol !== "S7") : protocols;
+    return protocols;
   };
 
   return (

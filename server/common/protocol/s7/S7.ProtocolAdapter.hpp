@@ -1,7 +1,12 @@
 #pragma once
 
+#include "S7.DtuRegistry.hpp"
+#include "S7.DtuSessionManager.hpp"
+#include "S7.LocalTcpProxy.hpp"
+#include "S7.RegistrationNormalizer.hpp"
 #include "S7.Snap7Compat.hpp"
 #include "common/cache/DeviceCache.hpp"
+#include "common/network/LinkTransportFacade.hpp"
 #include "common/protocol/ProtocolAdapter.hpp"
 #include "common/utils/Constants.hpp"
 
@@ -10,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <iomanip>
 #include <memory>
 #include <mutex>
@@ -59,10 +65,18 @@ struct S7DeviceRuntime {
     int deviceId = 0;
     int linkId = 0;
     std::string deviceCode;
+    std::string dtuKey;
+    std::string proxyClientAddr;
+    std::string bridgeClientAddr;
+    int bridgeLinkId = 0;
     S7ConnectionConfig connection;
     std::vector<S7AreaDefinition> areas;
+    std::deque<std::vector<uint8_t>> pendingDtuToProxy;
+    std::deque<std::vector<uint8_t>> pendingProxyToDtu;
     S7ClientHandle client = kS7InvalidObject;
     bool connected = false;
+    bool bridgeMode = false;
+    bool bridgeBound = false;
     std::chrono::steady_clock::time_point lastConnectAttempt{};
     std::chrono::steady_clock::time_point lastPoll{};
 
@@ -79,10 +93,18 @@ struct S7DeviceRuntime {
         : deviceId(other.deviceId)
         , linkId(other.linkId)
         , deviceCode(std::move(other.deviceCode))
+        , dtuKey(std::move(other.dtuKey))
+        , proxyClientAddr(std::move(other.proxyClientAddr))
+        , bridgeClientAddr(std::move(other.bridgeClientAddr))
+        , bridgeLinkId(other.bridgeLinkId)
         , connection(std::move(other.connection))
         , areas(std::move(other.areas))
+        , pendingDtuToProxy(std::move(other.pendingDtuToProxy))
+        , pendingProxyToDtu(std::move(other.pendingProxyToDtu))
         , client(std::exchange(other.client, kS7InvalidObject))
         , connected(other.connected)
+        , bridgeMode(other.bridgeMode)
+        , bridgeBound(other.bridgeBound)
         , lastConnectAttempt(other.lastConnectAttempt)
         , lastPoll(other.lastPoll) {
         other.connected = false;
@@ -98,10 +120,18 @@ struct S7DeviceRuntime {
         deviceId = other.deviceId;
         linkId = other.linkId;
         deviceCode = std::move(other.deviceCode);
+        dtuKey = std::move(other.dtuKey);
+        proxyClientAddr = std::move(other.proxyClientAddr);
+        bridgeClientAddr = std::move(other.bridgeClientAddr);
+        bridgeLinkId = other.bridgeLinkId;
         connection = std::move(other.connection);
         areas = std::move(other.areas);
+        pendingDtuToProxy = std::move(other.pendingDtuToProxy);
+        pendingProxyToDtu = std::move(other.pendingProxyToDtu);
         client = std::exchange(other.client, kS7InvalidObject);
         connected = other.connected;
+        bridgeMode = other.bridgeMode;
+        bridgeBound = other.bridgeBound;
         lastConnectAttempt = other.lastConnectAttempt;
         lastPoll = other.lastPoll;
         other.connected = false;
@@ -122,7 +152,26 @@ struct S7DeviceRuntime {
 class S7ProtocolAdapter final : public ProtocolAdapter {
 public:
     explicit S7ProtocolAdapter(ProtocolRuntimeContext runtimeContext)
-        : ProtocolAdapter(std::move(runtimeContext)) {}
+        : ProtocolAdapter(std::move(runtimeContext)) {
+        bridgeRegistry_ = std::make_unique<DtuRegistry>();
+        bridgeSessionManager_ = std::make_unique<DtuSessionManager>();
+        bridgeNormalizer_ = std::make_unique<RegistrationNormalizer>(*bridgeRegistry_, *bridgeSessionManager_);
+        bridgeSessionManager_->setOldSessionDisplacedCallback(
+            [this](int linkId, const std::string& clientAddr) {
+                LinkTransportFacade::instance().disconnectServerClient(linkId, clientAddr);
+            }
+        );
+        proxy_.setConnectionCallback(
+            [this](const std::string& clientAddr, bool connected) {
+                onProxyConnectionChanged(clientAddr, connected);
+            }
+        );
+        proxy_.setDataCallback(
+            [this](const std::string& clientAddr, std::vector<uint8_t> bytes) {
+                onProxyDataReceived(clientAddr, std::move(bytes));
+            }
+        );
+    }
 
     std::string_view protocol() const override {
         return Constants::PROTOCOL_S7;
@@ -138,9 +187,81 @@ public:
         co_return;
     }
 
-    void onConnectionChanged(int, const std::string&, bool) override {}
+    void onConnectionChanged(int linkId, const std::string& clientAddr, bool connected) override {
+        if (!bridgeRegistry_ || bridgeRegistry_->empty()) {
+            return;
+        }
 
-    void onDataReceived(int, const std::string&, std::vector<uint8_t>) override {}
+        auto definitions = bridgeRegistry_->getDefinitionsByLink(linkId);
+        if (definitions.empty()) {
+            return;
+        }
+
+        std::optional<S7DtuSession> previousSession;
+        if (bridgeSessionManager_) {
+            previousSession = bridgeSessionManager_->getSession(linkId, clientAddr);
+        }
+
+        if (bridgeSessionManager_) {
+            if (connected) {
+                bridgeSessionManager_->onConnected(linkId, clientAddr);
+            } else {
+                bridgeSessionManager_->onDisconnected(linkId, clientAddr);
+            }
+        }
+
+        if (!connected && previousSession && previousSession->bindState == SessionBindState::Bound
+            && previousSession->deviceId > 0) {
+            closeRuntimeClient(previousSession->deviceId);
+        }
+    }
+
+    void onDataReceived(int linkId, const std::string& clientAddr, std::vector<uint8_t> bytes) override {
+        if (!bridgeNormalizer_ || !bridgeRegistry_ || !bridgeSessionManager_) {
+            return;
+        }
+
+        auto definitions = bridgeRegistry_->getDefinitionsByLink(linkId);
+        if (definitions.empty()) {
+            return;
+        }
+
+        auto normalized = bridgeNormalizer_->normalize(linkId, clientAddr, bytes);
+        if (normalized.kind == RegistrationMatchKind::Conflict) {
+            LOG_WARN << "[S7][Adapter] Registration conflict: linkId="
+                     << linkId << ", client=" << clientAddr;
+            return;
+        }
+
+        int deviceId = 0;
+        if (!normalized.dtuKey.empty()) {
+            auto dtuOpt = bridgeRegistry_->findByDtuKey(normalized.dtuKey);
+            if (dtuOpt) {
+                deviceId = dtuOpt->deviceId;
+            }
+        }
+
+        auto sessionOpt = bridgeSessionManager_->getSession(linkId, clientAddr);
+        if (deviceId <= 0 && sessionOpt && sessionOpt->bindState == SessionBindState::Bound) {
+            deviceId = sessionOpt->deviceId;
+        }
+
+        if (deviceId > 0 && sessionOpt && sessionOpt->bindState == SessionBindState::Bound) {
+            const std::string dtuKey = normalized.dtuKey.empty() ? sessionOpt->dtuKey : normalized.dtuKey;
+            attachBridgeSession(deviceId, linkId, clientAddr, dtuKey);
+        }
+
+        if (!normalized.payload.empty() && deviceId > 0) {
+            forwardDtuPayload(deviceId, std::move(normalized.payload));
+            return;
+        }
+
+        if (!normalized.payload.empty()) {
+            LOG_DEBUG << "[S7][Adapter] Drop unbound payload: linkId=" << linkId
+                      << ", client=" << clientAddr
+                      << ", bytes=" << normalized.payload.size();
+        }
+    }
 
     void onMaintenanceTick() override {
         std::vector<ParsedFrameResult> results;
@@ -149,6 +270,9 @@ public:
         std::lock_guard lock(devicesMutex_);
         for (auto& [deviceId, runtime] : devices_) {
             if (!ensureConnected(runtime, now)) {
+                continue;
+            }
+            if (runtime.bridgeMode && !isBridgeReadyLocked(deviceId)) {
                 continue;
             }
             if (runtime.areas.empty()) {
@@ -174,14 +298,24 @@ public:
         metrics.stats["deviceCount"] = static_cast<Json::Int64>(devices_.size());
         Json::Int64 connectedCount = 0;
         Json::Int64 areaCount = 0;
+        Json::Int64 bridgeDeviceCount = 0;
+        Json::Int64 bridgeReadyCount = 0;
         for (const auto& [_, runtime] : devices_) {
-            if (runtime.connected) {
+            if (runtime.bridgeMode) {
+                ++bridgeDeviceCount;
+            }
+            if (runtime.connected && (!runtime.bridgeMode || isBridgeReadyLocked(runtime.deviceId))) {
                 ++connectedCount;
             }
             areaCount += static_cast<Json::Int64>(runtime.areas.size());
+            if (runtime.bridgeMode && isBridgeReadyLocked(runtime.deviceId)) {
+                ++bridgeReadyCount;
+            }
         }
         metrics.stats["connectedCount"] = connectedCount;
         metrics.stats["areaCount"] = areaCount;
+        metrics.stats["bridgeDeviceCount"] = bridgeDeviceCount;
+        metrics.stats["bridgeReadyCount"] = bridgeReadyCount;
         return metrics;
     }
 
@@ -202,7 +336,9 @@ public:
     bool isDeviceConnected(int deviceId) const override {
         std::lock_guard lock(devicesMutex_);
         auto it = devices_.find(deviceId);
-        return it != devices_.end() && it->second.connected;
+        return it != devices_.end()
+            && it->second.connected
+            && (!it->second.bridgeMode || isBridgeReadyLocked(deviceId));
     }
 
     Task<CommandResult> sendCommand(const CommandRequest& req) override {
@@ -219,13 +355,30 @@ public:
                 co_return CommandResult::error("S7 设备不存在");
             }
 
-            auto runtime = buildRuntime(*deviceOpt);
-            if (!runtime) {
-                co_return CommandResult::error("S7 设备配置无效");
-            }
+            const int deviceId = deviceOpt->id;
+            int linkId = deviceOpt->linkId;
+            std::string deviceCode = deviceOpt->deviceCode.empty()
+                ? std::to_string(deviceOpt->id)
+                : deviceOpt->deviceCode;
 
-            if (!ensureConnected(*runtime, std::chrono::steady_clock::now())) {
-                co_return CommandResult::offline("S7 设备离线");
+            {
+                std::lock_guard lock(devicesMutex_);
+                auto runtime = findRuntimeLocked(deviceId);
+                if (!runtime) {
+                    co_return CommandResult::offline("S7 设备离线");
+                }
+
+                if (!ensureConnected(*runtime, std::chrono::steady_clock::now())) {
+                    co_return CommandResult::offline("S7 设备离线");
+                }
+                if (runtime->bridgeMode && !runtime->bridgeBound) {
+                    co_return CommandResult::offline("S7 桥接未就绪");
+                }
+
+                linkId = runtime->linkId;
+                if (!runtime->deviceCode.empty()) {
+                    deviceCode = runtime->deviceCode;
+                }
             }
 
             if (!req.elements.isArray() || req.elements.empty()) {
@@ -233,27 +386,41 @@ public:
             }
 
             int64_t downCommandId = co_await savePendingCommand(
-                runtime->deviceId, runtime->linkId, Constants::PROTOCOL_S7,
+                deviceId, linkId, Constants::PROTOCOL_S7,
                 req.funcCode, "S7 写入", "", req.userId, req.elements);
 
             std::string failure;
-            for (const auto& elem : req.elements) {
-                if (!elem.isObject()) continue;
-                std::string areaName = toUpper(elem.get("area", "DB").asString());
-                int dbNumber = elem.get("dbNumber", 0).asInt();
-                if (areaName == "V" && dbNumber <= 0) {
-                    dbNumber = 1;
-                }
-                int start = elem.get("start", 0).asInt();
-                auto bytes = parseBytes(elem);
-                if (bytes.empty()) {
-                    failure = "S7 指令缺少可写入的数据";
-                    break;
-                }
-                int rc = writeArea(*runtime, areaName, dbNumber, start, bytes);
-                if (rc != 0) {
-                    failure = "S7 写入失败，错误码=" + std::to_string(rc);
-                    break;
+            {
+                std::lock_guard lock(devicesMutex_);
+                auto runtime = findRuntimeLocked(deviceId);
+                if (!runtime) {
+                    failure = "S7 设备离线";
+                } else {
+                    if (!ensureConnected(*runtime, std::chrono::steady_clock::now())) {
+                        failure = "S7 设备离线";
+                    } else if (runtime->bridgeMode && !runtime->bridgeBound) {
+                        failure = "S7 桥接未就绪";
+                    } else {
+                        for (const auto& elem : req.elements) {
+                            if (!elem.isObject()) continue;
+                            std::string areaName = toUpper(elem.get("area", "DB").asString());
+                            int dbNumber = elem.get("dbNumber", 0).asInt();
+                            if (areaName == "V" && dbNumber <= 0) {
+                                dbNumber = 1;
+                            }
+                            int start = elem.get("start", 0).asInt();
+                            auto bytes = parseBytes(elem);
+                            if (bytes.empty()) {
+                                failure = "S7 指令缺少可写入的数据";
+                                break;
+                            }
+                            int rc = writeArea(*runtime, areaName, dbNumber, start, bytes);
+                            if (rc != 0) {
+                                failure = "S7 写入失败，错误码=" + std::to_string(rc);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -264,7 +431,7 @@ public:
 
             co_await runtimeContext_.commandStore.updateCommandStatus(downCommandId, "SUCCESS", "S7 写入成功");
             if (runtimeContext_.notifyCommandCompletion) {
-                runtimeContext_.notifyCommandCompletion(req.deviceCode.empty() ? std::to_string(req.deviceId) : req.deviceCode,
+                runtimeContext_.notifyCommandCompletion(deviceCode,
                     "SUCCESS", true, downCommandId);
             }
             guard.release();
@@ -621,9 +788,17 @@ private:
         runtime->deviceId = device.id;
         runtime->linkId = device.linkId;
         runtime->deviceCode = device.deviceCode.empty() ? ("s7_" + std::to_string(device.id)) : device.deviceCode;
+        runtime->bridgeMode = device.linkMode == Constants::LINK_MODE_TCP_SERVER;
+        if (runtime->bridgeMode) {
+            runtime->dtuKey = std::to_string(device.linkId) + ":"
+                + detail::makeRegistrationToken(device.registrationBytes);
+            runtime->connection.host = "127.0.0.1";
+        }
         const std::string plcModel = device.protocolConfig.get("plcModel", "").asString();
         runtime->connection = parseConnection(device.protocolConfig, plcModel);
-        if (!device.linkIp.empty()) {
+        if (runtime->bridgeMode) {
+            runtime->connection.host = "127.0.0.1";
+        } else if (!device.linkIp.empty()) {
             runtime->connection.host = device.linkIp;
         }
         if (runtime->connection.host.empty()) {
@@ -634,6 +809,30 @@ private:
     }
 
     Task<> refreshDevices() {
+        if (bridgeRegistry_) {
+            co_await bridgeRegistry_->reload();
+        }
+
+        if (bridgeSessionManager_) {
+            auto sessions = bridgeSessionManager_->listSessions();
+            for (const auto& session : sessions) {
+                if (session.linkId > 0 && !session.clientAddr.empty()) {
+                    LinkTransportFacade::instance().disconnectServerClient(session.linkId, session.clientAddr);
+                }
+            }
+            bridgeSessionManager_->clearAllSessions();
+        }
+
+        const bool hasBridgeDevices = bridgeRegistry_ && !bridgeRegistry_->empty();
+        if (hasBridgeDevices) {
+            const std::string proxyError = proxy_.start("127.0.0.1", 102);
+            if (!proxyError.empty()) {
+                LOG_ERROR << "[S7][Proxy] " << proxyError;
+            }
+        } else {
+            proxy_.stop();
+        }
+
         auto devices = co_await DeviceCache::instance().getDevices();
         std::unordered_map<int, S7DeviceRuntime> next;
         for (const auto& device : devices) {
@@ -649,7 +848,9 @@ private:
     }
 
     bool ensureConnected(S7DeviceRuntime& runtime, std::chrono::steady_clock::time_point now) {
-        if (runtime.connected && s7IsValidHandle(runtime.client) && s7CliGetConnected(runtime.client)) {
+        if (runtime.connected && s7IsValidHandle(runtime.client) && s7CliGetConnected(runtime.client)
+            && (!runtime.bridgeMode || (!runtime.proxyClientAddr.empty()
+                && runtime.proxyClientAddr.rfind("PENDING#", 0) != 0))) {
             return true;
         }
 
@@ -657,10 +858,19 @@ private:
         runtime.client = s7CliCreate();
         if (!s7IsValidHandle(runtime.client)) {
             runtime.connected = false;
+            runtime.proxyClientAddr.clear();
             return false;
         }
 
         runtime.lastConnectAttempt = now;
+        std::unique_lock<std::mutex> connectLock;
+        if (runtime.bridgeMode) {
+            connectLock = std::unique_lock<std::mutex>(connectMutex_);
+            if (runtime.proxyClientAddr.empty() || runtime.proxyClientAddr.rfind("PENDING#", 0) != 0) {
+                runtime.proxyClientAddr = "PENDING#" + std::to_string(runtime.deviceId);
+            }
+        }
+
         int rc = -1;
         if (runtime.connection.mode == "TSAP") {
             if (s7CliSetConnectionParams(
@@ -682,8 +892,285 @@ private:
         runtime.connected = (rc == 0) && s7CliGetConnected(runtime.client);
         if (!runtime.connected) {
             runtime.resetClient();
+            if (runtime.bridgeMode) {
+                runtime.proxyClientAddr.clear();
+            }
+            return false;
+        }
+
+        if (runtime.bridgeMode) {
+            std::uint16_t localPort = 0;
+            if (s7CliGetParam(runtime.client, p_u16_LocalPort, &localPort) == 0 && localPort != 0) {
+                const std::string proxyAddr = "127.0.0.1:" + std::to_string(localPort);
+                if (runtime.proxyClientAddr.empty() || runtime.proxyClientAddr.rfind("PENDING#", 0) == 0) {
+                    runtime.proxyClientAddr = proxyAddr;
+                }
+            }
         }
         return runtime.connected;
+    }
+
+    S7DeviceRuntime* findRuntimeLocked(int deviceId) {
+        auto it = devices_.find(deviceId);
+        if (it == devices_.end()) {
+            return nullptr;
+        }
+        return &it->second;
+    }
+
+    const S7DeviceRuntime* findRuntimeLocked(int deviceId) const {
+        auto it = devices_.find(deviceId);
+        if (it == devices_.end()) {
+            return nullptr;
+        }
+        return &it->second;
+    }
+
+    S7DeviceRuntime* findRuntimeByProxyAddrLocked(const std::string& clientAddr) {
+        for (auto& [deviceId, runtime] : devices_) {
+            (void)deviceId;
+            if (runtime.proxyClientAddr == clientAddr) {
+                return &runtime;
+            }
+        }
+        return nullptr;
+    }
+
+    S7DeviceRuntime* findPendingRuntimeLocked() {
+        for (auto& [deviceId, runtime] : devices_) {
+            (void)deviceId;
+            if (runtime.bridgeMode && runtime.proxyClientAddr.rfind("PENDING#", 0) == 0) {
+                return &runtime;
+            }
+        }
+        return nullptr;
+    }
+
+    static void prependQueue(std::deque<std::vector<uint8_t>>& target, std::deque<std::vector<uint8_t>>& source) {
+        while (!source.empty()) {
+            target.push_front(std::move(source.back()));
+            source.pop_back();
+        }
+    }
+
+    static std::string bytesToString(const std::vector<uint8_t>& bytes) {
+        return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    }
+
+    bool isBridgeReadyLocked(int deviceId) const {
+        auto it = devices_.find(deviceId);
+        if (it == devices_.end()) {
+            return false;
+        }
+        const auto& runtime = it->second;
+        return runtime.bridgeMode
+            && runtime.connected
+            && runtime.bridgeBound
+            && !runtime.proxyClientAddr.empty()
+            && runtime.proxyClientAddr.rfind("PENDING#", 0) != 0
+            && !runtime.bridgeClientAddr.empty()
+            && runtime.bridgeLinkId > 0;
+    }
+
+    void attachBridgeSession(int deviceId, int linkId, const std::string& clientAddr, const std::string& dtuKey) {
+        bool shouldFlush = false;
+        {
+            std::lock_guard lock(devicesMutex_);
+            auto* runtime = findRuntimeLocked(deviceId);
+            if (!runtime || !runtime->bridgeMode) {
+                return;
+            }
+
+            runtime->bridgeBound = true;
+            runtime->bridgeLinkId = linkId;
+            runtime->bridgeClientAddr = clientAddr;
+            if (!dtuKey.empty()) {
+                runtime->dtuKey = dtuKey;
+            }
+            shouldFlush = runtime->connected && !runtime->proxyClientAddr.empty()
+                && runtime->proxyClientAddr.rfind("PENDING#", 0) != 0;
+        }
+
+        if (shouldFlush) {
+            flushBridgeSession(deviceId);
+        }
+    }
+
+    void closeRuntimeClient(int deviceId) {
+        std::string proxyClientAddr;
+        {
+            std::lock_guard lock(devicesMutex_);
+            auto* runtime = findRuntimeLocked(deviceId);
+            if (!runtime) {
+                return;
+            }
+
+            proxyClientAddr = runtime->proxyClientAddr;
+            runtime->proxyClientAddr.clear();
+            runtime->bridgeBound = false;
+            runtime->bridgeLinkId = 0;
+            runtime->bridgeClientAddr.clear();
+            runtime->pendingDtuToProxy.clear();
+            runtime->pendingProxyToDtu.clear();
+            runtime->connected = false;
+            runtime->resetClient();
+        }
+
+        if (!proxyClientAddr.empty() && proxyClientAddr.rfind("PENDING#", 0) != 0) {
+            proxy_.disconnectClient(proxyClientAddr);
+        }
+    }
+
+    void forwardDtuPayload(int deviceId, std::vector<uint8_t> bytes) {
+        if (bytes.empty()) {
+            return;
+        }
+
+        std::string proxyClientAddr;
+        {
+            std::lock_guard lock(devicesMutex_);
+            auto* runtime = findRuntimeLocked(deviceId);
+            if (!runtime || !runtime->bridgeMode) {
+                return;
+            }
+
+            if (!runtime->connected || runtime->proxyClientAddr.empty()
+                || runtime->proxyClientAddr.rfind("PENDING#", 0) == 0) {
+                runtime->pendingDtuToProxy.push_back(std::move(bytes));
+                return;
+            }
+
+            proxyClientAddr = runtime->proxyClientAddr;
+        }
+
+        if (!proxy_.sendToClient(proxyClientAddr, bytes)) {
+            std::lock_guard lock(devicesMutex_);
+            auto* runtime = findRuntimeLocked(deviceId);
+            if (runtime && runtime->bridgeMode) {
+                runtime->pendingDtuToProxy.push_back(std::move(bytes));
+            }
+        }
+    }
+
+    void onProxyConnectionChanged(const std::string& clientAddr, bool connected) {
+        int deviceId = 0;
+        bool shouldFlush = false;
+
+        {
+            std::lock_guard lock(devicesMutex_);
+            S7DeviceRuntime* runtime = findRuntimeByProxyAddrLocked(clientAddr);
+            if (!runtime && connected) {
+                runtime = findPendingRuntimeLocked();
+            }
+
+            if (!runtime || !runtime->bridgeMode) {
+                return;
+            }
+
+            deviceId = runtime->deviceId;
+            if (connected) {
+                runtime->proxyClientAddr = clientAddr;
+                runtime->connected = true;
+                shouldFlush = runtime->bridgeBound && !runtime->bridgeClientAddr.empty()
+                    && runtime->bridgeLinkId > 0;
+            } else {
+                runtime->connected = false;
+                runtime->proxyClientAddr.clear();
+                runtime->pendingDtuToProxy.clear();
+                runtime->pendingProxyToDtu.clear();
+            }
+        }
+
+        if (connected && shouldFlush) {
+            flushBridgeSession(deviceId);
+        }
+    }
+
+    void onProxyDataReceived(const std::string& clientAddr, std::vector<uint8_t> bytes) {
+        int deviceId = 0;
+        std::string bridgeClientAddr;
+        int bridgeLinkId = 0;
+
+        {
+            std::lock_guard lock(devicesMutex_);
+            auto* runtime = findRuntimeByProxyAddrLocked(clientAddr);
+            if (!runtime || !runtime->bridgeMode) {
+                return;
+            }
+
+            deviceId = runtime->deviceId;
+            bridgeClientAddr = runtime->bridgeClientAddr;
+            bridgeLinkId = runtime->bridgeLinkId;
+
+            if (!runtime->bridgeBound || bridgeClientAddr.empty() || bridgeLinkId <= 0) {
+                runtime->pendingProxyToDtu.push_back(std::move(bytes));
+                return;
+            }
+        }
+
+        const std::string payload = bytesToString(bytes);
+        if (!LinkTransportFacade::instance().sendToClient(bridgeLinkId, bridgeClientAddr, payload)) {
+            std::lock_guard lock(devicesMutex_);
+            auto* runtime = findRuntimeLocked(deviceId);
+            if (runtime && runtime->bridgeMode) {
+                runtime->pendingProxyToDtu.push_back(std::move(bytes));
+            }
+        }
+    }
+
+    void flushBridgeSession(int deviceId) {
+        std::deque<std::vector<uint8_t>> pendingToProxy;
+        std::deque<std::vector<uint8_t>> pendingToDtu;
+        std::string proxyClientAddr;
+        std::string bridgeClientAddr;
+        int bridgeLinkId = 0;
+
+        {
+            std::lock_guard lock(devicesMutex_);
+            auto* runtime = findRuntimeLocked(deviceId);
+            if (!runtime || !isBridgeReadyLocked(deviceId)) {
+                return;
+            }
+
+            proxyClientAddr = runtime->proxyClientAddr;
+            bridgeClientAddr = runtime->bridgeClientAddr;
+            bridgeLinkId = runtime->bridgeLinkId;
+            pendingToProxy.swap(runtime->pendingDtuToProxy);
+            pendingToDtu.swap(runtime->pendingProxyToDtu);
+        }
+
+        auto sendPending = [&](std::deque<std::vector<uint8_t>>& queue, auto&& sender) {
+            std::deque<std::vector<uint8_t>> remaining;
+            while (!queue.empty()) {
+                auto frame = std::move(queue.front());
+                queue.pop_front();
+                if (!sender(frame)) {
+                    remaining.push_back(std::move(frame));
+                    break;
+                }
+            }
+            while (!queue.empty()) {
+                remaining.push_back(std::move(queue.front()));
+                queue.pop_front();
+            }
+            return remaining;
+        };
+
+        auto remainingToProxy = sendPending(pendingToProxy, [&](const std::vector<uint8_t>& frame) {
+            return proxy_.sendToClient(proxyClientAddr, frame);
+        });
+        auto remainingToDtu = sendPending(pendingToDtu, [&](const std::vector<uint8_t>& frame) {
+            return LinkTransportFacade::instance().sendToClient(bridgeLinkId, bridgeClientAddr, bytesToString(frame));
+        });
+
+        if (!remainingToProxy.empty() || !remainingToDtu.empty()) {
+            std::lock_guard lock(devicesMutex_);
+            auto* runtime = findRuntimeLocked(deviceId);
+            if (runtime && runtime->bridgeMode) {
+                prependQueue(runtime->pendingDtuToProxy, remainingToProxy);
+                prependQueue(runtime->pendingProxyToDtu, remainingToDtu);
+            }
+        }
     }
 
     void pollDevice(S7DeviceRuntime& runtime, std::vector<ParsedFrameResult>& results) {
@@ -723,7 +1210,12 @@ private:
     }
 
     mutable std::mutex devicesMutex_;
+    mutable std::mutex connectMutex_;
     std::unordered_map<int, S7DeviceRuntime> devices_;
+    std::unique_ptr<DtuRegistry> bridgeRegistry_;
+    std::unique_ptr<DtuSessionManager> bridgeSessionManager_;
+    std::unique_ptr<RegistrationNormalizer> bridgeNormalizer_;
+    S7LocalTcpProxy proxy_;
 };
 
 }  // namespace s7

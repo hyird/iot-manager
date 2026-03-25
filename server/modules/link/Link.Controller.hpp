@@ -97,10 +97,6 @@ public:
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
         ValidatorHelper::requireInList(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
             "协议", "SL651、Modbus 或 S7").throwIfInvalid();
-        if (json->get("protocol", "").asString() == Constants::PROTOCOL_S7 &&
-            json->get("mode", "").asString() != Constants::LINK_MODE_TCP_CLIENT) {
-            co_return Response::badRequest("S7 协议仅支持 TCP Client 模式");
-        }
         if (json->isMember("agent_id") && !(*json)["agent_id"].isNull() && (*json)["agent_id"].asInt() < 0) {
             co_return Response::badRequest("采集Agent参数错误");
         }
@@ -123,10 +119,6 @@ public:
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
         ValidatorHelper::requireInListIfPresent(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
             "协议", "SL651、Modbus 或 S7").throwIfInvalid();
-        if (json->isMember("protocol") && json->get("protocol", "").asString() == Constants::PROTOCOL_S7 &&
-            json->get("mode", "").asString() != Constants::LINK_MODE_TCP_CLIENT) {
-            co_return Response::badRequest("S7 协议仅支持 TCP Client 模式");
-        }
         if (json->isMember("agent_id") && !(*json)["agent_id"].isNull() && (*json)["agent_id"].asInt() < 0) {
             co_return Response::badRequest("采集Agent参数错误");
         }

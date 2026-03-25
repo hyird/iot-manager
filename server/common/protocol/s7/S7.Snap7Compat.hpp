@@ -39,6 +39,14 @@ inline int s7CliConnect(S7ClientHandle client) {
     return Cli_Connect(client);
 }
 
+inline int s7CliGetParam(S7ClientHandle client, int paramNumber, void* value) {
+    return Cli_GetParam(client, paramNumber, value);
+}
+
+inline int s7CliSetParam(S7ClientHandle client, int paramNumber, void* value) {
+    return Cli_SetParam(client, paramNumber, value);
+}
+
 inline int s7CliSetConnectionParams(S7ClientHandle client, const char* host,
                                     std::uint16_t localTSAP, std::uint16_t remoteTSAP) {
     return Cli_SetConnectionParams(client, host, localTSAP, remoteTSAP);
@@ -72,6 +80,10 @@ inline int s7CliWriteArea(S7ClientHandle client, int area, int dbNumber, int sta
     return Cli_WriteArea(client, area, dbNumber, start, amount, wordLen, data);
 }
 
+inline int s7CliSetRemotePort(S7ClientHandle client, std::uint16_t port) {
+    return s7CliSetParam(client, p_u16_RemotePort, &port);
+}
+
 #else
 
 using S7Object = void*;
@@ -82,6 +94,8 @@ inline constexpr S7ClientHandle kS7InvalidObject = nullptr;
 inline S7ClientHandle s7CliCreate() { return nullptr; }
 inline void s7CliDestroy(S7ClientHandle&) {}
 inline int s7CliConnect(S7ClientHandle) { return -1; }
+inline int s7CliGetParam(S7ClientHandle, int, void*) { return -1; }
+inline int s7CliSetParam(S7ClientHandle, int, void*) { return -1; }
 inline int s7CliConnectTo(S7ClientHandle, const char*, int, int) { return -1; }
 inline int s7CliSetConnectionParams(S7ClientHandle, const char*, std::uint16_t, std::uint16_t) { return -1; }
 inline int s7CliDisconnect(S7ClientHandle) { return 0; }
@@ -91,7 +105,14 @@ inline int s7CliWriteArea(S7ClientHandle, int, int, int, int, int, void*) { retu
 inline int s7CliSetConnectionType(S7ClientHandle, const char*) { return 0; }
 inline int s7CliSetConnectionType(S7ClientHandle, const std::string&) { return 0; }
 inline int s7CliSetConnectionType(S7ClientHandle, int) { return 0; }
+inline int s7CliSetRemotePort(S7ClientHandle, std::uint16_t) { return -1; }
 
+#ifndef p_u16_LocalPort
+inline constexpr int p_u16_LocalPort = 1;
+#endif
+#ifndef p_u16_RemotePort
+inline constexpr int p_u16_RemotePort = 2;
+#endif
 #ifndef S7AreaDB
 inline constexpr int S7AreaDB = 0;
 #endif
