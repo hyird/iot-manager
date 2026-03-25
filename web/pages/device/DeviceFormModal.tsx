@@ -64,6 +64,7 @@ interface DeviceFormModalProps {
 const toProtocolType = (linkProtocol?: string): Protocol.Type | undefined => {
   if (!linkProtocol) return undefined;
   if (linkProtocol === "SL651") return "SL651";
+  if (linkProtocol === "S7") return "S7";
   return "Modbus";
 };
 
