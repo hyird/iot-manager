@@ -250,20 +250,46 @@ const getConnectionTypeLabel = (connectionType?: S7.ConnectionType) =>
 const getConnectionModeLabel = (connectionMode?: S7.ConnectionMode) =>
   connectionModeOptions.find((item) => item.value === connectionMode)?.label || "Rack/Slot";
 
+const normalizeAreaTypeForPlcModel = (
+  plcModel?: S7.PlcModel,
+  areaType?: S7.AreaType
+): S7.AreaType | undefined => {
+  if (!areaType) {
+    return areaType;
+  }
+  if (plcModel === "S7-200" && areaType === "DB") {
+    return "V";
+  }
+  return areaType;
+};
+
+const getAreaTypeOptions = (plcModel?: S7.PlcModel): { value: S7.AreaType; label: string }[] => {
+  if (plcModel === "S7-200") {
+    return [
+      { value: "V", label: "V（变量存储器）" },
+      { value: "MK", label: "M（MK，标记位）" },
+      { value: "PE", label: "I（PE，系统输入）" },
+      { value: "PA", label: "Q（PA，系统输出）" },
+      { value: "CT", label: "C（CT，计数器）" },
+      { value: "TM", label: "T（TM，定时器）" },
+    ];
+  }
+
+  return [
+    { value: "DB", label: "DB（数据块）" },
+    { value: "MK", label: "M（MK，标记位）" },
+    { value: "PE", label: "I（PE，系统输入）" },
+    { value: "PA", label: "Q（PA，系统输出）" },
+    { value: "CT", label: "C（CT，计数器）" },
+    { value: "TM", label: "T（TM，定时器）" },
+  ];
+};
+
 const validateTsapValue = async (_: unknown, value?: string) => {
   if (!formatTsapValue(value)) {
     throw new Error("请输入 1-4 位十六进制 TSAP，例如 4D57 或 0200");
   }
 };
-
-const areaTypeOptions: { value: S7.AreaType; label: string }[] = [
-  { value: "DB", label: "DB（数据块）" },
-  { value: "MK", label: "M（MK，标记位）" },
-  { value: "PE", label: "I（PE，系统输入）" },
-  { value: "PA", label: "Q（PA，系统输出）" },
-  { value: "CT", label: "C（CT，计数器）" },
-  { value: "TM", label: "T（TM，定时器）" },
-];
 
 const areaDataTypeOptions: { value: S7.AreaDataType; label: string }[] = [
   { value: "BOOL", label: "布尔（BOOL）" },
@@ -294,7 +320,7 @@ const areaDataTypeSizeMap: Record<S7.AreaDataType, number> = {
 const getDataTypeSize = (dataType?: S7.AreaDataType) =>
   dataType ? (areaDataTypeSizeMap[dataType] ?? 1) : 1;
 
-const writableAreaTypes: S7.AreaType[] = ["DB", "MK", "PA"];
+const writableAreaTypes: S7.AreaType[] = ["DB", "V", "MK", "PA"];
 const bitOnlyAreaTypes: S7.AreaType[] = ["PE", "PA"];
 
 const getAreaDataTypeOptions = (
@@ -311,6 +337,7 @@ const getAreaDataTypeOptions = (
 
 const areaAddressPrefixMap: Record<S7.AreaType, { bool: string; number: string }> = {
   DB: { bool: "X", number: "DB" },
+  V: { bool: "V", number: "V" },
   MK: { bool: "M", number: "M" },
   PE: { bool: "I", number: "I" },
   PA: { bool: "Q", number: "Q" },
@@ -320,6 +347,7 @@ const areaAddressPrefixMap: Record<S7.AreaType, { bool: string; number: string }
 
 const areaAddressHintMap: Record<S7.AreaType, string> = {
   DB: "DB1.DBX0.0、DB1.DBW10、DB1.DBD0、DB1.DBD1（LREAL，DBD 为4字节）",
+  V: "V0.0、VB10、VW20、VD30",
   MK: "M0.0、MB10、MW20、MD30",
   PE: "I0.0、IB10、IW20、ID30",
   PA: "Q0.0、QB10、QW20、QD30",
@@ -380,6 +408,10 @@ const getAreaAddressSample = (
     if (suffix === "X") return `DB${dbNumber}.DBX${safeStart}.${safeBit}`;
     return `DB${dbNumber}.DB${suffix}${safeStart}`;
   }
+  if (areaType === "V") {
+    if (suffix === "X") return `V${safeStart}.${safeBit}`;
+    return `V${suffix}${safeStart}`;
+  }
   if (suffix === "X") return `${area.bool}${safeStart}.${safeBit}`;
   return `${area.number}${suffix}${safeStart}`;
 };
@@ -389,6 +421,10 @@ const getAddressSuffixExample = (areaType?: S7.AreaType, dataType?: S7.AreaDataT
   const area = areaAddressPrefixMap[areaType];
   if (areaType === "CT" || areaType === "TM") return "";
   const suffix = areaAddressTypeMap[dataType || "INT16"];
+  if (areaType === "V") {
+    if (suffix === "X") return "V0.0";
+    return `V${suffix}0`;
+  }
   if (suffix === "X") return `${area.bool}X.0`;
   return `${area.number}${suffix}0`;
 };
@@ -399,6 +435,9 @@ const supportsBitAddress = (areaType?: S7.AreaType, dataType?: S7.AreaDataType) 
 const getAddressRuleText = (areaType: S7.AreaType | undefined, isBool: boolean) => {
   if (areaType === "DB") {
     return isBool ? "请输入 DB 位号（如 DB1.DBX0.0）" : "请输入 DB 字节偏移（如 DB1.DBW10）";
+  }
+  if (areaType === "V") {
+    return isBool ? "请输入 V 位地址（如 V0.0）" : "请输入 V 偏移（如 VB10 / VW20）";
   }
   if (areaType === "CT") {
     return "请输入计数器地址（如 C0）";
@@ -435,11 +474,12 @@ interface AreaModalProps {
   open: boolean;
   mode: "create" | "edit";
   initialValue?: S7.Area;
+  plcModel?: S7.PlcModel;
   onCancel: () => void;
   onSubmit: (value: S7.Area) => void;
 }
 
-function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalProps) {
+function AreaModal({ open, mode, initialValue, plcModel, onCancel, onSubmit }: AreaModalProps) {
   const [form] = Form.useForm<S7.Area>();
   const areaType = Form.useWatch("area", form);
   const dataType = normalizeS7DataType(Form.useWatch("dataType", form) as string | undefined);
@@ -448,6 +488,31 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
   const startBit = Form.useWatch("startBit", form);
   const stringLength = Form.useWatch("size", form);
   const parsedAreaType = areaType as S7.AreaType | undefined;
+  const areaTypeOptions = getAreaTypeOptions(plcModel);
+  const defaultAreaType: S7.AreaType = plcModel === "S7-200" ? "V" : "DB";
+  const normalizedInitialArea =
+    normalizeAreaTypeForPlcModel(plcModel, initialValue?.area) ?? defaultAreaType;
+  const initialDbNumber =
+    normalizedInitialArea === "V"
+      ? undefined
+      : initialValue?.dbNumber ?? (normalizedInitialArea === "DB" ? 1 : undefined);
+  const initialFormValues = initialValue
+    ? {
+        ...initialValue,
+        area: normalizedInitialArea,
+        dbNumber: initialDbNumber,
+      }
+    : {
+        name: "",
+        area: defaultAreaType,
+        dbNumber: initialDbNumber,
+        dataType: "INT16",
+        start: 0,
+        size: 1,
+        writable: false,
+        remark: "",
+        startBit: undefined,
+      };
   const isStringType = dataType === "STRING";
   const isBoolDataType = dataType === "BOOL";
   const isWritableArea = writableAreaTypes.includes(parsedAreaType as S7.AreaType);
@@ -482,6 +547,7 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
   );
   const canUseBoolAddress =
     parsedAreaType === "DB" ||
+    parsedAreaType === "V" ||
     parsedAreaType === "MK" ||
     parsedAreaType === "PE" ||
     parsedAreaType === "PA";
@@ -520,19 +586,7 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
       <Form
         form={form}
         layout="vertical"
-        initialValues={
-          initialValue ?? {
-            name: "",
-            area: "DB",
-            dbNumber: 1,
-            dataType: "INT16",
-            start: 0,
-            size: 1,
-            writable: false,
-            remark: "",
-            startBit: undefined,
-          }
-        }
+        initialValues={initialFormValues}
       >
         <Form.Item
           name="name"
@@ -547,7 +601,7 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
               name="area"
               label="寄存器类型"
               rules={[{ required: true }]}
-              extra="不同区域类型映射不同读取方式"
+              extra={plcModel === "S7-200" ? "S7-200 使用 V/M/I/Q/C/T 区域" : "不同区域类型映射不同读取方式"}
             >
               <Select
                 options={areaTypeOptions}
@@ -751,7 +805,10 @@ const S7ConfigPage = () => {
     {
       title: "寄存器类型",
       dataIndex: "area",
-      render: (value: S7.AreaType) => <Tag color="blue">{value}</Tag>,
+      render: (value: S7.AreaType) => {
+        const displayArea = normalizeAreaTypeForPlcModel(activeConfig?.plcModel, value) ?? value;
+        return <Tag color="blue">{displayArea}</Tag>;
+      },
     },
     {
       title: "数据类型",
@@ -759,9 +816,31 @@ const S7ConfigPage = () => {
       ellipsis: true,
       render: (value?: string) => (value ? normalizeS7DataType(value) : "-"),
     },
-    { title: "DB 编号", dataIndex: "dbNumber", render: (value?: number) => value ?? "-" },
-    { title: "起始地址", render: (_, record: S7.Area) => getAreaAddressRangeText(record).start },
-    { title: "结束地址", render: (_, record: S7.Area) => getAreaAddressRangeText(record).end },
+    {
+      title: "DB 编号",
+      dataIndex: "dbNumber",
+      render: (value: number | undefined, record: S7.Area) => {
+        const displayArea = normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
+        if (displayArea === "V") {
+          return "-";
+        }
+        return value ?? "-";
+      },
+    },
+    {
+      title: "起始地址",
+      render: (_, record: S7.Area) => {
+        const displayArea = normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
+        return getAreaAddressRangeText({ ...record, area: displayArea }).start;
+      },
+    },
+    {
+      title: "结束地址",
+      render: (_, record: S7.Area) => {
+        const displayArea = normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
+        return getAreaAddressRangeText({ ...record, area: displayArea }).end;
+      },
+    },
     { title: "长度（字节）", dataIndex: "size" },
     {
       title: "可写",
@@ -1267,6 +1346,9 @@ const S7ConfigPage = () => {
           editingArea
             ? {
                 ...editingArea,
+                area:
+                  normalizeAreaTypeForPlcModel(activeConfig?.plcModel, editingArea.area) ??
+                  editingArea.area,
                 dataType: bitOnlyAreaTypes.includes(editingArea.area as S7.AreaType)
                   ? "BOOL"
                   : editingArea.area === "CT" || editingArea.area === "TM"
@@ -1277,10 +1359,15 @@ const S7ConfigPage = () => {
                   : editingArea.area === "CT" || editingArea.area === "TM"
                     ? getDataTypeSize("UINT16")
                     : editingArea.size,
+                dbNumber:
+                  normalizeAreaTypeForPlcModel(activeConfig?.plcModel, editingArea.area) === "V"
+                    ? undefined
+                    : editingArea.dbNumber,
                 startBit: editingArea.startBit,
               }
             : undefined
         }
+        plcModel={activeConfig?.plcModel}
         onCancel={() => setAreaModalOpen(false)}
         onSubmit={async (value) => {
           if (!activeTypeId || !activeConfig) return;

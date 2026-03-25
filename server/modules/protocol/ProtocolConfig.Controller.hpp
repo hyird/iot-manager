@@ -250,6 +250,7 @@ private:
                 if (!config["areas"].isArray()) {
                     throw ValidationException("S7 配置的 areas 必须是数组");
                 }
+                const bool isS7_200 = plcModel == "S7-200";
                 for (const auto& area : config["areas"]) {
                     if (!area.isObject()) continue;
                     if (area.get("id", "").asString().empty()) {
@@ -258,10 +259,18 @@ private:
                     if (area.get("name", "").asString().empty()) {
                         throw ValidationException("S7 配置的区域名称不能为空");
                     }
-                    std::string areaType = area.get("area", "").asString();
+                    std::string areaType = toUpper(area.get("area", "").asString());
                     std::string dataType = area.get("dataType", (areaType == "CT" || areaType == "TM") ? "UINT16" : "INT16").asString();
-                    if (areaType != "DB" && areaType != "MK" && areaType != "PE" &&
-                        areaType != "PA" && areaType != "CT" && areaType != "TM") {
+                    const bool areaAllowed = isS7_200
+                        ? (areaType == "DB" || areaType == "V" || areaType == "MK" ||
+                           areaType == "PE" || areaType == "PA" || areaType == "CT" ||
+                           areaType == "TM")
+                        : (areaType == "DB" || areaType == "MK" || areaType == "PE" ||
+                           areaType == "PA" || areaType == "CT" || areaType == "TM");
+                    if (!areaAllowed) {
+                        if (isS7_200) {
+                            throw ValidationException("S7-200 区域 area 仅支持 DB、V、MK、PE、PA、CT、TM");
+                        }
                         throw ValidationException("S7 区域 area 仅支持 DB、MK、PE、PA、CT、TM");
                     }
                     if ((areaType == "PE" || areaType == "PA") && dataType != "BOOL") {

@@ -35,58 +35,100 @@ option(BUILD_FRONTEND "Build and copy frontend" ON)
 # 当在非 Visual Studio 开发环境（如普通 CMD/Powershell）调用 MSVC 时，
 # 环境变量 INCLUDE 可能不存在，导致 cl 无法找到标准库头文件。这里尝试自动补齐
 # MSVC 与 Windows SDK 的默认头文件路径，避免 C1083: string not found。
-# if(MSVC)
-#     if(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES STREQUAL "")
-#         message(WARNING "未检测到 C++ 自动包含目录，尝试自动补齐 MSVC/Windows SDK 头文件路径。")
+if(MSVC)
+    if(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES STREQUAL "")
+        message(WARNING "未检测到 C++ 自动包含目录，尝试自动补齐 MSVC/Windows SDK 头文件路径。")
 
-#         string(REGEX REPLACE "[\\/]+bin[\\/].*$" "" _MSVC_TOOL_ROOT "${CMAKE_CXX_COMPILER}")
-#         set(_IOT_MANAGER_EXTRA_INCLUDE_DIRS "")
+        string(REGEX REPLACE "[\\/]+bin[\\/].*$" "" _MSVC_TOOL_ROOT "${CMAKE_CXX_COMPILER}")
+        set(_IOT_MANAGER_EXTRA_INCLUDE_DIRS "")
+        set(_IOT_MANAGER_EXTRA_LIBRARY_DIRS "")
 
-#         if(EXISTS "${_MSVC_TOOL_ROOT}/include")
-#             list(APPEND _IOT_MANAGER_EXTRA_INCLUDE_DIRS "${_MSVC_TOOL_ROOT}/include")
-#         endif()
+        if(EXISTS "${_MSVC_TOOL_ROOT}/include")
+            list(APPEND _IOT_MANAGER_EXTRA_INCLUDE_DIRS "${_MSVC_TOOL_ROOT}/include")
+        endif()
+        if(EXISTS "${_MSVC_TOOL_ROOT}/lib/x64")
+            list(APPEND _IOT_MANAGER_EXTRA_LIBRARY_DIRS "${_MSVC_TOOL_ROOT}/lib/x64")
+        endif()
+        if(EXISTS "${_MSVC_TOOL_ROOT}/atlmfc/lib/x64")
+            list(APPEND _IOT_MANAGER_EXTRA_LIBRARY_DIRS "${_MSVC_TOOL_ROOT}/atlmfc/lib/x64")
+        endif()
 
-#         set(_IOT_MANAGER_PROGRAM_FILES_X86 "$ENV{ProgramFiles(x86)}")
-#         if(_IOT_MANAGER_PROGRAM_FILES_X86 STREQUAL "")
-#             set(_IOT_MANAGER_PROGRAM_FILES_X86 "$ENV{ProgramW6432}")
-#         endif()
-#         if(_IOT_MANAGER_PROGRAM_FILES_X86 STREQUAL "")
-#             set(_IOT_MANAGER_PROGRAM_FILES_X86 "$ENV{ProgramFiles}")
-#         endif()
+        set(_IOT_MANAGER_PROGRAM_FILES_ROOT "$ENV{ProgramFiles}")
+        if(_IOT_MANAGER_PROGRAM_FILES_ROOT STREQUAL "")
+            set(_IOT_MANAGER_PROGRAM_FILES_ROOT "$ENV{ProgramW6432}")
+        endif()
 
-#         file(GLOB _IOT_MANAGER_WINSDK_ROOTS
-#             "${_IOT_MANAGER_PROGRAM_FILES_X86}/Windows Kits/10/Include/*"
-#         )
-#         if(NOT _IOT_MANAGER_WINSDK_ROOTS)
-#             file(GLOB _IOT_MANAGER_WINSDK_ROOTS
-#                 "$ENV{ProgramFiles}/Windows Kits/10/Include/*"
-#             )
-#         endif()
-#         if(_IOT_MANAGER_WINSDK_ROOTS)
-#             list(SORT _IOT_MANAGER_WINSDK_ROOTS)
-#             list(GET _IOT_MANAGER_WINSDK_ROOTS -1 _IOT_MANAGER_WINSDK_ROOT)
-#             foreach(_IOT_MANAGER_WINSDK_SUBDIR IN ITEMS ucrt shared um)
-#                 if(EXISTS "${_IOT_MANAGER_WINSDK_ROOT}/${_IOT_MANAGER_WINSDK_SUBDIR}")
-#                     list(APPEND _IOT_MANAGER_EXTRA_INCLUDE_DIRS
-#                         "${_IOT_MANAGER_WINSDK_ROOT}/${_IOT_MANAGER_WINSDK_SUBDIR}"
-#                     )
-#                 endif()
-#             endforeach()
-#         endif()
+        set(_IOT_MANAGER_WINSDK_INCLUDE_BASES
+            "${_IOT_MANAGER_PROGRAM_FILES_ROOT}/Windows Kits/10/Include"
+            "${_IOT_MANAGER_PROGRAM_FILES_ROOT} (x86)/Windows Kits/10/Include"
+        )
 
-#         if(_IOT_MANAGER_EXTRA_INCLUDE_DIRS)
-#             include_directories(${_IOT_MANAGER_EXTRA_INCLUDE_DIRS})
-#             message(STATUS "已自动添加 MSVC/SDK include 目录：${_IOT_MANAGER_EXTRA_INCLUDE_DIRS}")
-#         else()
-#             message(WARNING "未能自动定位 MSVC/Windows SDK include 目录，请在 VS Developer Command Prompt 中构建。")
-#         endif()
-#         unset(_IOT_MANAGER_WINSDK_ROOTS)
-#         unset(_IOT_MANAGER_EXTRA_INCLUDE_DIRS)
-#         unset(_IOT_MANAGER_PROGRAM_FILES_X86)
-#         unset(_MSVC_TOOL_ROOT)
-#         unset(_IOT_MANAGER_WINSDK_ROOT)
-#     endif()
-# endif()
+        foreach(_IOT_MANAGER_WINSDK_INCLUDE_BASE IN LISTS _IOT_MANAGER_WINSDK_INCLUDE_BASES)
+            if(EXISTS "${_IOT_MANAGER_WINSDK_INCLUDE_BASE}")
+                file(GLOB _IOT_MANAGER_WINSDK_ROOTS
+                    "${_IOT_MANAGER_WINSDK_INCLUDE_BASE}/*"
+                )
+                if(_IOT_MANAGER_WINSDK_ROOTS)
+                    list(SORT _IOT_MANAGER_WINSDK_ROOTS)
+                    list(GET _IOT_MANAGER_WINSDK_ROOTS -1 _IOT_MANAGER_WINSDK_ROOT)
+                    foreach(_IOT_MANAGER_WINSDK_SUBDIR IN ITEMS ucrt shared um)
+                        if(EXISTS "${_IOT_MANAGER_WINSDK_ROOT}/${_IOT_MANAGER_WINSDK_SUBDIR}")
+                            list(APPEND _IOT_MANAGER_EXTRA_INCLUDE_DIRS
+                                "${_IOT_MANAGER_WINSDK_ROOT}/${_IOT_MANAGER_WINSDK_SUBDIR}"
+                            )
+                        endif()
+                    endforeach()
+                    get_filename_component(_IOT_MANAGER_WINSDK_VERSION
+                        "${_IOT_MANAGER_WINSDK_ROOT}"
+                        NAME
+                    )
+                    get_filename_component(_IOT_MANAGER_WINSDK_INCLUDE_DIR
+                        "${_IOT_MANAGER_WINSDK_ROOT}"
+                        DIRECTORY
+                    )
+                    get_filename_component(_IOT_MANAGER_WINSDK_KITS_ROOT
+                        "${_IOT_MANAGER_WINSDK_INCLUDE_DIR}"
+                        DIRECTORY
+                    )
+                    set(_IOT_MANAGER_WINSDK_LIB_DIRS "")
+                    foreach(_IOT_MANAGER_WINSDK_LIB_SUBDIR IN ITEMS um ucrt)
+                        if(EXISTS "${_IOT_MANAGER_WINSDK_KITS_ROOT}/Lib/${_IOT_MANAGER_WINSDK_VERSION}/${_IOT_MANAGER_WINSDK_LIB_SUBDIR}/x64")
+                            list(APPEND _IOT_MANAGER_WINSDK_LIB_DIRS
+                                "${_IOT_MANAGER_WINSDK_KITS_ROOT}/Lib/${_IOT_MANAGER_WINSDK_VERSION}/${_IOT_MANAGER_WINSDK_LIB_SUBDIR}/x64"
+                            )
+                        endif()
+                    endforeach()
+                    if(_IOT_MANAGER_WINSDK_LIB_DIRS)
+                        list(APPEND _IOT_MANAGER_EXTRA_LIBRARY_DIRS ${_IOT_MANAGER_WINSDK_LIB_DIRS})
+                    endif()
+                    if(_IOT_MANAGER_EXTRA_LIBRARY_DIRS)
+                        link_directories(${_IOT_MANAGER_EXTRA_LIBRARY_DIRS})
+                        message(STATUS "已自动添加库目录：${_IOT_MANAGER_EXTRA_LIBRARY_DIRS}")
+                    endif()
+                    break()
+                endif()
+            endif()
+        endforeach()
+
+        if(_IOT_MANAGER_EXTRA_INCLUDE_DIRS)
+            include_directories(${_IOT_MANAGER_EXTRA_INCLUDE_DIRS})
+            message(STATUS "已自动添加 MSVC/SDK include 目录：${_IOT_MANAGER_EXTRA_INCLUDE_DIRS}")
+        else()
+            message(WARNING "未能自动定位 MSVC/Windows SDK include 目录，请在 VS Developer Command Prompt 中构建。")
+        endif()
+        unset(_IOT_MANAGER_WINSDK_ROOTS)
+        unset(_IOT_MANAGER_EXTRA_INCLUDE_DIRS)
+        unset(_IOT_MANAGER_EXTRA_LIBRARY_DIRS)
+        unset(_IOT_MANAGER_PROGRAM_FILES_ROOT)
+        unset(_IOT_MANAGER_WINSDK_INCLUDE_BASES)
+        unset(_IOT_MANAGER_WINSDK_INCLUDE_DIR)
+        unset(_IOT_MANAGER_WINSDK_LIB_DIRS)
+        unset(_IOT_MANAGER_WINSDK_KITS_ROOT)
+        unset(_MSVC_TOOL_ROOT)
+        unset(_IOT_MANAGER_WINSDK_ROOT)
+        unset(_IOT_MANAGER_WINSDK_VERSION)
+    endif()
+endif()
 
 # C++ 标准
 set(CMAKE_CXX_STANDARD 20)
@@ -134,6 +176,9 @@ find_package(Drogon CONFIG REQUIRED)
 # 查找 mimalloc (高性能内存分配器)
 find_package(mimalloc CONFIG REQUIRED)
 
+# 查找 snap7 (S7 协议客户端库)
+find_package(snap7 CONFIG REQUIRED)
+
 # 包含目录
 include_directories(${PROJECT_SOURCE_DIR}/server)
 
@@ -161,10 +206,13 @@ target_sources(${PROJECT_NAME} PRIVATE ${HEADERS})
 set_source_files_properties(${HEADERS} PROPERTIES HEADER_FILE_ONLY TRUE)
 
 # 链接 Drogon + mimalloc
-target_link_libraries(${PROJECT_NAME} PRIVATE Drogon::Drogon mimalloc-static)
+target_link_libraries(${PROJECT_NAME} PRIVATE Drogon::Drogon mimalloc-static snap7::snap7)
 
 # EdgeNode 子项目
 add_subdirectory(edgenode)
+
+# 独立测试子目录（当前仅保留 S7 连接测试）
+add_subdirectory(tests)
 
 # L2 配置工具（Windows 专用，需要 Npcap SDK，默认关闭）
 option(BUILD_L2CONFIG "Build L2 config tool (requires Npcap SDK)" OFF)

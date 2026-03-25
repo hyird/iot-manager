@@ -241,6 +241,9 @@ public:
                 if (!elem.isObject()) continue;
                 std::string areaName = toUpper(elem.get("area", "DB").asString());
                 int dbNumber = elem.get("dbNumber", 0).asInt();
+                if (areaName == "V" && dbNumber <= 0) {
+                    dbNumber = 1;
+                }
                 int start = elem.get("start", 0).asInt();
                 auto bytes = parseBytes(elem);
                 if (bytes.empty()) {
@@ -291,6 +294,7 @@ private:
     static int areaToCode(const std::string& area) {
         const std::string upper = toUpper(area);
         if (upper == "DB") return S7AreaDB;
+        if (upper == "V") return S7AreaDB;
         if (upper == "MK") return S7AreaMK;
         if (upper == "PA") return S7AreaPA;
         if (upper == "PE") return S7AreaPE;
@@ -490,12 +494,13 @@ private:
 
         Json::Value data(Json::objectValue);
         Json::Value element(Json::objectValue);
+        const int dbNumber = area.area == "V" ? 1 : area.dbNumber;
         element["name"] = area.name;
         element["value"] = decodeAreaValue(area, buffer);
         element["hex"] = bytesToHex(buffer);
         element["area"] = area.area;
         element["dataType"] = normalizeDataType(area.dataType);
-        element["dbNumber"] = area.dbNumber;
+        element["dbNumber"] = dbNumber;
         element["start"] = area.start;
         element["size"] = area.size;
         if (normalizeDataType(area.dataType) == "BOOL") {
@@ -576,6 +581,8 @@ private:
 
         std::vector<S7AreaDefinition> result;
         if (!areas) return result;
+        const std::string plcModel = toUpper(config.get("plcModel", "").asString());
+        const bool isS7_200 = plcModel == "S7-200";
         for (const auto& area : *areas) {
             if (!area.isObject()) continue;
             S7AreaDefinition def;
@@ -587,7 +594,7 @@ private:
             if (areaType == "CT" || areaType == "TM") {
                 def.dataType = "UINT16";
             }
-            def.dbNumber = area.get("dbNumber", 0).asInt();
+            def.dbNumber = (areaType == "V" || (isS7_200 && areaType == "DB")) ? 1 : area.get("dbNumber", 0).asInt();
             def.start = area.get("start", 0).asInt();
             def.startBit = std::clamp(area.get("startBit", 0).asInt(), 0, 7);
             def.size = std::max(1, area.get("size", 1).asInt());
@@ -693,7 +700,8 @@ private:
         if (!s7IsValidHandle(runtime.client)) {
             return -1;
         }
-        return s7CliReadArea(runtime.client, areaToCode(area.area), area.dbNumber, area.start,
+        const int dbNumber = area.area == "V" ? 1 : area.dbNumber;
+        return s7CliReadArea(runtime.client, areaToCode(area.area), dbNumber, area.start,
             transferAmount(area.area, buffer.size()), areaWordLen(area.area), buffer.data());
     }
 
@@ -703,7 +711,8 @@ private:
             return -1;
         }
         auto writable = buffer;
-        return s7CliWriteArea(runtime.client, areaToCode(area), dbNumber, start,
+        const int resolvedDbNumber = area == "V" && dbNumber <= 0 ? 1 : dbNumber;
+        return s7CliWriteArea(runtime.client, areaToCode(area), resolvedDbNumber, start,
             transferAmount(area, writable.size()), areaWordLen(area), writable.data());
     }
 

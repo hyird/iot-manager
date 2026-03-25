@@ -178,7 +178,7 @@ export type S7ConnectionMode = "RACK_SLOT" | "TSAP";
 export type S7PlcModel = "S7-200" | "S7-300" | "S7-400" | "S7-1200" | "S7-1500";
 
 /** S7 区域类型 */
-export type S7AreaType = "DB" | "MK" | "PE" | "PA" | "CT" | "TM";
+export type S7AreaType = "DB" | "V" | "MK" | "PE" | "PA" | "CT" | "TM";
 
 /** S7 数据类型 */
 export type S7AreaDataType =
