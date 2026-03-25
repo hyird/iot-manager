@@ -103,7 +103,7 @@ const DeviceFormModal = ({
 
   // 心跳包/注册包仅 TCP Server 模式需要
   const linkMode = connectionMode === "agent" ? endpointMode : selectedLink?.mode;
-  const isModbusRtu = protocolType === "Modbus" && linkMode === "TCP Server";
+  const showPacketConfig = connectionMode !== "agent" && linkMode === "TCP Server";
 
   const { data: protocolOptions, isLoading: protocolOptionsLoading } = useProtocolConfigOptions(protocolType!, {
     enabled: !!protocolType,
@@ -460,7 +460,7 @@ const DeviceFormModal = ({
                       </Select>
                     </Form.Item>
                   )}
-                  {isModbusRtu && (
+                  {showPacketConfig && (
                     <>
                       <Form.Item label="心跳包模式" name={["heartbeat", "mode"]}>
                         <Select>
