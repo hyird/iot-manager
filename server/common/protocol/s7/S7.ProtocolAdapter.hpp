@@ -75,7 +75,6 @@ struct S7DeviceRuntime {
     int bridgeLinkId = 0;
     S7ConnectionConfig connection;
     std::vector<S7AreaDefinition> areas;
-    std::deque<std::vector<uint8_t>> pendingDtuToProxy;
     std::deque<std::vector<uint8_t>> pendingProxyToDtu;
     S7ClientHandle client = kS7InvalidObject;
     bool connected = false;
@@ -105,7 +104,6 @@ struct S7DeviceRuntime {
         , bridgeLinkId(other.bridgeLinkId)
         , connection(std::move(other.connection))
         , areas(std::move(other.areas))
-        , pendingDtuToProxy(std::move(other.pendingDtuToProxy))
         , pendingProxyToDtu(std::move(other.pendingProxyToDtu))
         , client(std::exchange(other.client, kS7InvalidObject))
         , connected(other.connected)
@@ -134,7 +132,6 @@ struct S7DeviceRuntime {
         bridgeLinkId = other.bridgeLinkId;
         connection = std::move(other.connection);
         areas = std::move(other.areas);
-        pendingDtuToProxy = std::move(other.pendingDtuToProxy);
         pendingProxyToDtu = std::move(other.pendingProxyToDtu);
         client = std::exchange(other.client, kS7InvalidObject);
         connected = other.connected;
@@ -1213,7 +1210,6 @@ private:
             runtime->bridgeDiscoveryStartedAt = {};
             runtime->bridgeLinkId = 0;
             runtime->bridgeClientAddr.clear();
-            runtime->pendingDtuToProxy.clear();
             runtime->pendingProxyToDtu.clear();
             runtime->connected = false;
             runtime->resetClient();
@@ -1230,6 +1226,7 @@ private:
         }
 
         const std::size_t byteCount = bytes.size();
+        int linkId = 0;
         std::string proxyClientAddr;
         {
             std::lock_guard lock(devicesMutex_);
@@ -1238,29 +1235,30 @@ private:
                 return;
             }
 
-            if (!runtime->connected || runtime->proxyClientAddr.empty()
-                || runtime->proxyClientAddr.rfind("PENDING#", 0) == 0) {
-                runtime->pendingDtuToProxy.push_back(std::move(bytes));
-                LOG_DEBUG << "[S7][Adapter] Queue DTU->proxy payload: deviceId=" << deviceId
-                          << ", linkId=" << runtime->linkId
-                          << ", bytes=" << byteCount
-                          << ", pendingToProxy=" << runtime->pendingDtuToProxy.size();
-                return;
-            }
-
+            linkId = runtime->linkId;
             proxyClientAddr = runtime->proxyClientAddr;
         }
 
+        LOG_DEBUG << "[S7][Adapter] TX DTU->proxy payload: deviceId=" << deviceId
+                  << ", linkId=" << linkId
+                  << ", bytes=" << byteCount
+                  << ", hex=" << bytesToHex(bytes);
+
+        if (proxyClientAddr.empty() || proxyClientAddr.rfind("PENDING#", 0) == 0) {
+            LOG_DEBUG << "[S7][Adapter] Drop DTU->proxy payload: deviceId=" << deviceId
+                      << ", linkId=" << linkId
+                      << ", proxy=" << (proxyClientAddr.empty() ? "<pending>" : proxyClientAddr)
+                      << ", bytes=" << byteCount
+                      << ", reason=proxy not ready";
+            return;
+        }
+
         if (!proxy_.sendToClient(proxyClientAddr, bytes)) {
-            std::lock_guard lock(devicesMutex_);
-            auto* runtime = findRuntimeLocked(deviceId);
-            if (runtime && runtime->bridgeMode) {
-                runtime->pendingDtuToProxy.push_back(std::move(bytes));
-                LOG_WARN << "[S7][Adapter] Failed to send DTU->proxy payload, queued for retry: deviceId="
-                         << deviceId << ", proxy=" << proxyClientAddr
-                         << ", bytes=" << byteCount
-                         << ", pendingToProxy=" << runtime->pendingDtuToProxy.size();
-            }
+            LOG_WARN << "[S7][Adapter] Failed to forward DTU->proxy payload, dropped: deviceId="
+                     << deviceId << ", linkId=" << linkId
+                     << ", proxy=" << proxyClientAddr
+                     << ", bytes=" << byteCount
+                     << ", hex=" << bytesToHex(bytes);
         }
     }
 
@@ -1292,7 +1290,6 @@ private:
                 runtime->proxyClientAddr.clear();
                 runtime->bridgeDiscoveryInFlight = false;
                 runtime->bridgeDiscoveryStartedAt = {};
-                runtime->pendingDtuToProxy.clear();
                 runtime->pendingProxyToDtu.clear();
             }
         }
@@ -1412,9 +1409,7 @@ private:
     }
 
     void flushBridgeSession(int deviceId) {
-        std::deque<std::vector<uint8_t>> pendingToProxy;
         std::deque<std::vector<uint8_t>> pendingToDtu;
-        std::string proxyClientAddr;
         std::string bridgeClientAddr;
         int bridgeLinkId = 0;
 
@@ -1425,14 +1420,11 @@ private:
                 return;
             }
 
-            proxyClientAddr = runtime->proxyClientAddr;
             bridgeClientAddr = runtime->bridgeClientAddr;
             bridgeLinkId = runtime->bridgeLinkId;
-            pendingToProxy.swap(runtime->pendingDtuToProxy);
             pendingToDtu.swap(runtime->pendingProxyToDtu);
         }
 
-        const std::size_t queuedToProxy = pendingToProxy.size();
         const std::size_t queuedToDtu = pendingToDtu.size();
 
         auto sendPending = [&](std::deque<std::vector<uint8_t>>& queue, auto&& sender) {
@@ -1452,9 +1444,6 @@ private:
             return remaining;
         };
 
-        auto remainingToProxy = sendPending(pendingToProxy, [&](const std::vector<uint8_t>& frame) {
-            return proxy_.sendToClient(proxyClientAddr, frame);
-        });
         auto remainingToDtu = sendPending(pendingToDtu, [&](const std::vector<uint8_t>& frame) {
             LOG_DEBUG << "[S7][Adapter] TX DTU client=" << bridgeClientAddr
                       << ", linkId=" << bridgeLinkId
@@ -1463,21 +1452,18 @@ private:
             return LinkTransportFacade::instance().sendToClient(bridgeLinkId, bridgeClientAddr, bytesToString(frame));
         });
 
-        const std::size_t flushedToProxy = queuedToProxy - remainingToProxy.size();
         const std::size_t flushedToDtu = queuedToDtu - remainingToDtu.size();
-        if (flushedToProxy > 0 || flushedToDtu > 0 || !remainingToProxy.empty() || !remainingToDtu.empty()) {
+        if (flushedToDtu > 0 || !remainingToDtu.empty()) {
             LOG_INFO << "[S7][Adapter] Flushed bridge session for device " << deviceId
-                     << ": proxy=" << flushedToProxy << "/" << queuedToProxy
                      << ", dtu=" << flushedToDtu << "/" << queuedToDtu
                      << ", linkId=" << bridgeLinkId
                      << ", client=" << bridgeClientAddr;
         }
 
-        if (!remainingToProxy.empty() || !remainingToDtu.empty()) {
+        if (!remainingToDtu.empty()) {
             std::lock_guard lock(devicesMutex_);
             auto* runtime = findRuntimeLocked(deviceId);
             if (runtime && runtime->bridgeMode) {
-                prependQueue(runtime->pendingDtuToProxy, remainingToProxy);
                 prependQueue(runtime->pendingProxyToDtu, remainingToDtu);
             }
         }
