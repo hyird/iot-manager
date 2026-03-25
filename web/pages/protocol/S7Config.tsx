@@ -27,7 +27,7 @@ import {
   Tree,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
@@ -166,6 +166,9 @@ const inferConnectionMode = (
   plcModel: S7.PlcModel,
   connection?: S7.Connection
 ): S7.ConnectionMode => {
+  if (plcModel === "S7-200") {
+    return "TSAP";
+  }
   if (connection?.mode === "TSAP" || connection?.mode === "RACK_SLOT") {
     return connection.mode;
   }
@@ -201,14 +204,17 @@ const getConnectionFormValues = (plcModel: S7.PlcModel, connection?: S7.Connecti
 };
 
 const buildConnectionConfig = (values: DeviceTypeFormValues): S7.Connection => {
-  if (values.connectionMode === "TSAP") {
+  const preset = getPlcPreset(values.plcModel);
+  const forceTsap = values.plcModel === "S7-200" || values.connectionMode === "TSAP";
+
+  if (forceTsap) {
     return {
       mode: "TSAP",
       connectionType: values.connectionType,
       rack: undefined,
       slot: undefined,
-      localTSAP: formatTsapValue(values.localTSAP),
-      remoteTSAP: formatTsapValue(values.remoteTSAP),
+      localTSAP: formatTsapValue(values.localTSAP) ?? preset.localTSAP,
+      remoteTSAP: formatTsapValue(values.remoteTSAP) ?? preset.remoteTSAP,
     };
   }
 
@@ -233,6 +239,11 @@ const connectionModeOptions: { value: S7.ConnectionMode; label: string }[] = [
   { value: "TSAP", label: "TSAP" },
 ];
 
+const getConnectionModeOptions = (plcModel?: S7.PlcModel): { value: S7.ConnectionMode; label: string }[] =>
+  plcModel === "S7-200"
+    ? [{ value: "TSAP", label: "TSAP" }]
+    : connectionModeOptions;
+
 const connectionTypeTips: Record<S7.ConnectionType, string> = {
   PG: "PG（编程）模式，常用于本地接线连接与离线调试",
   OP: "OP（操作）模式，适合上位机常态采集场景",
@@ -242,6 +253,13 @@ const connectionTypeTips: Record<S7.ConnectionType, string> = {
 const connectionModeTips: Record<S7.ConnectionMode, string> = {
   RACK_SLOT: "常规西门子 PLC 连接方式，适合 S7-300/400/1200/1500 等场景",
   TSAP: "直接指定本地/远端 TSAP，适合 S7-200、CP243 或需要手工指定 TSAP 的场景",
+};
+
+const getConnectionModeTip = (plcModel?: S7.PlcModel, connectionMode?: S7.ConnectionMode) => {
+  if (plcModel === "S7-200") {
+    return "S7-200 仅支持 TSAP 连接模式";
+  }
+  return connectionModeTips[connectionMode || "RACK_SLOT"];
 };
 
 const getConnectionTypeLabel = (connectionType?: S7.ConnectionType) =>
@@ -489,30 +507,34 @@ function AreaModal({ open, mode, initialValue, plcModel, onCancel, onSubmit }: A
   const stringLength = Form.useWatch("size", form);
   const parsedAreaType = areaType as S7.AreaType | undefined;
   const areaTypeOptions = getAreaTypeOptions(plcModel);
-  const defaultAreaType: S7.AreaType = plcModel === "S7-200" ? "V" : "DB";
+  const defaultAreaType = areaTypeOptions[0]?.value ?? "DB";
   const normalizedInitialArea =
     normalizeAreaTypeForPlcModel(plcModel, initialValue?.area) ?? defaultAreaType;
   const initialDbNumber =
     normalizedInitialArea === "V"
       ? undefined
       : initialValue?.dbNumber ?? (normalizedInitialArea === "DB" ? 1 : undefined);
-  const initialFormValues = initialValue
-    ? {
-        ...initialValue,
-        area: normalizedInitialArea,
-        dbNumber: initialDbNumber,
-      }
-    : {
-        name: "",
-        area: defaultAreaType,
-        dbNumber: initialDbNumber,
-        dataType: "INT16",
-        start: 0,
-        size: 1,
-        writable: false,
-        remark: "",
-        startBit: undefined,
-      };
+  const initialFormValues = useMemo<Partial<S7.Area>>(
+    () =>
+      initialValue
+        ? {
+            ...initialValue,
+            area: normalizedInitialArea,
+            dbNumber: initialDbNumber,
+          }
+        : {
+            name: "",
+            area: defaultAreaType,
+            dbNumber: initialDbNumber,
+            dataType: "INT16" as S7.AreaDataType,
+            start: 0,
+            size: 1,
+            writable: false,
+            remark: "",
+            startBit: undefined,
+          },
+    [defaultAreaType, initialDbNumber, initialValue, normalizedInitialArea]
+  );
   const isStringType = dataType === "STRING";
   const isBoolDataType = dataType === "BOOL";
   const isWritableArea = writableAreaTypes.includes(parsedAreaType as S7.AreaType);
@@ -538,6 +560,14 @@ function AreaModal({ open, mode, initialValue, plcModel, onCancel, onSubmit }: A
     startOffset,
     startBit
   );
+  useEffect(() => {
+    if (!open) {
+      form.resetFields();
+      return;
+    }
+    form.resetFields();
+    form.setFieldsValue(initialFormValues);
+  }, [form, initialFormValues, open]);
   const endAddressSample = getAreaAddressSample(
     parsedAreaType,
     dataType,
@@ -773,6 +803,7 @@ const S7ConfigPage = () => {
 
   const types = useMemo(() => configPage?.list || [], [configPage?.list]);
   const emptyTypeDesc = types.length ? "未选择设备类型" : "暂无设备类型";
+  const selectedPlcModel = Form.useWatch("plcModel", createForm) as S7.PlcModel | undefined;
   const selectedConnectionType = Form.useWatch("connectionType", createForm) as
     | S7.ConnectionType
     | undefined;
@@ -780,7 +811,8 @@ const S7ConfigPage = () => {
     | S7.ConnectionMode
     | undefined;
   const connectionTypeTip = connectionTypeTips[selectedConnectionType || "PG"];
-  const connectionModeTip = connectionModeTips[selectedConnectionMode || "RACK_SLOT"];
+  const connectionModeTip = getConnectionModeTip(selectedPlcModel, selectedConnectionMode);
+  const connectionModeSelectOptions = getConnectionModeOptions(selectedPlcModel);
 
   const activeTypeId = useMemo(() => {
     if (selectedTypeId && types.some((t) => t.id === selectedTypeId)) {
@@ -1255,7 +1287,7 @@ const S7ConfigPage = () => {
             extra={connectionModeTip}
           >
             <Select
-              options={connectionModeOptions}
+              options={connectionModeSelectOptions}
               onChange={(value) => handleConnectionModeChange(value as S7.ConnectionMode)}
             />
           </Form.Item>

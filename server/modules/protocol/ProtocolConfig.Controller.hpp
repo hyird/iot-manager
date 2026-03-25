@@ -158,6 +158,7 @@ private:
             if (!preset) {
                 throw ValidationException("S7 配置的 plcModel 仅支持 S7-200、S7-300、S7-400、S7-1200、S7-1500");
             }
+            const bool isS7_200 = plcModel == "S7-200";
 
             if (config.isMember("connection") && !config["connection"].isObject()) {
                 throw ValidationException("S7 配置的 connection 必须是对象");
@@ -215,6 +216,9 @@ private:
             };
 
             const std::string connectionMode = normalizeConnectionMode(conn);
+            if (isS7_200 && connectionMode != "TSAP") {
+                throw ValidationException("S7-200 仅支持 TSAP 连接模式");
+            }
             if (connectionMode != "RACK_SLOT" && connectionMode != "TSAP") {
                 throw ValidationException("S7 connection.mode 仅支持 RACK_SLOT 或 TSAP");
             }
@@ -250,7 +254,6 @@ private:
                 if (!config["areas"].isArray()) {
                     throw ValidationException("S7 配置的 areas 必须是数组");
                 }
-                const bool isS7_200 = plcModel == "S7-200";
                 for (const auto& area : config["areas"]) {
                     if (!area.isObject()) continue;
                     if (area.get("id", "").asString().empty()) {

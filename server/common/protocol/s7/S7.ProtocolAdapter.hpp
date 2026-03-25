@@ -542,6 +542,7 @@ private:
     static S7ConnectionConfig parseConnection(const Json::Value& config, const std::string& plcModel) {
         S7ConnectionConfig connection;
         const auto preset = resolvePreset(plcModel).value_or(S7ConnectionPreset{});
+        const bool isS7_200 = toUpper(plcModel) == "S7-200";
         connection.mode = preset.mode;
         connection.rack = preset.rack;
         connection.slot = preset.slot;
@@ -552,7 +553,9 @@ private:
             const auto& conn = config["connection"];
             connection.host = conn.get("host", "").asString();
             connection.connectionType = toUpper(conn.get("connectionType", "PG").asString());
-            if (conn.isMember("mode")) {
+            if (isS7_200) {
+                connection.mode = "TSAP";
+            } else if (conn.isMember("mode")) {
                 connection.mode = normalizeConnectionMode(conn.get("mode", "").asString());
             } else if (conn.isMember("localTSAP") || conn.isMember("remoteTSAP")) {
                 connection.mode = "TSAP";
@@ -565,6 +568,9 @@ private:
             if (auto remoteTSAP = parseTsapHex(conn["remoteTSAP"])) {
                 connection.remoteTSAP = *remoteTSAP;
             }
+        }
+        if (isS7_200) {
+            connection.mode = "TSAP";
         }
         connection.pollIntervalSec = config.get("pollInterval", 5).asInt();
         if (connection.pollIntervalSec < 1) connection.pollIntervalSec = 1;

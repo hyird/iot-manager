@@ -20,6 +20,8 @@ jobs:
 
     env:
       VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
+      VCPKG_BINARY_CACHE_DIR: ${{ github.workspace }}/vcpkg_binary_cache
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg_binary_cache,readwrite
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       CC: clang-18
       CXX: clang++-18
@@ -29,6 +31,14 @@ jobs:
         run: git config --global init.defaultBranch main
 
       - uses: actions/checkout@v6
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VCPKG_BINARY_CACHE_DIR }}
+          key: vcpkg-binary-linux-x64-linux-${{ matrix.build_type }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-binary-linux-x64-linux-${{ matrix.build_type }}-
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
@@ -113,6 +123,8 @@ jobs:
 
     env:
       VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
+      VCPKG_BINARY_CACHE_DIR: ${{ github.workspace }}/vcpkg_binary_cache
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg_binary_cache,readwrite
       MUSL_TOOLCHAIN_URL: https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/x86_64-arm-linux-musleabihf.tar.xz
       MUSL_TOOLCHAIN_DIR: ${{ github.workspace }}/arm-linux-musleabihf-cross
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -122,6 +134,14 @@ jobs:
         run: git config --global init.defaultBranch main
 
       - uses: actions/checkout@v6
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VCPKG_BINARY_CACHE_DIR }}
+          key: vcpkg-binary-arm-linux-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-binary-arm-linux-
 
       - name: Cache musl toolchain
         id: cache-musl
@@ -202,6 +222,8 @@ jobs:
 
     env:
       VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
+      VCPKG_BINARY_CACHE_DIR: ${{ github.workspace }}/vcpkg_binary_cache
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg_binary_cache,readwrite
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
@@ -209,6 +231,14 @@ jobs:
         run: git config --global init.defaultBranch main
 
       - uses: actions/checkout@v6
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VCPKG_BINARY_CACHE_DIR }}
+          key: vcpkg-binary-windows-x64-static-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-binary-windows-x64-static-
 
       - name: Restore vcpkg cache
         id: vcpkg-cache
