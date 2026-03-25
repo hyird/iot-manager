@@ -149,9 +149,9 @@ private:
             };
             auto resolvePreset = [](const std::string& model) -> std::optional<S7ConnectionPreset> {
                 if (model == "S7-200") return S7ConnectionPreset{.mode = "TSAP", .rack = 0, .slot = 1, .localTSAP = "4D57", .remoteTSAP = "4D57"};
-                if (model == "S7-300") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 2};
-                if (model == "S7-400") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 3};
-                if (model == "S7-1200" || model == "S7-1500") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 1};
+                if (model == "S7-300") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 2, .localTSAP = "", .remoteTSAP = ""};
+                if (model == "S7-400") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 3, .localTSAP = "", .remoteTSAP = ""};
+                if (model == "S7-1200" || model == "S7-1500") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 1, .localTSAP = "", .remoteTSAP = ""};
                 return std::nullopt;
             };
             auto preset = resolvePreset(plcModel);

@@ -164,7 +164,7 @@ public:
         bridgeSessionManager_ = std::make_unique<DtuSessionManager>();
         bridgeNormalizer_ = std::make_unique<RegistrationNormalizer>(*bridgeRegistry_, *bridgeSessionManager_);
         bridgeSessionManager_->setOldSessionDisplacedCallback(
-            [this](int linkId, const std::string& clientAddr) {
+            [](int linkId, const std::string& clientAddr) {
                 LinkTransportFacade::instance().disconnectServerClient(linkId, clientAddr);
             }
         );
