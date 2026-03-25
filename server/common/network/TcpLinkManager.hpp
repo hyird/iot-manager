@@ -234,7 +234,7 @@ public:
             buf->retrieveAll();
 
             std::string clientAddr = conn->peerAddr().toIpPort();
-            LOG_TRACE << "[Link " << linkId << "] Recv " << data.size() << "B from " << clientAddr;
+            LOG_DEBUG << "[Link " << linkId << "] Recv " << data.size() << "B from " << clientAddr;
 
             totalBytesRx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
             totalPacketsRx_.fetch_add(1, std::memory_order_relaxed);
@@ -337,7 +337,7 @@ public:
                 buf->retrieveAll();
 
                 std::string serverAddr = conn->peerAddr().toIpPort();
-                LOG_TRACE << "[Link " << linkId << "] Recv " << data.size() << "B from " << serverAddr;
+                LOG_DEBUG << "[Link " << linkId << "] Recv " << data.size() << "B from " << serverAddr;
 
                 totalBytesRx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
                 totalPacketsRx_.fetch_add(1, std::memory_order_relaxed);
@@ -613,7 +613,7 @@ public:
                 conn->send(data);
                 totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
                 totalPacketsTx_.fetch_add(1, std::memory_order_relaxed);
-                LOG_TRACE << "[Link " << linkId << "] Sent " << data.size() << "B to " << clientAddr;
+                LOG_DEBUG << "[Link " << linkId << "] Sent " << data.size() << "B to " << clientAddr;
                 return true;
             }
         }
