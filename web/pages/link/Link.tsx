@@ -326,21 +326,25 @@ const LinkPage = () => {
 
           <Form.Item
             label="协议"
-            name="protocol"
-            rules={[{ required: true, message: "请选择协议" }]}
             extra={editing ? "链路创建后协议不可修改" : undefined}
           >
             <Form.Item noStyle dependencies={["mode"]}>
               {({ getFieldValue }) => {
                 const mode = getFieldValue("mode") as Link.Mode | undefined;
                 return (
-                  <Select disabled={!!editing}>
-                    {protocolOptions(mode).map((protocol) => (
-                      <Select.Option key={protocol} value={protocol}>
-                        {protocol}
-                      </Select.Option>
-                    ))}
-                  </Select>
+                  <Form.Item
+                    name="protocol"
+                    rules={[{ required: true, message: "请选择协议" }]}
+                    noStyle
+                  >
+                    <Select disabled={!!editing}>
+                      {protocolOptions(mode).map((protocol) => (
+                        <Select.Option key={protocol} value={protocol}>
+                          {protocol}
+                        </Select.Option>
+                      ))}
+                    </Select>
+                  </Form.Item>
                 );
               }}
             </Form.Item>

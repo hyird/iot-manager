@@ -3,6 +3,8 @@
 #include "common/network/TcpLinkManager.hpp"
 #include "common/utils/Constants.hpp"
 
+#include <set>
+
 /**
  * @brief 链路传输门面
  *
@@ -110,6 +112,13 @@ public:
             return false;  // Agent 设备使用 deviceId 路由，不经过 linkId
         }
         return TcpLinkManager::instance().sendData(linkId, data);
+    }
+
+    bool sendDataExcluding(int linkId, const std::string& data, const std::set<std::string>& excludeAddrs) const {
+        if (isAgentManaged(linkId)) {
+            return false;
+        }
+        return TcpLinkManager::instance().sendDataExcluding(linkId, data, excludeAddrs);
     }
 
     bool sendToClient(int linkId, const std::string& clientAddr, const std::string& data) const {

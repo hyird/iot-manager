@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -77,6 +78,8 @@ struct S7DeviceRuntime {
     bool connected = false;
     bool bridgeMode = false;
     bool bridgeBound = false;
+    bool bridgeDiscoveryInFlight = false;
+    std::chrono::steady_clock::time_point bridgeDiscoveryStartedAt{};
     std::chrono::steady_clock::time_point lastConnectAttempt{};
     std::chrono::steady_clock::time_point lastPoll{};
 
@@ -105,6 +108,8 @@ struct S7DeviceRuntime {
         , connected(other.connected)
         , bridgeMode(other.bridgeMode)
         , bridgeBound(other.bridgeBound)
+        , bridgeDiscoveryInFlight(other.bridgeDiscoveryInFlight)
+        , bridgeDiscoveryStartedAt(other.bridgeDiscoveryStartedAt)
         , lastConnectAttempt(other.lastConnectAttempt)
         , lastPoll(other.lastPoll) {
         other.connected = false;
@@ -132,6 +137,8 @@ struct S7DeviceRuntime {
         connected = other.connected;
         bridgeMode = other.bridgeMode;
         bridgeBound = other.bridgeBound;
+        bridgeDiscoveryInFlight = other.bridgeDiscoveryInFlight;
+        bridgeDiscoveryStartedAt = other.bridgeDiscoveryStartedAt;
         lastConnectAttempt = other.lastConnectAttempt;
         lastPoll = other.lastPoll;
         other.connected = false;
@@ -1100,6 +1107,8 @@ private:
                 || runtime->bridgeClientAddr != clientAddr
                 || (!dtuKey.empty() && runtime->dtuKey != dtuKey);
             runtime->bridgeBound = true;
+            runtime->bridgeDiscoveryInFlight = false;
+            runtime->bridgeDiscoveryStartedAt = {};
             runtime->bridgeLinkId = linkId;
             runtime->bridgeClientAddr = clientAddr;
             if (!dtuKey.empty()) {
@@ -1137,6 +1146,8 @@ private:
                      << ", proxy=" << (proxyClientAddr.empty() ? "<pending>" : proxyClientAddr);
             runtime->proxyClientAddr.clear();
             runtime->bridgeBound = false;
+            runtime->bridgeDiscoveryInFlight = false;
+            runtime->bridgeDiscoveryStartedAt = {};
             runtime->bridgeLinkId = 0;
             runtime->bridgeClientAddr.clear();
             runtime->pendingDtuToProxy.clear();
@@ -1216,6 +1227,8 @@ private:
             } else {
                 runtime->connected = false;
                 runtime->proxyClientAddr.clear();
+                runtime->bridgeDiscoveryInFlight = false;
+                runtime->bridgeDiscoveryStartedAt = {};
                 runtime->pendingDtuToProxy.clear();
                 runtime->pendingProxyToDtu.clear();
             }
@@ -1234,8 +1247,12 @@ private:
 
     void onProxyDataReceived(const std::string& clientAddr, std::vector<uint8_t> bytes) {
         int deviceId = 0;
+        int requestLinkId = 0;
         std::string bridgeClientAddr;
         int bridgeLinkId = 0;
+        bool shouldBroadcast = false;
+        std::set<std::string> excludeAddrs;
+        std::string payload = bytesToString(bytes);
 
         {
             std::lock_guard lock(devicesMutex_);
@@ -1247,21 +1264,67 @@ private:
             }
 
             deviceId = runtime->deviceId;
+            requestLinkId = runtime->linkId;
             bridgeClientAddr = runtime->bridgeClientAddr;
             bridgeLinkId = runtime->bridgeLinkId;
 
             if (!runtime->bridgeBound || bridgeClientAddr.empty() || bridgeLinkId <= 0) {
-                runtime->pendingProxyToDtu.push_back(std::move(bytes));
-                LOG_DEBUG << "[S7][Proxy] Queue proxy->DTU payload: deviceId=" << deviceId
-                          << ", proxy=" << clientAddr
-                          << ", bytes=" << runtime->pendingProxyToDtu.back().size()
-                          << ", pendingToDtu=" << runtime->pendingProxyToDtu.size();
-                return;
+                if (!runtime->bridgeDiscoveryInFlight) {
+                    runtime->bridgeDiscoveryInFlight = true;
+                    runtime->bridgeDiscoveryStartedAt = std::chrono::steady_clock::now();
+                    shouldBroadcast = true;
+                    if (bridgeSessionManager_) {
+                        for (const auto& session : bridgeSessionManager_->listSessions()) {
+                            if (session.linkId == runtime->linkId
+                                && session.bindState == SessionBindState::Bound
+                                && !session.clientAddr.empty()) {
+                                excludeAddrs.insert(session.clientAddr);
+                            }
+                        }
+                    }
+                } else {
+                    runtime->pendingProxyToDtu.push_back(std::move(bytes));
+                    LOG_DEBUG << "[S7][Proxy] Queue proxy->DTU payload while discovery is in flight: deviceId="
+                              << deviceId
+                              << ", proxy=" << clientAddr
+                              << ", bytes=" << runtime->pendingProxyToDtu.back().size()
+                              << ", pendingToDtu=" << runtime->pendingProxyToDtu.size();
+                    return;
+                }
             }
         }
 
+        if (shouldBroadcast) {
+            const std::size_t byteCount = bytes.size();
+            const bool sent = excludeAddrs.empty()
+                ? LinkTransportFacade::instance().sendData(requestLinkId, payload)
+                : LinkTransportFacade::instance().sendDataExcluding(requestLinkId, payload, excludeAddrs);
+
+            if (sent) {
+                LOG_INFO << "[S7][Proxy] Broadcast discovery probe: deviceId=" << deviceId
+                         << ", linkId=" << requestLinkId
+                         << ", proxy=" << clientAddr
+                         << ", bytes=" << byteCount
+                         << ", excluded=" << excludeAddrs.size();
+                return;
+            }
+
+            std::lock_guard lock(devicesMutex_);
+            auto* runtime = findRuntimeLocked(deviceId);
+            if (runtime && runtime->bridgeMode) {
+                runtime->pendingProxyToDtu.push_back(std::move(bytes));
+                runtime->bridgeDiscoveryInFlight = false;
+                runtime->bridgeDiscoveryStartedAt = {};
+                LOG_WARN << "[S7][Proxy] Failed to forward proxy->DTU payload, queued for retry: deviceId="
+                         << deviceId << ", linkId=" << requestLinkId
+                         << ", proxy=" << clientAddr
+                         << ", bytes=" << byteCount
+                         << ", pendingToDtu=" << runtime->pendingProxyToDtu.size();
+            }
+            return;
+        }
+
         const std::size_t byteCount = bytes.size();
-        const std::string payload = bytesToString(bytes);
         if (!LinkTransportFacade::instance().sendToClient(bridgeLinkId, bridgeClientAddr, payload)) {
             std::lock_guard lock(devicesMutex_);
             auto* runtime = findRuntimeLocked(deviceId);
@@ -1360,6 +1423,13 @@ private:
                               << runtime.deviceId
                               << ", area=" << area.id
                               << ", rc=" << rc;
+                    if (runtime.bridgeDiscoveryInFlight) {
+                        LOG_DEBUG << "[S7][Adapter] Clearing discovery probe state after read failure: deviceId="
+                                  << runtime.deviceId
+                                  << ", area=" << area.id;
+                    }
+                    runtime.bridgeDiscoveryInFlight = false;
+                    runtime.bridgeDiscoveryStartedAt = {};
                 } else {
                     LOG_WARN << "[S7][Adapter] Read area failed: deviceId=" << runtime.deviceId
                              << ", area=" << area.id
