@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 #if __has_include(<snap7/lib/snap7_libmain.h>)
@@ -11,7 +12,9 @@ using S7Object = void*;
 
 inline S7Object Cli_Create() { return nullptr; }
 inline void Cli_Destroy(S7Object) {}
+inline int Cli_Connect(S7Object) { return -1; }
 inline int Cli_ConnectTo(S7Object, const char*, int, int) { return -1; }
+inline int Cli_SetConnectionParams(S7Object, const char*, std::uint16_t, std::uint16_t) { return -1; }
 inline int Cli_Disconnect(S7Object) { return 0; }
 inline int Cli_GetConnected(S7Object) { return 0; }
 inline int Cli_ReadArea(S7Object, int, int, int, int, int, void*) { return -1; }
@@ -73,6 +76,15 @@ inline bool s7CliGetConnected(S7ClientHandle client) {
 
 inline int s7CliConnectTo(S7ClientHandle client, const char* host, int rack, int slot) {
     return Cli_ConnectTo(client, host, rack, slot);
+}
+
+inline int s7CliConnect(S7ClientHandle client) {
+    return Cli_Connect(client);
+}
+
+inline int s7CliSetConnectionParams(S7ClientHandle client, const char* host,
+                                    std::uint16_t localTSAP, std::uint16_t remoteTSAP) {
+    return Cli_SetConnectionParams(client, host, localTSAP, remoteTSAP);
 }
 
 inline int s7CliSetConnectionType(S7ClientHandle client, const char* connectionType) {

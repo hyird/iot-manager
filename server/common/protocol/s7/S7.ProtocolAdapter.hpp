@@ -38,10 +38,21 @@ struct S7AreaDefinition {
 
 struct S7ConnectionConfig {
     std::string host;  // 解析后的连接目标，优先取链路 IP，兼容旧配置
+    std::string mode = "RACK_SLOT";
     int rack = 0;
     int slot = 1;
+    std::uint16_t localTSAP = 0x0100;
+    std::uint16_t remoteTSAP = 0x0100;
     int pollIntervalSec = 5;
     std::string connectionType = "PG";
+};
+
+struct S7ConnectionPreset {
+    std::string mode = "RACK_SLOT";
+    int rack = 0;
+    int slot = 1;
+    std::uint16_t localTSAP = 0x0100;
+    std::uint16_t remoteTSAP = 0x0100;
 };
 
 struct S7DeviceRuntime {
@@ -303,10 +314,51 @@ private:
         return static_cast<int>(size);
     }
 
-    static std::optional<std::pair<int, int>> resolvePreset(const std::string& plcModel) {
-        if (plcModel == "S7-300") return std::make_pair(0, 2);
-        if (plcModel == "S7-400") return std::make_pair(0, 3);
-        if (plcModel == "S7-1200" || plcModel == "S7-1500") return std::make_pair(0, 1);
+    static std::string normalizeConnectionMode(std::string value) {
+        value = toUpper(std::move(value));
+        if (value == "TSAP") {
+            return "TSAP";
+        }
+        return "RACK_SLOT";
+    }
+
+    static std::optional<std::uint16_t> parseTsapHex(const Json::Value& value) {
+        if (value.isNull()) {
+            return std::nullopt;
+        }
+        if (value.isInt() || value.isUInt()) {
+            const unsigned int raw = value.asUInt();
+            if (raw > 0xFFFF) {
+                return std::nullopt;
+            }
+            return static_cast<std::uint16_t>(raw);
+        }
+        if (!value.isString()) {
+            return std::nullopt;
+        }
+
+        std::string text = value.asString();
+        text.erase(std::remove_if(text.begin(), text.end(), [](unsigned char c) {
+            return std::isspace(c) || c == '.' || c == ':' || c == '-' || c == '_';
+        }), text.end());
+        text = toUpper(std::move(text));
+        if (text.rfind("0X", 0) == 0) {
+            text.erase(0, 2);
+        }
+        if (text.empty() || text.size() > 4) {
+            return std::nullopt;
+        }
+        if (!std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isxdigit(c) != 0; })) {
+            return std::nullopt;
+        }
+        return static_cast<std::uint16_t>(std::stoul(text, nullptr, 16));
+    }
+
+    static std::optional<S7ConnectionPreset> resolvePreset(const std::string& plcModel) {
+        if (plcModel == "S7-200") return S7ConnectionPreset{.mode = "TSAP", .rack = 0, .slot = 1, .localTSAP = 0x4D57, .remoteTSAP = 0x4D57};
+        if (plcModel == "S7-300") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 2};
+        if (plcModel == "S7-400") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 3};
+        if (plcModel == "S7-1200" || plcModel == "S7-1500") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 1};
         return std::nullopt;
     }
 
@@ -484,18 +536,30 @@ private:
 
     static S7ConnectionConfig parseConnection(const Json::Value& config, const std::string& plcModel) {
         S7ConnectionConfig connection;
-        auto preset = resolvePreset(plcModel);
-        if (preset) {
-            connection.rack = preset->first;
-            connection.slot = preset->second;
-        }
+        const auto preset = resolvePreset(plcModel).value_or(S7ConnectionPreset{});
+        connection.mode = preset.mode;
+        connection.rack = preset.rack;
+        connection.slot = preset.slot;
+        connection.localTSAP = preset.localTSAP;
+        connection.remoteTSAP = preset.remoteTSAP;
 
         if (config.isMember("connection") && config["connection"].isObject()) {
             const auto& conn = config["connection"];
             connection.host = conn.get("host", "").asString();
+            connection.connectionType = toUpper(conn.get("connectionType", "PG").asString());
+            if (conn.isMember("mode")) {
+                connection.mode = normalizeConnectionMode(conn.get("mode", "").asString());
+            } else if (conn.isMember("localTSAP") || conn.isMember("remoteTSAP")) {
+                connection.mode = "TSAP";
+            }
             connection.rack = conn.get("rack", connection.rack).asInt();
             connection.slot = conn.get("slot", connection.slot).asInt();
-            connection.connectionType = conn.get("connectionType", "PG").asString();
+            if (auto localTSAP = parseTsapHex(conn["localTSAP"])) {
+                connection.localTSAP = *localTSAP;
+            }
+            if (auto remoteTSAP = parseTsapHex(conn["remoteTSAP"])) {
+                connection.remoteTSAP = *remoteTSAP;
+            }
         }
         connection.pollIntervalSec = config.get("pollInterval", 5).asInt();
         if (connection.pollIntervalSec < 1) connection.pollIntervalSec = 1;
@@ -583,13 +647,25 @@ private:
             return false;
         }
 
-        if (s7CliSetConnectionType(runtime.client, runtime.connection.connectionType) != 0) {
-            runtime.resetClient();
-            return false;
-        }
-
         runtime.lastConnectAttempt = now;
-        int rc = s7CliConnectTo(runtime.client, runtime.connection.host.c_str(), runtime.connection.rack, runtime.connection.slot);
+        int rc = -1;
+        if (runtime.connection.mode == "TSAP") {
+            if (s7CliSetConnectionParams(
+                    runtime.client,
+                    runtime.connection.host.c_str(),
+                    runtime.connection.localTSAP,
+                    runtime.connection.remoteTSAP) != 0) {
+                runtime.resetClient();
+                return false;
+            }
+            rc = s7CliConnect(runtime.client);
+        } else {
+            if (s7CliSetConnectionType(runtime.client, runtime.connection.connectionType) != 0) {
+                runtime.resetClient();
+                return false;
+            }
+            rc = s7CliConnectTo(runtime.client, runtime.connection.host.c_str(), runtime.connection.rack, runtime.connection.slot);
+        }
         runtime.connected = (rc == 0) && s7CliGetConnected(runtime.client);
         if (!runtime.connected) {
             runtime.resetClient();

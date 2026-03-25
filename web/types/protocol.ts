@@ -171,8 +171,11 @@ export interface ModbusConfig {
 /** S7 连接类型 */
 export type S7ConnectionType = "PG" | "OP" | "S7_BASIC";
 
+/** S7 连接模式 */
+export type S7ConnectionMode = "RACK_SLOT" | "TSAP";
+
 /** S7 PLC 型号 */
-export type S7PlcModel = "S7-300" | "S7-400" | "S7-1200" | "S7-1500";
+export type S7PlcModel = "S7-200" | "S7-300" | "S7-400" | "S7-1200" | "S7-1500";
 
 /** S7 区域类型 */
 export type S7AreaType = "DB" | "MK" | "PE" | "PA" | "CT" | "TM";
@@ -206,8 +209,11 @@ export interface S7Area {
 
 /** S7 连接配置（连接地址由链路决定） */
 export interface S7Connection {
-  rack: number;
-  slot: number;
+  mode?: S7ConnectionMode;
+  rack?: number;
+  slot?: number;
+  localTSAP?: string;
+  remoteTSAP?: string;
   connectionType?: S7ConnectionType;
 }
 
@@ -297,6 +303,7 @@ export namespace Modbus {
 
 /** S7 命名空间 */
 export namespace S7 {
+  export type ConnectionMode = S7ConnectionMode;
   export type ConnectionType = S7ConnectionType;
   export type PlcModel = S7PlcModel;
   export type AreaType = S7AreaType;

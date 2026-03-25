@@ -9,6 +9,14 @@
 #include "common/cache/ResourceVersion.hpp"
 #include "common/filters/PermissionFilter.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <iomanip>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <vector>
+
 namespace {
     // 允许的协议配置类型列表
     const std::vector<std::string> ALLOWED_CONFIG_PROTOCOLS = {
@@ -126,19 +134,116 @@ private:
                 throw ValidationException("S7 配置的 plcModel 不能为空");
             }
 
-            auto resolvePreset = [](const std::string& model) -> std::optional<std::pair<int, int>> {
-                if (model == "S7-300") return std::make_pair(0, 2);
-                if (model == "S7-400") return std::make_pair(0, 3);
-                if (model == "S7-1200" || model == "S7-1500") return std::make_pair(0, 1);
+            struct S7ConnectionPreset {
+                std::string mode = "RACK_SLOT";
+                int rack = 0;
+                int slot = 1;
+                std::string localTSAP;
+                std::string remoteTSAP;
+            };
+            auto toUpper = [](std::string value) {
+                std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::toupper(c));
+                });
+                return value;
+            };
+            auto resolvePreset = [](const std::string& model) -> std::optional<S7ConnectionPreset> {
+                if (model == "S7-200") return S7ConnectionPreset{.mode = "TSAP", .rack = 0, .slot = 1, .localTSAP = "4D57", .remoteTSAP = "4D57"};
+                if (model == "S7-300") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 2};
+                if (model == "S7-400") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 3};
+                if (model == "S7-1200" || model == "S7-1500") return S7ConnectionPreset{.mode = "RACK_SLOT", .rack = 0, .slot = 1};
                 return std::nullopt;
             };
             auto preset = resolvePreset(plcModel);
             if (!preset) {
-                throw ValidationException("S7 配置的 plcModel 仅支持 S7-300、S7-400、S7-1200、S7-1500");
+                throw ValidationException("S7 配置的 plcModel 仅支持 S7-200、S7-300、S7-400、S7-1200、S7-1500");
             }
 
             if (config.isMember("connection") && !config["connection"].isObject()) {
                 throw ValidationException("S7 配置的 connection 必须是对象");
+            }
+
+            const auto& conn = config.isMember("connection") && config["connection"].isObject()
+                ? config["connection"]
+                : Json::Value::nullSingleton();
+            auto normalizeTsap = [&](const Json::Value& value) -> std::optional<std::string> {
+                if (value.isNull()) {
+                    return std::nullopt;
+                }
+                if (value.isInt() || value.isUInt()) {
+                    const unsigned int tsap = value.asUInt();
+                    if (tsap > 0xFFFF) {
+                        return std::nullopt;
+                    }
+                    std::ostringstream oss;
+                    oss << std::uppercase << std::hex << std::setw(4) << std::setfill('0') << tsap;
+                    return oss.str();
+                }
+                if (!value.isString()) {
+                    return std::nullopt;
+                }
+                std::string text = value.asString();
+                text.erase(std::remove_if(text.begin(), text.end(), [](unsigned char c) {
+                    return std::isspace(c) || c == '.' || c == ':' || c == '-' || c == '_';
+                }), text.end());
+                text = toUpper(text);
+                if (text.rfind("0X", 0) == 0) {
+                    text.erase(0, 2);
+                }
+                if (text.empty() || text.size() > 4) {
+                    return std::nullopt;
+                }
+                if (!std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isxdigit(c) != 0; })) {
+                    return std::nullopt;
+                }
+                std::ostringstream oss;
+                oss << std::uppercase << std::setw(4) << std::setfill('0') << text;
+                return oss.str();
+            };
+            auto normalizeConnectionMode = [&](const Json::Value& connection) {
+                std::string mode = connection.get("mode", "").asString();
+                if (!mode.empty()) {
+                    return toUpper(mode);
+                }
+                if (connection.isMember("localTSAP") || connection.isMember("remoteTSAP")) {
+                    return std::string("TSAP");
+                }
+                return preset->mode;
+            };
+            auto normalizeConnectionType = [&](const Json::Value& connection) {
+                return toUpper(connection.get("connectionType", "PG").asString());
+            };
+
+            const std::string connectionMode = normalizeConnectionMode(conn);
+            if (connectionMode != "RACK_SLOT" && connectionMode != "TSAP") {
+                throw ValidationException("S7 connection.mode 仅支持 RACK_SLOT 或 TSAP");
+            }
+            if (connectionMode == "RACK_SLOT") {
+                const int rack = conn.get("rack", preset->rack).asInt();
+                const int slot = conn.get("slot", preset->slot).asInt();
+                if (rack < 0 || slot < 0) {
+                    throw ValidationException("S7 的 rack/slot 不能小于 0");
+                }
+                const std::string connectionType = normalizeConnectionType(conn);
+                if (connectionType != "PG" && connectionType != "OP" && connectionType != "S7_BASIC") {
+                    throw ValidationException("S7 connection.connectionType 仅支持 PG、OP、S7_BASIC");
+                }
+            } else {
+                Json::Value localValue;
+                Json::Value remoteValue;
+                if (conn.isMember("localTSAP")) {
+                    localValue = conn["localTSAP"];
+                } else if (!preset->localTSAP.empty()) {
+                    localValue = Json::Value(preset->localTSAP);
+                }
+                if (conn.isMember("remoteTSAP")) {
+                    remoteValue = conn["remoteTSAP"];
+                } else if (!preset->remoteTSAP.empty()) {
+                    remoteValue = Json::Value(preset->remoteTSAP);
+                }
+                if (!normalizeTsap(localValue) || !normalizeTsap(remoteValue)) {
+                    throw ValidationException("S7 TSAP 模式下必须提供合法的 localTSAP / remoteTSAP（例如 4D57 或 0200）");
+                }
             }
 
             if (config.isMember("areas")) {

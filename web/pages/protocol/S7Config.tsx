@@ -36,10 +36,25 @@ import type { S7 } from "@/types";
 type DeviceTypeFormValues = {
   deviceType: string;
   plcModel: S7.PlcModel;
+  connectionMode: S7.ConnectionMode;
   connectionType: S7.ConnectionType;
+  rack: number;
+  slot: number;
+  localTSAP: string;
+  remoteTSAP: string;
   pollInterval: number;
   enabled: boolean;
   remark?: string;
+};
+
+type PlcConnectionPreset = {
+  value: S7.PlcModel;
+  label: string;
+  mode: S7.ConnectionMode;
+  rack: number;
+  slot: number;
+  localTSAP: string;
+  remoteTSAP: string;
 };
 
 /** 生成唯一 ID（兼容非安全上下文） */
@@ -52,6 +67,7 @@ const defaultConfig = (): S7.Config => ({
   deviceType: "",
   plcModel: "S7-1200",
   connection: {
+    mode: "RACK_SLOT",
     rack: 0,
     slot: 1,
     connectionType: "PG",
@@ -60,20 +76,161 @@ const defaultConfig = (): S7.Config => ({
   areas: [],
 });
 
-const plcModelOptions: { value: S7.PlcModel; label: string; rack: number; slot: number }[] = [
-  { value: "S7-300", label: "S7-300", rack: 0, slot: 2 },
-  { value: "S7-400", label: "S7-400", rack: 0, slot: 3 },
-  { value: "S7-1200", label: "S7-1200", rack: 0, slot: 1 },
-  { value: "S7-1500", label: "S7-1500", rack: 0, slot: 1 },
+const plcModelOptions: PlcConnectionPreset[] = [
+  {
+    value: "S7-200",
+    label: "S7-200",
+    mode: "TSAP",
+    rack: 0,
+    slot: 1,
+    localTSAP: "4D57",
+    remoteTSAP: "4D57",
+  },
+  {
+    value: "S7-300",
+    label: "S7-300",
+    mode: "RACK_SLOT",
+    rack: 0,
+    slot: 2,
+    localTSAP: "0100",
+    remoteTSAP: "0102",
+  },
+  {
+    value: "S7-400",
+    label: "S7-400",
+    mode: "RACK_SLOT",
+    rack: 0,
+    slot: 3,
+    localTSAP: "0100",
+    remoteTSAP: "0103",
+  },
+  {
+    value: "S7-1200",
+    label: "S7-1200",
+    mode: "RACK_SLOT",
+    rack: 0,
+    slot: 1,
+    localTSAP: "0100",
+    remoteTSAP: "0101",
+  },
+  {
+    value: "S7-1500",
+    label: "S7-1500",
+    mode: "RACK_SLOT",
+    rack: 0,
+    slot: 1,
+    localTSAP: "0100",
+    remoteTSAP: "0101",
+  },
 ];
 
 const getPlcPreset = (plcModel: S7.PlcModel) =>
-  plcModelOptions.find((option) => option.value === plcModel) ?? plcModelOptions[2];
+  plcModelOptions.find((option) => option.value === plcModel) ??
+  plcModelOptions.find((option) => option.value === "S7-1200") ??
+  plcModelOptions[0];
+
+const normalizeTsapValue = (value?: string) => {
+  if (!value) return undefined;
+  const normalized = value
+    .replace(/^0x/i, "")
+    .replace(/[\s.:\-_]/g, "")
+    .toUpperCase();
+  return normalized || undefined;
+};
+
+const formatTsapValue = (value?: string) => {
+  const normalized = normalizeTsapValue(value);
+  if (!normalized || !/^[0-9A-F]{1,4}$/.test(normalized)) {
+    return undefined;
+  }
+  return normalized.padStart(4, "0");
+};
+
+const getConnectionTypeCode = (connectionType?: S7.ConnectionType) => {
+  if (connectionType === "OP") return 0x02;
+  if (connectionType === "S7_BASIC") return 0x03;
+  return 0x01;
+};
+
+const buildRemoteTsapFromRackSlot = (
+  rack: number,
+  slot: number,
+  connectionType?: S7.ConnectionType
+) =>
+  ((getConnectionTypeCode(connectionType) << 8) + rack * 0x20 + slot)
+    .toString(16)
+    .toUpperCase()
+    .padStart(4, "0");
+
+const inferConnectionMode = (
+  plcModel: S7.PlcModel,
+  connection?: S7.Connection
+): S7.ConnectionMode => {
+  if (connection?.mode === "TSAP" || connection?.mode === "RACK_SLOT") {
+    return connection.mode;
+  }
+  if (connection?.localTSAP || connection?.remoteTSAP) {
+    return "TSAP";
+  }
+  return getPlcPreset(plcModel).mode;
+};
+
+const getConnectionFormValues = (plcModel: S7.PlcModel, connection?: S7.Connection) => {
+  const preset = getPlcPreset(plcModel);
+  const connectionMode = inferConnectionMode(plcModel, connection);
+  const connectionType = connection?.connectionType ?? "PG";
+  const rack = connection?.rack ?? preset.rack;
+  const slot = connection?.slot ?? preset.slot;
+  const localTSAP =
+    formatTsapValue(connection?.localTSAP) ??
+    (connectionMode === "TSAP" && preset.mode === "TSAP" ? preset.localTSAP : "0100");
+  const remoteTSAP =
+    formatTsapValue(connection?.remoteTSAP) ??
+    (connectionMode === "TSAP" && preset.mode === "TSAP"
+      ? preset.remoteTSAP
+      : buildRemoteTsapFromRackSlot(rack, slot, connectionType));
+
+  return {
+    connectionMode,
+    connectionType,
+    rack,
+    slot,
+    localTSAP,
+    remoteTSAP,
+  };
+};
+
+const buildConnectionConfig = (values: DeviceTypeFormValues): S7.Connection => {
+  if (values.connectionMode === "TSAP") {
+    return {
+      mode: "TSAP",
+      connectionType: values.connectionType,
+      rack: undefined,
+      slot: undefined,
+      localTSAP: formatTsapValue(values.localTSAP),
+      remoteTSAP: formatTsapValue(values.remoteTSAP),
+    };
+  }
+
+  return {
+    mode: "RACK_SLOT",
+    connectionType: values.connectionType,
+    rack: values.rack,
+    slot: values.slot,
+    localTSAP: undefined,
+    remoteTSAP: undefined,
+  };
+};
 
 const connectionTypeOptions: { value: S7.ConnectionType; label: string }[] = [
   { value: "PG", label: "PG" },
   { value: "OP", label: "OP" },
   { value: "S7_BASIC", label: "S7BASIC" },
+];
+
+const connectionModeOptions: { value: S7.ConnectionMode; label: string }[] = [
+  { value: "RACK_SLOT", label: "Rack/Slot" },
+  { value: "TSAP", label: "TSAP" },
 ];
 
 const connectionTypeTips: Record<S7.ConnectionType, string> = {
@@ -82,8 +239,22 @@ const connectionTypeTips: Record<S7.ConnectionType, string> = {
   S7_BASIC: "S7 Basic，兼容部分第三方网关的轻量模式",
 };
 
+const connectionModeTips: Record<S7.ConnectionMode, string> = {
+  RACK_SLOT: "常规西门子 PLC 连接方式，适合 S7-300/400/1200/1500 等场景",
+  TSAP: "直接指定本地/远端 TSAP，适合 S7-200、CP243 或需要手工指定 TSAP 的场景",
+};
+
 const getConnectionTypeLabel = (connectionType?: S7.ConnectionType) =>
   connectionTypeOptions.find((item) => item.value === connectionType)?.label || "PG";
+
+const getConnectionModeLabel = (connectionMode?: S7.ConnectionMode) =>
+  connectionModeOptions.find((item) => item.value === connectionMode)?.label || "Rack/Slot";
+
+const validateTsapValue = async (_: unknown, value?: string) => {
+  if (!formatTsapValue(value)) {
+    throw new Error("请输入 1-4 位十六进制 TSAP，例如 4D57 或 0200");
+  }
+};
 
 const areaTypeOptions: { value: S7.AreaType; label: string }[] = [
   { value: "DB", label: "DB（数据块）" },
@@ -121,12 +292,14 @@ const areaDataTypeSizeMap: Record<S7.AreaDataType, number> = {
 };
 
 const getDataTypeSize = (dataType?: S7.AreaDataType) =>
-  dataType ? areaDataTypeSizeMap[dataType] ?? 1 : 1;
+  dataType ? (areaDataTypeSizeMap[dataType] ?? 1) : 1;
 
 const writableAreaTypes: S7.AreaType[] = ["DB", "MK", "PA"];
 const bitOnlyAreaTypes: S7.AreaType[] = ["PE", "PA"];
 
-const getAreaDataTypeOptions = (areaType?: S7.AreaType): { value: S7.AreaDataType; label: string }[] => {
+const getAreaDataTypeOptions = (
+  areaType?: S7.AreaType
+): { value: S7.AreaDataType; label: string }[] => {
   if (areaType === "CT" || areaType === "TM") {
     return areaDataTypeOptions.filter((item) => item.value === "UINT16");
   }
@@ -293,7 +466,13 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
       : dataType === "LREAL"
         ? startOffset + 1
         : startOffset;
-  const addressSample = getAreaAddressSample(parsedAreaType, dataType, dbNumber, startOffset, startBit);
+  const addressSample = getAreaAddressSample(
+    parsedAreaType,
+    dataType,
+    dbNumber,
+    startOffset,
+    startBit
+  );
   const endAddressSample = getAreaAddressSample(
     parsedAreaType,
     dataType,
@@ -301,28 +480,32 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
     endOffset,
     startBit
   );
-  const canUseBoolAddress = parsedAreaType === "DB" || parsedAreaType === "MK" || parsedAreaType === "PE" || parsedAreaType === "PA";
+  const canUseBoolAddress =
+    parsedAreaType === "DB" ||
+    parsedAreaType === "MK" ||
+    parsedAreaType === "PE" ||
+    parsedAreaType === "PA";
 
   const handleOk = async () => {
     const values = await form.validateFields();
-      const resolvedDataType =
-        parsedAreaType === "CT" || parsedAreaType === "TM"
-          ? values.dataType || "UINT16"
-          : parsedAreaType === "PE" || parsedAreaType === "PA"
-            ? "BOOL"
-            : values.dataType;
+    const resolvedDataType =
+      parsedAreaType === "CT" || parsedAreaType === "TM"
+        ? values.dataType || "UINT16"
+        : parsedAreaType === "PE" || parsedAreaType === "PA"
+          ? "BOOL"
+          : values.dataType;
     const size = resolvedDataType === "STRING" ? values.size : getDataTypeSize(resolvedDataType);
     const nextDbNumber = parsedAreaType === "DB" ? values.dbNumber : undefined;
     const nextStartBit = isBoolDataType && canUseBoolAddress ? values.startBit : undefined;
-      const nextValues = {
-        ...values,
-        dbNumber: nextDbNumber,
-        startBit: nextStartBit,
-        dataType: resolvedDataType,
-        id: mode === "create" ? generateId() : initialValue?.id || values.id,
-        size,
-        writable: isWritableArea ? values.writable : false,
-      };
+    const nextValues = {
+      ...values,
+      dbNumber: nextDbNumber,
+      startBit: nextStartBit,
+      dataType: resolvedDataType,
+      id: mode === "create" ? generateId() : initialValue?.id || values.id,
+      size,
+      writable: isWritableArea ? values.writable : false,
+    };
     onSubmit(nextValues);
   };
 
@@ -360,15 +543,21 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
         </Form.Item>
         <Row gutter={12}>
           <Col xs={24} sm={12}>
-            <Form.Item name="area" label="寄存器类型" rules={[{ required: true }]} extra="不同区域类型映射不同读取方式">
+            <Form.Item
+              name="area"
+              label="寄存器类型"
+              rules={[{ required: true }]}
+              extra="不同区域类型映射不同读取方式"
+            >
               <Select
                 options={areaTypeOptions}
                 onChange={(value: S7.AreaType) => {
-                  const currentDataType = normalizeS7DataType(form.getFieldValue("dataType") as string | undefined);
+                  const currentDataType = normalizeS7DataType(
+                    form.getFieldValue("dataType") as string | undefined
+                  );
                   const updates: Partial<S7.Area> = {};
-                  const normalizedDataType = value === "CT" || value === "TM"
-                    ? "UINT16"
-                    : currentDataType;
+                  const normalizedDataType =
+                    value === "CT" || value === "TM" ? "UINT16" : currentDataType;
 
                   if (value === "CT" || value === "TM") {
                     updates.dataType = normalizedDataType;
@@ -396,7 +585,12 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
             </Form.Item>
           </Col>
           <Col xs={24} sm={12}>
-            <Form.Item name="dataType" label="数据类型" rules={[{ required: true }]} extra="不同数据类型对应不同解析方式">
+            <Form.Item
+              name="dataType"
+              label="数据类型"
+              rules={[{ required: true }]}
+              extra="不同数据类型对应不同解析方式"
+            >
               <Select
                 options={getAreaDataTypeOptions(areaType as S7.AreaType | undefined)}
                 onChange={(value: S7.AreaDataType) => {
@@ -475,16 +669,17 @@ function AreaModal({ open, mode, initialValue, onCancel, onSubmit }: AreaModalPr
             </Form.Item>
           )}
         </Flex>
-          <Form.Item label="地址示例">
-            <div className="text-xs text-gray-500">
-              参考示例：{addressExample || (parsedAreaType ? "按区域规则自动拼接" : "请先选择寄存器类型")}
-            </div>
-            <div className="text-xs text-gray-500">
-              {areaType ? `示例：${areaAddressHintMap[areaType]}` : "请先选择寄存器类型"}
-            </div>
-            <div className="text-xs text-gray-500">当前起始地址：{addressSample || "暂无"}</div>
-            <div className="text-xs text-gray-500">当前结束地址：{endAddressSample || "暂无"}</div>
-          </Form.Item>
+        <Form.Item label="地址示例">
+          <div className="text-xs text-gray-500">
+            参考示例：
+            {addressExample || (parsedAreaType ? "按区域规则自动拼接" : "请先选择寄存器类型")}
+          </div>
+          <div className="text-xs text-gray-500">
+            {areaType ? `示例：${areaAddressHintMap[areaType]}` : "请先选择寄存器类型"}
+          </div>
+          <div className="text-xs text-gray-500">当前起始地址：{addressSample || "暂无"}</div>
+          <div className="text-xs text-gray-500">当前结束地址：{endAddressSample || "暂无"}</div>
+        </Form.Item>
         {isWritableArea && (
           <Form.Item name="writable" label="可写" valuePropName="checked">
             <Switch />
@@ -524,9 +719,14 @@ const S7ConfigPage = () => {
 
   const types = useMemo(() => configPage?.list || [], [configPage?.list]);
   const emptyTypeDesc = types.length ? "未选择设备类型" : "暂无设备类型";
-  const selectedConnectionType =
-    Form.useWatch("connectionType", createForm) as S7.ConnectionType | undefined;
+  const selectedConnectionType = Form.useWatch("connectionType", createForm) as
+    | S7.ConnectionType
+    | undefined;
+  const selectedConnectionMode = Form.useWatch("connectionMode", createForm) as
+    | S7.ConnectionMode
+    | undefined;
   const connectionTypeTip = connectionTypeTips[selectedConnectionType || "PG"];
+  const connectionModeTip = connectionModeTips[selectedConnectionMode || "RACK_SLOT"];
 
   const activeTypeId = useMemo(() => {
     if (selectedTypeId && types.some((t) => t.id === selectedTypeId)) {
@@ -539,6 +739,12 @@ const S7ConfigPage = () => {
 
   const activeConfig = (activeType?.config as S7.Config) ?? null;
   const activeAreas = activeConfig?.areas ?? [];
+  const activeConnectionMode = activeConfig
+    ? inferConnectionMode(activeConfig.plcModel, activeConfig.connection)
+    : undefined;
+  const activeConnectionPreset = activeConfig
+    ? getConnectionFormValues(activeConfig.plcModel, activeConfig.connection)
+    : null;
 
   const areaColumns: ColumnsType<S7.Area> = [
     { title: "寄存器名称", dataIndex: "name", ellipsis: true },
@@ -622,7 +828,7 @@ const S7ConfigPage = () => {
     createForm.setFieldsValue({
       deviceType: "",
       plcModel: "S7-1200",
-      connectionType: "PG",
+      ...getConnectionFormValues("S7-1200"),
       pollInterval: 5,
       enabled: true,
       remark: "",
@@ -631,15 +837,59 @@ const S7ConfigPage = () => {
 
   const handleOpenEditType = () => {
     if (!activeType) return;
+    const currentConfig = (activeType.config as S7.Config) ?? defaultConfig();
     setEditingDeviceType(true);
     setDeviceTypeModalOpen(true);
     createForm.setFieldsValue({
       deviceType: activeType.name,
-      plcModel: (activeType.config as S7.Config)?.plcModel ?? "S7-1200",
-      connectionType: (activeType.config as S7.Config)?.connection?.connectionType ?? "PG",
-      pollInterval: (activeType.config as S7.Config)?.pollInterval ?? 5,
+      plcModel: currentConfig.plcModel ?? "S7-1200",
+      ...getConnectionFormValues(currentConfig.plcModel ?? "S7-1200", currentConfig.connection),
+      pollInterval: currentConfig.pollInterval ?? 5,
       enabled: activeType.enabled,
       remark: activeType.remark,
+    });
+  };
+
+  const handlePlcModelChange = (plcModel: S7.PlcModel) => {
+    const preset = getPlcPreset(plcModel);
+    createForm.setFieldsValue({
+      connectionMode: preset.mode,
+      rack: preset.rack,
+      slot: preset.slot,
+      localTSAP: preset.localTSAP,
+      remoteTSAP: preset.remoteTSAP,
+    });
+  };
+
+  const handleConnectionModeChange = (connectionMode: S7.ConnectionMode) => {
+    const plcModel = (createForm.getFieldValue("plcModel") as S7.PlcModel | undefined) ?? "S7-1200";
+    const preset = getPlcPreset(plcModel);
+    if (connectionMode === "RACK_SLOT") {
+      createForm.setFieldsValue({
+        rack: (createForm.getFieldValue("rack") as number | undefined) ?? preset.rack,
+        slot: (createForm.getFieldValue("slot") as number | undefined) ?? preset.slot,
+      });
+      return;
+    }
+
+    const connectionType =
+      (createForm.getFieldValue("connectionType") as S7.ConnectionType | undefined) ?? "PG";
+    const rack = (createForm.getFieldValue("rack") as number | undefined) ?? preset.rack;
+    const slot = (createForm.getFieldValue("slot") as number | undefined) ?? preset.slot;
+    const currentLocalTSAP = formatTsapValue(
+      createForm.getFieldValue("localTSAP") as string | undefined
+    );
+    const currentRemoteTSAP = formatTsapValue(
+      createForm.getFieldValue("remoteTSAP") as string | undefined
+    );
+
+    createForm.setFieldsValue({
+      localTSAP: currentLocalTSAP ?? (preset.mode === "TSAP" ? preset.localTSAP : "0100"),
+      remoteTSAP:
+        currentRemoteTSAP ??
+        (preset.mode === "TSAP"
+          ? preset.remoteTSAP
+          : buildRemoteTsapFromRackSlot(rack, slot, connectionType)),
     });
   };
 
@@ -647,16 +897,13 @@ const S7ConfigPage = () => {
     const values = await createForm.validateFields();
     if (editingDeviceType) {
       if (!activeTypeId || !activeType) return;
-      const preset = getPlcPreset(values.plcModel);
       const currentConfig = (activeType.config as S7.Config) ?? defaultConfig();
       const nextConfig: S7.Config = {
         ...currentConfig,
         plcModel: values.plcModel,
         connection: {
           ...currentConfig.connection,
-          rack: preset.rack,
-          slot: preset.slot,
-          connectionType: values.connectionType,
+          ...buildConnectionConfig(values),
         },
         pollInterval: values.pollInterval,
       };
@@ -669,19 +916,13 @@ const S7ConfigPage = () => {
         remark: values.remark,
       });
     } else {
-      const preset = getPlcPreset(values.plcModel);
       const config = defaultConfig();
       const nextConfig: S7.Config = {
         ...config,
         deviceType: values.deviceType,
         plcModel: values.plcModel,
         pollInterval: values.pollInterval,
-        connection: {
-          ...config.connection,
-          rack: preset.rack,
-          slot: preset.slot,
-          connectionType: values.connectionType,
-        },
+        connection: buildConnectionConfig(values),
       };
       await saveMutation.mutateAsync({
         protocol: "S7",
@@ -724,11 +965,7 @@ const S7ConfigPage = () => {
                   </Button>
                 )}
                 {canEdit && (
-                  <Button
-                    size="small"
-                    disabled={!activeTypeId}
-                    onClick={handleOpenEditType}
-                  >
+                  <Button size="small" disabled={!activeTypeId} onClick={handleOpenEditType}>
                     编辑
                   </Button>
                 )}
@@ -771,10 +1008,10 @@ const S7ConfigPage = () => {
             ) : types.length === 0 ? (
               <Empty description="暂无设备类型" />
             ) : (
-                <Tree
-                  blockNode
-                  className="[&_.ant-tree-switcher]:hidden"
-                  selectedKeys={activeTypeId ? [String(activeTypeId)] : []}
+              <Tree
+                blockNode
+                className="[&_.ant-tree-switcher]:hidden"
+                selectedKeys={activeTypeId ? [String(activeTypeId)] : []}
                 onSelect={(keys) => {
                   if (keys.length > 0) {
                     setSelectedTypeId(Number(keys[0]));
@@ -806,18 +1043,42 @@ const S7ConfigPage = () => {
         <div className="flex-1 min-w-0 h-full">
           <Card
             title={
-                activeType ? (
-                  <Space>
-                    <span>寄存器配置</span>
-                    {activeType?.enabled ? <Tag color="green">启用</Tag> : <Tag color="red">禁用</Tag>}
-                    <Tag color="blue">
-                      {getConnectionTypeLabel((activeType.config as S7.Config)?.connection?.connectionType)}
+              activeType ? (
+                <Space>
+                  <span>寄存器配置</span>
+                  {activeType?.enabled ? (
+                    <Tag color="green">启用</Tag>
+                  ) : (
+                    <Tag color="red">禁用</Tag>
+                  )}
+                  <Tag color={activeConnectionMode === "TSAP" ? "cyan" : "blue"}>
+                    {getConnectionModeLabel(activeConnectionMode)}
+                  </Tag>
+                  {activeConnectionMode === "TSAP" ? (
+                    <Tag>
+                      TSAP {activeConnectionPreset?.localTSAP ?? "0100"} /{" "}
+                      {activeConnectionPreset?.remoteTSAP ?? "0100"}
                     </Tag>
-                    <Tag>读取间隔 {(activeType.config as S7.Config)?.pollInterval ?? 5}s</Tag>
-                  </Space>
-                ) : (
-                  types.length > 0 ? "请选择设备类型" : "暂无设备类型"
-                )
+                  ) : (
+                    <>
+                      <Tag color="blue">
+                        {getConnectionTypeLabel(
+                          (activeType.config as S7.Config)?.connection?.connectionType
+                        )}
+                      </Tag>
+                      <Tag>
+                        Rack {activeConnectionPreset?.rack ?? 0} / Slot{" "}
+                        {activeConnectionPreset?.slot ?? 1}
+                      </Tag>
+                    </>
+                  )}
+                  <Tag>读取间隔 {(activeType.config as S7.Config)?.pollInterval ?? 5}s</Tag>
+                </Space>
+              ) : types.length > 0 ? (
+                "请选择设备类型"
+              ) : (
+                "暂无设备类型"
+              )
             }
             className="h-full flex flex-col"
             styles={{ body: { flex: 1, overflow: "auto", padding: 0 } }}
@@ -878,7 +1139,12 @@ const S7ConfigPage = () => {
           initialValues={{
             deviceType: "",
             plcModel: "S7-1200",
+            connectionMode: "RACK_SLOT",
             connectionType: "PG",
+            rack: 0,
+            slot: 1,
+            localTSAP: "0100",
+            remoteTSAP: "0101",
             pollInterval: 5,
             enabled: true,
             remark: "",
@@ -896,18 +1162,87 @@ const S7ConfigPage = () => {
             name="plcModel"
             label="PLC型号"
             rules={[{ required: true, message: "请选择PLC型号" }]}
-            extra="切换型号会自动带入对应的默认 Rack/Slot"
+            extra="切换型号会自动带入对应的默认连接模式和参数"
           >
-            <Select options={plcModelOptions.map(({ value, label }) => ({ value, label }))} />
+            <Select
+              options={plcModelOptions.map(({ value, label }) => ({ value, label }))}
+              onChange={(value) => handlePlcModelChange(value as S7.PlcModel)}
+            />
           </Form.Item>
           <Form.Item
-            name="connectionType"
-            label="连接类型"
-            rules={[{ required: true, message: "请选择连接类型" }]}
-            extra={connectionTypeTip}
+            name="connectionMode"
+            label="连接模式"
+            rules={[{ required: true, message: "请选择连接模式" }]}
+            extra={connectionModeTip}
           >
-            <Select options={connectionTypeOptions} />
+            <Select
+              options={connectionModeOptions}
+              onChange={(value) => handleConnectionModeChange(value as S7.ConnectionMode)}
+            />
           </Form.Item>
+          {selectedConnectionMode === "TSAP" ? (
+            <Row gutter={12}>
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  name="localTSAP"
+                  label="本地 TSAP"
+                  rules={[
+                    { required: true, message: "请输入本地 TSAP" },
+                    { validator: validateTsapValue },
+                  ]}
+                  extra="支持 4D57、0200、0x4D57、4D.57"
+                >
+                  <Input placeholder="例如 4D57" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  name="remoteTSAP"
+                  label="远端 TSAP"
+                  rules={[
+                    { required: true, message: "请输入远端 TSAP" },
+                    { validator: validateTsapValue },
+                  ]}
+                  extra="S7-200 常见值为 4D57 或 0200"
+                >
+                  <Input placeholder="例如 4D57" />
+                </Form.Item>
+              </Col>
+            </Row>
+          ) : (
+            <>
+              <Form.Item
+                name="connectionType"
+                label="连接类型"
+                rules={[{ required: true, message: "请选择连接类型" }]}
+                extra={connectionTypeTip}
+              >
+                <Select options={connectionTypeOptions} />
+              </Form.Item>
+              <Row gutter={12}>
+                <Col xs={24} sm={12}>
+                  <Form.Item
+                    name="rack"
+                    label="Rack"
+                    rules={[{ required: true, message: "请输入 Rack" }]}
+                    extra="西门子机架号，通常从 0 开始"
+                  >
+                    <InputNumber min={0} className="w-full" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12}>
+                  <Form.Item
+                    name="slot"
+                    label="Slot"
+                    rules={[{ required: true, message: "请输入 Slot" }]}
+                    extra="CPU 或通信模块所在槽位"
+                  >
+                    <InputNumber min={0} className="w-full" />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </>
+          )}
           <Form.Item
             name="pollInterval"
             label="轮询间隔（秒）"
@@ -935,12 +1270,11 @@ const S7ConfigPage = () => {
                 dataType: bitOnlyAreaTypes.includes(editingArea.area as S7.AreaType)
                   ? "BOOL"
                   : editingArea.area === "CT" || editingArea.area === "TM"
-                  ? "UINT16"
-                  : normalizeS7DataType(editingArea.dataType),
-                size:
-                  bitOnlyAreaTypes.includes(editingArea.area as S7.AreaType)
-                    ? 1
-                    : editingArea.area === "CT" || editingArea.area === "TM"
+                    ? "UINT16"
+                    : normalizeS7DataType(editingArea.dataType),
+                size: bitOnlyAreaTypes.includes(editingArea.area as S7.AreaType)
+                  ? 1
+                  : editingArea.area === "CT" || editingArea.area === "TM"
                     ? getDataTypeSize("UINT16")
                     : editingArea.size,
                 startBit: editingArea.startBit,
