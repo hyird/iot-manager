@@ -52,44 +52,66 @@ inline std::string makeRouteKey(const std::string& sessionKey) {
 inline void DtuSessionManager::onConnected(int linkId, const std::string& clientAddr) {
     const std::string sessionKey = makeS7DtuSessionKey(linkId, clientAddr);
     const auto now = std::chrono::steady_clock::now();
+    bool isNewSession = false;
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& session = sessions_[sessionKey];
-    session.linkId = linkId;
-    session.clientAddr = clientAddr;
-    session.sessionKey = sessionKey;
-    session.lastSeen = now;
-    if (session.bindState != SessionBindState::Bound) {
-        session.bindState = SessionBindState::Unknown;
-        session.dtuKey.clear();
-        session.deviceId = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        isNewSession = sessions_.find(sessionKey) == sessions_.end();
+        auto& session = sessions_[sessionKey];
+        session.linkId = linkId;
+        session.clientAddr = clientAddr;
+        session.sessionKey = sessionKey;
+        session.lastSeen = now;
+        if (session.bindState != SessionBindState::Bound) {
+            session.bindState = SessionBindState::Unknown;
+            session.dtuKey.clear();
+            session.deviceId = 0;
+        }
+    }
+
+    if (isNewSession) {
+        LOG_DEBUG << "[S7][DtuSessionManager] Session opened: linkId=" << linkId
+                  << ", client=" << clientAddr;
     }
 }
 
 inline void DtuSessionManager::onDisconnected(int linkId, const std::string& clientAddr) {
     const std::string sessionKey = makeS7DtuSessionKey(linkId, clientAddr);
+    std::string dtuKey;
+    bool found = false;
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto sessionIt = sessions_.find(sessionKey);
-    if (sessionIt == sessions_.end()) return;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto sessionIt = sessions_.find(sessionKey);
+        if (sessionIt == sessions_.end()) return;
 
-    if (!sessionIt->second.dtuKey.empty()) {
-        auto boundIt = dtuToSessionKey_.find(sessionIt->second.dtuKey);
-        if (boundIt != dtuToSessionKey_.end() && boundIt->second == sessionKey) {
-            dtuToSessionKey_.erase(boundIt);
+        found = true;
+        dtuKey = sessionIt->second.dtuKey;
+
+        if (!sessionIt->second.dtuKey.empty()) {
+            auto boundIt = dtuToSessionKey_.find(sessionIt->second.dtuKey);
+            if (boundIt != dtuToSessionKey_.end() && boundIt->second == sessionKey) {
+                dtuToSessionKey_.erase(boundIt);
+            }
         }
+
+        for (auto routeIt = routeBySessionKey_.begin(); routeIt != routeBySessionKey_.end();) {
+            if (routeIt->second.sessionKey == sessionKey) {
+                routeByDeviceId_.erase(routeIt->second.deviceId);
+                routeIt = routeBySessionKey_.erase(routeIt);
+            } else {
+                ++routeIt;
+            }
+        }
+
+        sessions_.erase(sessionIt);
     }
 
-    for (auto routeIt = routeBySessionKey_.begin(); routeIt != routeBySessionKey_.end();) {
-        if (routeIt->second.sessionKey == sessionKey) {
-            routeByDeviceId_.erase(routeIt->second.deviceId);
-            routeIt = routeBySessionKey_.erase(routeIt);
-        } else {
-            ++routeIt;
-        }
+    if (found) {
+        LOG_INFO << "[S7][DtuSessionManager] Session closed: linkId=" << linkId
+                 << ", client=" << clientAddr
+                 << (dtuKey.empty() ? "" : (", dtuKey=" + dtuKey));
     }
-
-    sessions_.erase(sessionIt);
 }
 
 inline void DtuSessionManager::touch(int linkId, const std::string& clientAddr) {
@@ -202,6 +224,11 @@ inline bool DtuSessionManager::bindSession(
         dtuToSessionKey_[dtu.dtuKey] = sessionKey;
     }
 
+    LOG_INFO << "[S7][DtuSessionManager] Bound DTU " << dtu.dtuKey
+             << " to linkId=" << linkId
+             << ", client=" << clientAddr
+             << ", deviceId=" << dtu.deviceId;
+
     if (displacedLinkId > 0 && !displacedClientAddr.empty() && oldSessionDisplacedCallback_) {
         LOG_INFO << "[S7][DtuSessionManager] DTU " << dtu.dtuKey
                  << " rebound from " << displacedClientAddr
@@ -230,11 +257,22 @@ inline std::optional<S7OnlineRoute> DtuSessionManager::getOnlineRouteByDevice(in
 }
 
 inline void DtuSessionManager::clearAllSessions() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    sessions_.clear();
-    dtuToSessionKey_.clear();
-    routeBySessionKey_.clear();
-    routeByDeviceId_.clear();
+    std::size_t sessionCount = 0;
+    std::size_t routeCount = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sessionCount = sessions_.size();
+        routeCount = routeBySessionKey_.size();
+        sessions_.clear();
+        dtuToSessionKey_.clear();
+        routeBySessionKey_.clear();
+        routeByDeviceId_.clear();
+    }
+
+    if (sessionCount > 0 || routeCount > 0) {
+        LOG_INFO << "[S7][DtuSessionManager] Cleared " << sessionCount
+                 << " session(s) and " << routeCount << " route(s)";
+    }
 }
 
 }  // namespace s7

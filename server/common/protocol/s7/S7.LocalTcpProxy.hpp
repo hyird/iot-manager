@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <trantor/utils/Logger.h>
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -63,6 +65,7 @@ public:
         {
             std::lock_guard lock(stateMutex_);
             if (running_ && listenHost_ == listenHost && listenPort_ == listenPort) {
+                LOG_DEBUG << "[S7][Proxy] Already listening on " << listenHost_ << ":" << listenPort_;
                 return {};
             }
         }
@@ -115,8 +118,14 @@ public:
             running_ = true;
         }
 
+        LOG_INFO << "[S7][Proxy] Listening on " << listenHost_ << ":" << listenPort_;
+
         try {
-            acceptThread_ = std::thread([this]() { acceptLoop(); });
+            const std::string threadListenHost = listenHost_;
+            const std::uint16_t threadListenPort = listenPort_;
+            acceptThread_ = std::thread([this, listenSocket, threadListenHost, threadListenPort]() {
+                acceptLoop(listenSocket, threadListenHost, threadListenPort);
+            });
         } catch (...) {
             stop();
             throw;
@@ -129,10 +138,14 @@ public:
         std::thread acceptThread;
         std::vector<std::thread> clientThreads;
         std::vector<std::shared_ptr<ClientState>> clientStates;
+        std::string listenHost;
+        std::uint16_t listenPort = 0;
 
         {
             std::lock_guard lock(stateMutex_);
             running_ = false;
+            listenHost = listenHost_;
+            listenPort = listenPort_;
 
             if (isValidSocket(listenSocket_)) {
                 closeSocket(listenSocket_);
@@ -149,6 +162,11 @@ public:
             }
         }
 
+        if (!listenHost.empty() || listenPort != 0) {
+            LOG_INFO << "[S7][Proxy] Stopping local proxy on " << listenHost << ":" << listenPort
+                     << ", clients=" << clientStates.size();
+        }
+
         for (const auto& state : clientStates) {
             if (!state) continue;
             std::lock_guard lock(state->mutex);
@@ -156,6 +174,7 @@ public:
                 shutdownSocket(state->socket);
                 closeSocket(state->socket);
             }
+            state->socket = kInvalidSocket;
             state->connected = false;
         }
 
@@ -172,6 +191,10 @@ public:
             std::lock_guard lock(stateMutex_);
             clients_.clear();
             listenPort_ = 0;
+        }
+
+        if (!listenHost.empty() || listenPort != 0) {
+            LOG_INFO << "[S7][Proxy] Local proxy stopped";
         }
     }
 
@@ -214,9 +237,11 @@ public:
 
         std::lock_guard lock(state->mutex);
         if (state->connected && isValidSocket(state->socket)) {
+            LOG_DEBUG << "[S7][Proxy] Disconnect client " << clientAddr;
             state->connected = false;
             shutdownSocket(state->socket);
             closeSocket(state->socket);
+            state->socket = kInvalidSocket;
         }
     }
 
@@ -284,6 +309,31 @@ private:
         return ok;
 #else
         return true;
+#endif
+    }
+
+    static bool setReceiveTimeout(SocketHandle socket, int timeoutMs) {
+        if (!isValidSocket(socket)) {
+            return false;
+        }
+#ifdef _WIN32
+        const DWORD value = static_cast<DWORD>(timeoutMs);
+        return ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO,
+                            reinterpret_cast<const char*>(&value), sizeof(value)) == 0;
+#else
+        timeval value{};
+        value.tv_sec = timeoutMs / 1000;
+        value.tv_usec = (timeoutMs % 1000) * 1000;
+        return ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof(value)) == 0;
+#endif
+    }
+
+    static bool isTimeoutError() {
+#ifdef _WIN32
+        const int err = ::WSAGetLastError();
+        return err == WSAETIMEDOUT || err == WSAEWOULDBLOCK;
+#else
+        return errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT;
 #endif
     }
 
@@ -385,12 +435,12 @@ private:
         return true;
     }
 
-    void acceptLoop() {
+    void acceptLoop(SocketHandle listenSocket, const std::string& listenHost, std::uint16_t listenPort) {
         while (running_.load(std::memory_order_acquire)) {
             sockaddr_in clientAddr{};
             SocketLength addrLen = sizeof(clientAddr);
             SocketHandle clientSocket = ::accept(
-                listenSocket_,
+                listenSocket,
                 reinterpret_cast<sockaddr*>(&clientAddr),
                 &addrLen
             );
@@ -398,7 +448,13 @@ private:
                 if (!running_.load(std::memory_order_acquire)) {
                     break;
                 }
+                LOG_WARN << "[S7][Proxy] " << makeSocketError("accept() failed");
                 continue;
+            }
+
+            if (!setReceiveTimeout(clientSocket, 100)) {
+                LOG_WARN << "[S7][Proxy] Failed to set receive timeout for "
+                         << sockaddrToString(clientAddr);
             }
 
             auto state = std::make_shared<ClientState>();
@@ -410,6 +466,9 @@ private:
                 clients_[state->clientAddr] = state;
                 clientThreads_.emplace_back([this, state]() { clientLoop(state); });
             }
+
+            LOG_INFO << "[S7][Proxy] Accepted client " << state->clientAddr
+                     << " on " << listenHost << ":" << listenPort;
 
             if (connectionCallback_) {
                 connectionCallback_(state->clientAddr, true);
@@ -436,10 +495,17 @@ private:
                 static_cast<int>(buffer.size()),
                 0
             );
-            if (received <= 0) {
+            if (received < 0) {
+                if (isTimeoutError()) {
+                    continue;
+                }
+                break;
+            }
+            if (received == 0) {
                 break;
             }
 
+            LOG_TRACE << "[S7][Proxy] RX " << received << "B from " << state->clientAddr;
             if (dataCallback_) {
                 dataCallback_(
                     state->clientAddr,
@@ -462,6 +528,7 @@ private:
         }
 
         if (shouldNotify && connectionCallback_) {
+            LOG_INFO << "[S7][Proxy] Client disconnected " << state->clientAddr;
             connectionCallback_(state->clientAddr, false);
         }
 
