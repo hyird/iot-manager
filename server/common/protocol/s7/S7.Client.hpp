@@ -382,7 +382,9 @@ public:
 
         rc = sendConnectionRequest();
         if (rc != kS7Ok) {
-            closeSocketOnly();
+            if (!(rc == kS7ErrTimeout && transportOpen())) {
+                closeSocketOnly();
+            }
             return rc;
         }
 
@@ -414,6 +416,13 @@ public:
             return connected_ && transportHooks_.connected();
         }
         return connected_ && socket_ != kInvalidSocket;
+    }
+
+    bool transportOpen() const {
+        if (transportHooks_.connected) {
+            return transportHooks_.connected();
+        }
+        return socket_ != kInvalidSocket;
     }
 
     void setTraceCallback(TraceCallback callback) {
@@ -768,6 +777,7 @@ inline int Client::sendConnectionRequest() {
             if (drRc != kS7Ok) {
                 lastError_ = rc;
             }
+            return rc;
         }
         closeSocketOnly();
         return rc;

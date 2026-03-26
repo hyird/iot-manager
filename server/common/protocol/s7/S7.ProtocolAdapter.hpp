@@ -1665,6 +1665,7 @@ private:
             rc = client->connectTo(connection.host.c_str(), connection.rack, connection.slot);
         }
 
+        const bool preserveTimedOutTransport = (rc == kS7ErrTimeout) && client->transportOpen();
         const bool connected = (rc == 0) && client->connected();
         {
             std::scoped_lock runtimeLock(runtime->clientMutex, runtime->mutex);
@@ -1676,7 +1677,7 @@ private:
             runtime->connectInProgress = false;
             runtime->connected = connected;
 
-            if (connected) {
+            if (connected || preserveTimedOutTransport) {
                 runtime->client = std::move(client);
             }
         }
@@ -1686,8 +1687,11 @@ private:
                      << ", rc=" << rc
                      << " (" << explainClientRc(rc) << ")"
                      << ", host=" << connection.host
-                     << ", mode=" << connection.mode;
-            destroyClient(client);
+                     << ", mode=" << connection.mode
+                     << ", transportOpen=" << (preserveTimedOutTransport ? "yes" : "no");
+            if (!preserveTimedOutTransport) {
+                destroyClient(client);
+            }
             markConnectFailed(runtime);
             return false;
         }
