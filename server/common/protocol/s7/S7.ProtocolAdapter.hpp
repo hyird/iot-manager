@@ -105,6 +105,7 @@ struct S7DeviceRuntime {
     bool bridgeTransportOpen = false;
     bool bridgeDiscoveryInFlight = false;
     bool connectInProgress = false;
+    bool immediatePollPending = false;
     std::uint64_t connectGeneration = 0;
     std::chrono::steady_clock::time_point bridgeDiscoveryStartedAt{};
     std::chrono::steady_clock::time_point lastConnectAttempt{};
@@ -137,6 +138,7 @@ struct S7DeviceRuntime {
         , bridgeTransportOpen(other.bridgeTransportOpen)
         , bridgeDiscoveryInFlight(other.bridgeDiscoveryInFlight)
         , connectInProgress(other.connectInProgress)
+        , immediatePollPending(other.immediatePollPending)
         , connectGeneration(other.connectGeneration)
         , bridgeDiscoveryStartedAt(other.bridgeDiscoveryStartedAt)
         , lastConnectAttempt(other.lastConnectAttempt)
@@ -168,6 +170,7 @@ struct S7DeviceRuntime {
         bridgeTransportOpen = other.bridgeTransportOpen;
         bridgeDiscoveryInFlight = other.bridgeDiscoveryInFlight;
         connectInProgress = other.connectInProgress;
+        immediatePollPending = other.immediatePollPending;
         connectGeneration = other.connectGeneration;
         bridgeDiscoveryStartedAt = other.bridgeDiscoveryStartedAt;
         lastConnectAttempt = other.lastConnectAttempt;
@@ -329,6 +332,8 @@ public:
                 bridgeClientAddr = runtime->bridgeClientAddr;
 
                 if (runtime->areas.empty()) {
+                    shouldPoll = false;
+                } else if (runtime->immediatePollPending) {
                     shouldPoll = false;
                 } else if (runtime->connection.pollIntervalSec > 0
                     && runtime->lastPoll != std::chrono::steady_clock::time_point{}
@@ -542,6 +547,7 @@ public:
                 runtimeContext_.notifyCommandCompletion(deviceCode,
                     "SUCCESS", true, downCommandId);
             }
+            triggerImmediatePoll(runtime);
             guard.release();
             co_return CommandResult::success();
         } catch (const std::exception& e) {
@@ -2211,6 +2217,7 @@ private:
             runtime->bridgeBound = false;
             runtime->bridgeDiscoveryInFlight = false;
             runtime->connectInProgress = false;
+            runtime->immediatePollPending = false;
             ++runtime->connectGeneration;
             runtime->bridgeDiscoveryStartedAt = {};
             runtime->bridgeLinkId = 0;
@@ -2321,6 +2328,57 @@ private:
                 prependQueue(runtime->pendingBridgeToDtu, remainingToDtu);
             }
         }
+    }
+
+    void triggerImmediatePoll(const std::shared_ptr<S7DeviceRuntime>& runtime) {
+        if (!runtime) {
+            return;
+        }
+
+        int deviceId = 0;
+        bool shouldStart = false;
+        const auto triggerAt = std::chrono::steady_clock::now();
+        {
+            std::lock_guard runtimeLock(runtime->mutex);
+            deviceId = runtime->deviceId;
+            if (!runtime->areas.empty() && !runtime->immediatePollPending) {
+                runtime->immediatePollPending = true;
+                runtime->lastPoll = triggerAt;
+                shouldStart = true;
+            }
+        }
+
+        if (!shouldStart) {
+            return;
+        }
+
+        LOG_DEBUG << "[S7][Adapter] Trigger immediate poll after write: deviceId=" << deviceId;
+
+        drogon::async_run([this, runtime, deviceId]() -> Task<> {
+            try {
+                std::vector<ParsedFrameResult> results;
+                if (ensureConnected(runtime, std::chrono::steady_clock::now())) {
+                    pollDevice(runtime, results);
+                }
+
+                if (!results.empty() && runtimeContext_.submitParsedResults) {
+                    runtimeContext_.submitParsedResults(std::move(results));
+                }
+            } catch (const std::exception& e) {
+                LOG_WARN << "[S7][Adapter] Immediate poll after write failed: deviceId="
+                         << deviceId << ", error=" << e.what();
+            } catch (...) {
+                LOG_WARN << "[S7][Adapter] Immediate poll after write failed: deviceId="
+                         << deviceId << ", error=<unknown>";
+            }
+
+            {
+                std::lock_guard runtimeLock(runtime->mutex);
+                runtime->immediatePollPending = false;
+            }
+
+            co_return;
+        });
     }
 
     void pollDevice(const std::shared_ptr<S7DeviceRuntime>& runtime, std::vector<ParsedFrameResult>& results) {
