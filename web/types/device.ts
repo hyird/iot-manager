@@ -232,8 +232,16 @@ export interface CommandOperationElement {
   options?: CommandOperationElementOption[];
   /** Modbus 寄存器类型 */
   registerType?: string;
-  /** Modbus 数据类型 */
+  /** Modbus / S7 数据类型 */
   dataType?: string;
+  /** S7 STRING 等类型的字节长度 */
+  size?: number;
+  /** SL651 编码类型 */
+  encode?: string;
+  /** SL651 数据长度（字节） */
+  length?: number;
+  /** SL651 BCD 小数位数 */
+  digits?: number;
 }
 
 /** 控制操作 */

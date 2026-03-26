@@ -4,6 +4,8 @@
 #include "common/cache/RealtimeDataCache.hpp"
 #include "common/utils/Constants.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <functional>
 
 /**
@@ -105,6 +107,16 @@ public:
             funcEl["elementId"] = el.get("id", "").asString();
             funcEl["name"] = el.get("name", "").asString();
             funcEl["value"] = "";
+            std::string encode = el.get("encode", "").asString();
+            if (!encode.empty()) {
+                funcEl["encode"] = encode;
+            }
+            if (el.isMember("length")) {
+                funcEl["length"] = el["length"];
+            }
+            if (el.isMember("digits")) {
+                funcEl["digits"] = el["digits"];
+            }
             std::string unit = el.get("unit", "").asString();
             if (!unit.empty()) {
                 funcEl["unit"] = unit;
@@ -345,6 +357,73 @@ public:
     }
 
     /**
+     * @brief 从 S7 区域配置中构建下行功能（可写区域）
+     */
+    static void parseS7DownFuncs(
+        const DeviceCache::CachedDevice& device,
+        Json::Value& outDownFuncs
+    ) {
+        const auto& config = device.protocolConfig;
+        const Json::Value* areas = nullptr;
+
+        if (config.isMember("areas") && config["areas"].isArray()) {
+            areas = &config["areas"];
+        } else if (config.isMember("poll") && config["poll"].isObject()
+            && config["poll"].isMember("areas") && config["poll"]["areas"].isArray()) {
+            areas = &config["poll"]["areas"];
+        }
+
+        if (!areas) return;
+
+        Json::Value funcElements(Json::arrayValue);
+        for (const auto& area : *areas) {
+            if (!area.get("writable", false).asBool()) continue;
+
+            std::string areaId = area.get("id", "").asString();
+            if (areaId.empty()) continue;
+
+            Json::Value funcEl;
+            funcEl["elementId"] = areaId;
+            funcEl["name"] = area.get("name", areaId).asString();
+            funcEl["value"] = "";
+            funcEl["dataType"] = area.get("dataType", "INT16").asString();
+            funcEl["size"] = area.get("size", 1);
+
+            std::string unit = area.get("unit", "").asString();
+            if (!unit.empty()) {
+                funcEl["unit"] = unit;
+            }
+
+            std::string dataType = area.get("dataType", "").asString();
+            std::transform(dataType.begin(), dataType.end(), dataType.begin(), [](unsigned char ch) {
+                return static_cast<char>(std::toupper(ch));
+            });
+            if (dataType == "BOOL") {
+                Json::Value options(Json::arrayValue);
+                Json::Value optOn;
+                optOn["label"] = "1";
+                optOn["value"] = "1";
+                options.append(optOn);
+                Json::Value optOff;
+                optOff["label"] = "0";
+                optOff["value"] = "0";
+                options.append(optOff);
+                funcEl["options"] = options;
+            }
+
+            funcElements.append(funcEl);
+        }
+
+        if (!funcElements.empty()) {
+            Json::Value downFunc;
+            downFunc["operationId"] = "S7_WRITE";
+            downFunc["name"] = "写寄存器";
+            downFunc["elements"] = funcElements;
+            outDownFuncs.append(downFunc);
+        }
+    }
+
+    /**
      * @brief 解析协议配置中的功能定义
      * @param device 缓存的设备信息
      * @param realtimeValues 实时数据（可选，用于填充 elements 的 value）
@@ -401,6 +480,7 @@ public:
             parseModbusDownFuncs(device, outDownFuncs);
         } else if (device.protocolType == Constants::PROTOCOL_S7) {
             parseS7Areas(device, realtimeValues, outElements);
+            parseS7DownFuncs(device, outDownFuncs);
         }
     }
 
@@ -419,6 +499,11 @@ public:
 
         if (device.protocolType == Constants::PROTOCOL_MODBUS) {
             parseModbusDownFuncs(device, outDownFuncs);
+            return;
+        }
+
+        if (device.protocolType == Constants::PROTOCOL_S7) {
+            parseS7DownFuncs(device, outDownFuncs);
             return;
         }
 

@@ -477,22 +477,50 @@ public:
                     if (failure.empty()) {
                         for (const auto& elem : req.elements) {
                             if (!elem.isObject()) continue;
-                            std::string areaName = toUpper(elem.get("area", "DB").asString());
-                            int dbNumber = elem.get("dbNumber", 0).asInt();
-                            if (areaName == "V" && dbNumber <= 0) {
-                                dbNumber = 1;
+                            const auto* areaDef = findAreaDefinition(*runtime, elem);
+                            if (!areaDef) {
+                                failure = "未找到 S7 要素对应的写入地址";
+                                break;
                             }
-                            int start = elem.get("start", 0).asInt();
-                            auto bytes = parseBytes(elem);
-                            if (bytes.empty()) {
-                                failure = "S7 指令缺少可写入的数据";
+                            if (!areaDef->writable) {
+                                failure = "S7 要素未启用写入: " + areaDef->name;
+                                break;
+                            }
+
+                            std::vector<uint8_t> existingBytes;
+                            if (normalizeDataType(areaDef->dataType) == "BOOL"
+                                && elem.get("valueHex", "").asString().empty()) {
+                                existingBytes.assign(
+                                    static_cast<std::size_t>(std::max(1, areaDef->size)), 0);
+                                int readRc = 0;
+                                {
+                                    std::lock_guard clientLock(runtime->clientMutex);
+                                    readRc = readArea(*runtime, *areaDef, existingBytes);
+                                }
+                                if (readRc != 0) {
+                                    failure = "S7 读取当前位值失败，错误码="
+                                        + std::to_string(readRc)
+                                        + " (" + explainClientRc(readRc) + ")";
+                                    break;
+                                }
+                            }
+
+                            auto bytes = encodeAreaValue(
+                                *areaDef, elem, existingBytes.empty() ? nullptr : &existingBytes);
+                            if (!bytes || bytes->empty()) {
+                                failure = "S7 指令值格式错误";
                                 break;
                             }
 
                             int rc = 0;
                             {
                                 std::lock_guard clientLock(runtime->clientMutex);
-                                rc = writeArea(*runtime, areaName, dbNumber, start, bytes);
+                                rc = writeArea(
+                                    *runtime,
+                                    areaDef->area,
+                                    resolvedDbNumber(*areaDef),
+                                    areaDef->start,
+                                    *bytes);
                             }
                             if (rc != 0) {
                                 failure = "S7 写入失败，错误码=" + std::to_string(rc)
@@ -1245,6 +1273,29 @@ private:
             | static_cast<uint64_t>(buffer[7]);
     }
 
+    static void appendU16BE(std::vector<uint8_t>& buffer, uint16_t value) {
+        buffer.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>(value & 0xFF));
+    }
+
+    static void appendU32BE(std::vector<uint8_t>& buffer, uint32_t value) {
+        buffer.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>(value & 0xFF));
+    }
+
+    static void appendU64BE(std::vector<uint8_t>& buffer, uint64_t value) {
+        buffer.push_back(static_cast<uint8_t>((value >> 56) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>((value >> 48) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>((value >> 40) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>((value >> 32) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+        buffer.push_back(static_cast<uint8_t>(value & 0xFF));
+    }
+
     static Json::Value decodeAreaValue(const S7AreaDefinition& area, const std::vector<uint8_t>& buffer) {
         const std::string dataType = normalizeDataType(area.dataType);
 
@@ -1353,11 +1404,7 @@ private:
         return result;
     }
 
-    static std::vector<uint8_t> parseBytes(const Json::Value& element) {
-        std::string hex = element.get("valueHex", "").asString();
-        if (hex.empty()) {
-            hex = element.get("value", "").asString();
-        }
+    static std::vector<uint8_t> parseHexBytes(std::string hex) {
         std::vector<uint8_t> bytes;
         if (hex.empty()) {
             return bytes;
@@ -1371,6 +1418,183 @@ private:
             bytes.push_back(byte);
         }
         return bytes;
+    }
+
+    static std::string jsonValueToString(const Json::Value& value) {
+        if (value.isString()) {
+            return value.asString();
+        }
+        if (value.isBool()) {
+            return value.asBool() ? "1" : "0";
+        }
+        if (value.isInt64()) {
+            return std::to_string(value.asInt64());
+        }
+        if (value.isUInt64()) {
+            return std::to_string(value.asUInt64());
+        }
+        if (value.isDouble()) {
+            std::ostringstream oss;
+            oss << value.asDouble();
+            return oss.str();
+        }
+        return "";
+    }
+
+    static std::string trimCopy(std::string value) {
+        auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+        value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](unsigned char ch) {
+            return !isSpace(ch);
+        }));
+        value.erase(std::find_if(value.rbegin(), value.rend(), [&](unsigned char ch) {
+            return !isSpace(ch);
+        }).base(), value.end());
+        return value;
+    }
+
+    static bool parseBoolValue(std::string value, bool& result) {
+        value = trimCopy(std::move(value));
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::toupper(ch));
+        });
+        if (value == "1" || value == "TRUE" || value == "ON") {
+            result = true;
+            return true;
+        }
+        if (value == "0" || value == "FALSE" || value == "OFF") {
+            result = false;
+            return true;
+        }
+        return false;
+    }
+
+    static std::optional<std::vector<uint8_t>> encodeAreaValue(
+        const S7AreaDefinition& area,
+        const Json::Value& element,
+        const std::vector<uint8_t>* existingBytes = nullptr
+    ) {
+        const std::string valueHex = element.get("valueHex", "").asString();
+        if (!valueHex.empty()) {
+            return parseHexBytes(valueHex);
+        }
+
+        const std::string rawValue = trimCopy(jsonValueToString(element["value"]));
+        if (rawValue.empty()) {
+            return std::nullopt;
+        }
+
+        const std::string dataType = normalizeDataType(area.dataType);
+
+        try {
+            if (dataType == "BOOL") {
+                bool boolValue = false;
+                if (!parseBoolValue(rawValue, boolValue)) {
+                    return std::nullopt;
+                }
+                std::vector<uint8_t> bytes;
+                if (existingBytes && !existingBytes->empty()) {
+                    bytes = *existingBytes;
+                } else {
+                    bytes.assign(static_cast<std::size_t>(std::max(1, area.size)), 0);
+                }
+                if (bytes.empty()) {
+                    bytes.push_back(0);
+                }
+                const int bit = std::clamp(area.startBit, 0, 7);
+                if (boolValue) {
+                    bytes[0] = static_cast<uint8_t>(bytes[0] | (1u << bit));
+                } else {
+                    bytes[0] = static_cast<uint8_t>(bytes[0] & ~(1u << bit));
+                }
+                return bytes;
+            }
+
+            if (dataType == "INT8") {
+                return std::vector<uint8_t>{static_cast<uint8_t>(static_cast<int8_t>(std::stoi(rawValue)))};
+            }
+            if (dataType == "UINT8") {
+                return std::vector<uint8_t>{static_cast<uint8_t>(std::stoul(rawValue))};
+            }
+            if (dataType == "INT16" || dataType == "UINT16"
+                || area.area == "CT" || area.area == "TM") {
+                std::vector<uint8_t> bytes;
+                appendU16BE(bytes, static_cast<uint16_t>(
+                    dataType == "INT16"
+                        ? static_cast<int16_t>(std::stoi(rawValue))
+                        : static_cast<uint16_t>(std::stoul(rawValue))));
+                return bytes;
+            }
+            if (dataType == "INT32") {
+                std::vector<uint8_t> bytes;
+                appendU32BE(bytes, static_cast<uint32_t>(static_cast<int32_t>(std::stoll(rawValue))));
+                return bytes;
+            }
+            if (dataType == "UINT32") {
+                std::vector<uint8_t> bytes;
+                appendU32BE(bytes, static_cast<uint32_t>(std::stoull(rawValue)));
+                return bytes;
+            }
+            if (dataType == "FLOAT") {
+                float value = std::stof(rawValue);
+                uint32_t raw = 0;
+                std::memcpy(&raw, &value, sizeof(value));
+                std::vector<uint8_t> bytes;
+                appendU32BE(bytes, raw);
+                return bytes;
+            }
+            if (dataType == "LREAL") {
+                double value = std::stod(rawValue);
+                uint64_t raw = 0;
+                std::memcpy(&raw, &value, sizeof(value));
+                std::vector<uint8_t> bytes;
+                appendU64BE(bytes, raw);
+                return bytes;
+            }
+            if (dataType == "STRING") {
+                std::vector<uint8_t> bytes(
+                    static_cast<std::size_t>(std::max(1, area.size)), 0);
+                const std::size_t copySize = std::min(bytes.size(), rawValue.size());
+                std::memcpy(bytes.data(), rawValue.data(), copySize);
+                return bytes;
+            }
+
+            return parseHexBytes(rawValue);
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
+    }
+
+    static const S7AreaDefinition* findAreaDefinition(const S7DeviceRuntime& runtime,
+                                                      const Json::Value& element) {
+        const std::string elementId = element.get("elementId", "").asString();
+        if (!elementId.empty()) {
+            for (const auto& area : runtime.areas) {
+                if (area.id == elementId) {
+                    return &area;
+                }
+            }
+        }
+
+        const std::string areaName = toUpper(element.get("area", "").asString());
+        const int start = element.get("start", -1).asInt();
+        int dbNumber = element.get("dbNumber", -1).asInt();
+        if (areaName == "V" && dbNumber <= 0) {
+            dbNumber = 1;
+        }
+        if (areaName.empty() || start < 0) {
+            return nullptr;
+        }
+
+        for (const auto& area : runtime.areas) {
+            if (area.area != areaName || area.start != start) {
+                continue;
+            }
+            if (resolvedDbNumber(area) != dbNumber) {
+                continue;
+            }
+            return &area;
+        }
+        return nullptr;
     }
 
     static S7ConnectionConfig parseConnection(const Json::Value& config, const std::string& plcModel) {

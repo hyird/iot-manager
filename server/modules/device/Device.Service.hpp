@@ -15,6 +15,11 @@
 #include "common/utils/JsonHelper.hpp"
 #include "common/edgenode/AgentBridgeManager.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <limits>
+
 // 类型别名，简化代码
 using ElementData = DeviceDataTransformer::ElementData;
 
@@ -35,6 +40,399 @@ public:
 
 private:
     DatabaseService dbService_;
+
+    static std::string trimCopy(std::string value) {
+        auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+        value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](unsigned char ch) {
+            return !isSpace(ch);
+        }));
+        value.erase(std::find_if(value.rbegin(), value.rend(), [&](unsigned char ch) {
+            return !isSpace(ch);
+        }).base(), value.end());
+        return value;
+    }
+
+    static std::string upperCopy(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::toupper(ch));
+        });
+        return value;
+    }
+
+    static bool isHexString(const std::string& value) {
+        return !value.empty()
+            && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                return std::isxdigit(ch) != 0;
+            });
+    }
+
+    static long double parseFiniteDecimalStrict(
+        const std::string& value,
+        const std::string& name,
+        const std::string& typeName
+    ) {
+        try {
+            std::size_t pos = 0;
+            long double parsed = std::stold(value, &pos);
+            if (pos != value.size() || !std::isfinite(parsed)) {
+                throw ValidationException("要素「" + name + "」" + typeName + " 类型值不合法");
+            }
+            return parsed;
+        } catch (const ValidationException&) {
+            throw;
+        } catch (const std::exception&) {
+            throw ValidationException("要素「" + name + "」" + typeName + " 类型值不合法");
+        }
+    }
+
+    static long long parseSignedIntegerStrict(
+        const std::string& value,
+        const std::string& name,
+        const std::string& typeName
+    ) {
+        try {
+            std::size_t pos = 0;
+            long long parsed = std::stoll(value, &pos, 10);
+            if (pos != value.size()) {
+                throw ValidationException("要素「" + name + "」" + typeName + " 类型必须为整数");
+            }
+            return parsed;
+        } catch (const ValidationException&) {
+            throw;
+        } catch (const std::exception&) {
+            throw ValidationException("要素「" + name + "」" + typeName + " 类型必须为整数");
+        }
+    }
+
+    static unsigned long long parseUnsignedIntegerStrict(
+        const std::string& value,
+        const std::string& name,
+        const std::string& typeName
+    ) {
+        if (!value.empty() && value.front() == '-') {
+            throw ValidationException("要素「" + name + "」" + typeName + " 类型不能为负数");
+        }
+
+        try {
+            std::size_t pos = 0;
+            unsigned long long parsed = std::stoull(value, &pos, 10);
+            if (pos != value.size()) {
+                throw ValidationException("要素「" + name + "」" + typeName + " 类型必须为整数");
+            }
+            return parsed;
+        } catch (const ValidationException&) {
+            throw;
+        } catch (const std::exception&) {
+            throw ValidationException("要素「" + name + "」" + typeName + " 类型必须为整数");
+        }
+    }
+
+    static void validateBoolValue(
+        const std::string& value,
+        const std::string& name,
+        bool allowKeywords = false
+    ) {
+        std::string normalized = upperCopy(trimCopy(value));
+        if (normalized == "0" || normalized == "1") {
+            return;
+        }
+        if (allowKeywords
+            && (normalized == "TRUE" || normalized == "FALSE"
+                || normalized == "ON" || normalized == "OFF")) {
+            return;
+        }
+        throw ValidationException("要素「" + name + "」BOOL 类型只能为 0 或 1");
+    }
+
+    static const Json::Value* resolveS7Areas(const Json::Value& config) {
+        if (config.isMember("areas") && config["areas"].isArray()) {
+            return &config["areas"];
+        }
+        if (config.isMember("poll") && config["poll"].isObject()
+            && config["poll"].isMember("areas") && config["poll"]["areas"].isArray()) {
+            return &config["poll"]["areas"];
+        }
+        return nullptr;
+    }
+
+    static void validateModbusElementValue(const Json::Value& reg, const std::string& value) {
+        const std::string name = reg.get("name", reg.get("id", "")).asString();
+        const std::string dataType = upperCopy(reg.get("dataType", "UINT16").asString());
+
+        if (dataType == "BOOL") {
+            validateBoolValue(value, name);
+            return;
+        }
+        if (dataType == "INT16") {
+            auto parsed = parseSignedIntegerStrict(value, name, dataType);
+            if (parsed < -32768LL || parsed > 32767LL) {
+                throw ValidationException("要素「" + name + "」INT16 范围 -32768 ~ 32767");
+            }
+            return;
+        }
+        if (dataType == "UINT16") {
+            auto parsed = parseUnsignedIntegerStrict(value, name, dataType);
+            if (parsed > 65535ULL) {
+                throw ValidationException("要素「" + name + "」UINT16 范围 0 ~ 65535");
+            }
+            return;
+        }
+        if (dataType == "INT32") {
+            auto parsed = parseSignedIntegerStrict(value, name, dataType);
+            if (parsed < -2147483648LL || parsed > 2147483647LL) {
+                throw ValidationException("要素「" + name + "」INT32 范围 -2147483648 ~ 2147483647");
+            }
+            return;
+        }
+        if (dataType == "UINT32") {
+            auto parsed = parseUnsignedIntegerStrict(value, name, dataType);
+            if (parsed > 4294967295ULL) {
+                throw ValidationException("要素「" + name + "」UINT32 范围 0 ~ 4294967295");
+            }
+            return;
+        }
+        if (dataType == "INT64") {
+            (void)parseSignedIntegerStrict(value, name, dataType);
+            return;
+        }
+        if (dataType == "UINT64") {
+            (void)parseUnsignedIntegerStrict(value, name, dataType);
+            return;
+        }
+        if (dataType == "FLOAT32") {
+            float parsed = static_cast<float>(parseFiniteDecimalStrict(value, name, dataType));
+            if (!std::isfinite(parsed)) {
+                throw ValidationException("要素「" + name + "」FLOAT32 值超出范围");
+            }
+            return;
+        }
+        if (dataType == "DOUBLE") {
+            (void)parseFiniteDecimalStrict(value, name, dataType);
+            return;
+        }
+    }
+
+    static void validateS7ElementValue(const Json::Value& area, const std::string& value) {
+        const std::string name = area.get("name", area.get("id", "")).asString();
+        const std::string dataType = upperCopy(area.get("dataType", "INT16").asString());
+
+        if (dataType == "BOOL") {
+            validateBoolValue(value, name, true);
+            return;
+        }
+        if (dataType == "INT8") {
+            auto parsed = parseSignedIntegerStrict(value, name, dataType);
+            if (parsed < -128LL || parsed > 127LL) {
+                throw ValidationException("要素「" + name + "」INT8 范围 -128 ~ 127");
+            }
+            return;
+        }
+        if (dataType == "UINT8") {
+            auto parsed = parseUnsignedIntegerStrict(value, name, dataType);
+            if (parsed > 255ULL) {
+                throw ValidationException("要素「" + name + "」UINT8 范围 0 ~ 255");
+            }
+            return;
+        }
+        if (dataType == "INT16") {
+            auto parsed = parseSignedIntegerStrict(value, name, dataType);
+            if (parsed < -32768LL || parsed > 32767LL) {
+                throw ValidationException("要素「" + name + "」INT16 范围 -32768 ~ 32767");
+            }
+            return;
+        }
+        if (dataType == "UINT16") {
+            auto parsed = parseUnsignedIntegerStrict(value, name, dataType);
+            if (parsed > 65535ULL) {
+                throw ValidationException("要素「" + name + "」UINT16 范围 0 ~ 65535");
+            }
+            return;
+        }
+        if (dataType == "INT32") {
+            auto parsed = parseSignedIntegerStrict(value, name, dataType);
+            if (parsed < -2147483648LL || parsed > 2147483647LL) {
+                throw ValidationException("要素「" + name + "」INT32 范围 -2147483648 ~ 2147483647");
+            }
+            return;
+        }
+        if (dataType == "UINT32") {
+            auto parsed = parseUnsignedIntegerStrict(value, name, dataType);
+            if (parsed > 4294967295ULL) {
+                throw ValidationException("要素「" + name + "」UINT32 范围 0 ~ 4294967295");
+            }
+            return;
+        }
+        if (dataType == "FLOAT") {
+            float parsed = static_cast<float>(parseFiniteDecimalStrict(value, name, dataType));
+            if (!std::isfinite(parsed)) {
+                throw ValidationException("要素「" + name + "」FLOAT 值超出范围");
+            }
+            return;
+        }
+        if (dataType == "LREAL") {
+            (void)parseFiniteDecimalStrict(value, name, dataType);
+            return;
+        }
+        if (dataType == "STRING") {
+            int maxSize = std::max(1, area.get("size", 1).asInt());
+            if (value.size() > static_cast<std::size_t>(maxSize)) {
+                throw ValidationException("要素「" + name + "」STRING 长度不能超过 "
+                    + std::to_string(maxSize) + " 字节");
+            }
+            return;
+        }
+    }
+
+    static void validateSl651ElementValue(const Json::Value& element, const std::string& value) {
+        const std::string name = element.get("name", element.get("id", "")).asString();
+        const std::string encode = upperCopy(element.get("encode", "BCD").asString());
+        const int length = std::max(1, element.get("length", 1).asInt());
+
+        if (encode == "BCD") {
+            int digits = std::clamp(element.get("digits", 0).asInt(), 0, 8);
+            long double parsed = parseFiniteDecimalStrict(value, name, encode);
+            long double scaled = std::round(std::fabsl(parsed) * std::pow(10.0L, digits));
+            long double limit = std::pow(10.0L, static_cast<long double>(length * 2));
+            if (scaled >= limit) {
+                throw ValidationException("要素「" + name + "」BCD 编码长度超出 "
+                    + std::to_string(length) + " 字节");
+            }
+            return;
+        }
+
+        if (!isHexString(value)) {
+            throw ValidationException("要素「" + name + "」" + encode + " 编码只能包含十六进制字符");
+        }
+        if (value.size() > static_cast<std::size_t>(length * 2)) {
+            throw ValidationException("要素「" + name + "」" + encode + " 编码长度不能超过 "
+                + std::to_string(length) + " 字节");
+        }
+    }
+
+    void validateCommandElements(
+        const DeviceCache::CachedDevice& device,
+        const Json::Value& elements
+    ) const {
+        if (!elements.isArray() || elements.empty()) {
+            throw ValidationException("要素列表不能为空");
+        }
+
+        if (device.protocolType == Constants::PROTOCOL_MODBUS) {
+            if (!device.protocolConfig.isMember("registers") || !device.protocolConfig["registers"].isArray()) {
+                throw ValidationException("设备协议配置缺失，无法校验写入要素");
+            }
+
+            for (const auto& elem : elements) {
+                if (!elem.isObject()) {
+                    throw ValidationException("要素格式错误");
+                }
+                std::string elementId = elem.get("elementId", "").asString();
+                std::string value = trimCopy(elem.get("value", "").asString());
+                if (elementId.empty()) {
+                    throw ValidationException("要素 elementId 不能为空");
+                }
+                if (value.empty()) {
+                    throw ValidationException("要素值不能为空");
+                }
+
+                const Json::Value* matched = nullptr;
+                for (const auto& reg : device.protocolConfig["registers"]) {
+                    if (reg.get("id", "").asString() == elementId) {
+                        matched = &reg;
+                        break;
+                    }
+                }
+                if (!matched) {
+                    throw ValidationException("未找到要素对应的寄存器配置: " + elementId);
+                }
+                if (!matched->get("writable", false).asBool()) {
+                    throw ValidationException("寄存器未启用写入: "
+                        + matched->get("name", elementId).asString());
+                }
+                validateModbusElementValue(*matched, value);
+            }
+            return;
+        }
+
+        if (device.protocolType == Constants::PROTOCOL_S7) {
+            const Json::Value* areas = resolveS7Areas(device.protocolConfig);
+            if (!areas) {
+                throw ValidationException("设备协议配置缺失，无法校验写入要素");
+            }
+
+            for (const auto& elem : elements) {
+                if (!elem.isObject()) {
+                    throw ValidationException("要素格式错误");
+                }
+                std::string elementId = elem.get("elementId", "").asString();
+                std::string value = trimCopy(elem.get("value", "").asString());
+                if (elementId.empty()) {
+                    throw ValidationException("要素 elementId 不能为空");
+                }
+                if (value.empty()) {
+                    throw ValidationException("要素值不能为空");
+                }
+
+                const Json::Value* matched = nullptr;
+                for (const auto& area : *areas) {
+                    if (area.get("id", "").asString() == elementId) {
+                        matched = &area;
+                        break;
+                    }
+                }
+                if (!matched) {
+                    throw ValidationException("未找到要素对应的 S7 区域配置: " + elementId);
+                }
+                if (!matched->get("writable", false).asBool()) {
+                    throw ValidationException("S7 区域未启用写入: "
+                        + matched->get("name", elementId).asString());
+                }
+                validateS7ElementValue(*matched, value);
+            }
+            return;
+        }
+
+        if (device.protocolType == Constants::PROTOCOL_SL651) {
+            if (!device.protocolConfig.isMember("funcs") || !device.protocolConfig["funcs"].isArray()) {
+                throw ValidationException("设备协议配置缺失，无法校验写入要素");
+            }
+
+            for (const auto& elem : elements) {
+                if (!elem.isObject()) {
+                    throw ValidationException("要素格式错误");
+                }
+                std::string elementId = elem.get("elementId", "").asString();
+                std::string value = trimCopy(elem.get("value", "").asString());
+                if (elementId.empty()) {
+                    throw ValidationException("要素 elementId 不能为空");
+                }
+                if (value.empty()) {
+                    throw ValidationException("要素值不能为空");
+                }
+
+                const Json::Value* matched = nullptr;
+                for (const auto& func : device.protocolConfig["funcs"]) {
+                    if (func.get("dir", "").asString() != "DOWN"
+                        || !func.isMember("elements") || !func["elements"].isArray()) {
+                        continue;
+                    }
+                    for (const auto& configured : func["elements"]) {
+                        if (configured.get("id", "").asString() == elementId) {
+                            matched = &configured;
+                            break;
+                        }
+                    }
+                    if (matched) {
+                        break;
+                    }
+                }
+                if (!matched) {
+                    throw ValidationException("未找到要素对应的配置: " + elementId);
+                }
+                validateSl651ElementValue(*matched, value);
+            }
+        }
+    }
 
     Task<DeviceCache::CachedDevice> requireCommandDevice(
         const std::string& deviceCode,
@@ -108,18 +506,21 @@ private:
         return resolvedFuncCode;
     }
 
-    Task<std::string> resolveCommandFuncCode(
-        const std::string& deviceCode,
-        int deviceId,
+    std::string resolveCommandFuncCode(
+        const DeviceCache::CachedDevice& device,
         const Json::Value& elements
     ) {
-        auto device = co_await requireCommandDevice(deviceCode, deviceId);
-
         if (device.protocolType == Constants::PROTOCOL_MODBUS) {
-            co_return std::string("MODBUS_WRITE");
+            return "MODBUS_WRITE";
+        }
+        if (device.protocolType == Constants::PROTOCOL_S7) {
+            if (!elements.isArray() || elements.size() != 1) {
+                throw ValidationException("S7 写寄存器一次只能下发一个要素");
+            }
+            return "S7_WRITE";
         }
         if (device.protocolType == Constants::PROTOCOL_SL651) {
-            co_return resolveSl651CommandFuncCode(device, elements);
+            return resolveSl651CommandFuncCode(device, elements);
         }
 
         throw ValidationException("暂不支持该协议的指令下发");
@@ -877,11 +1278,13 @@ public:
     Task<CommandResult> sendCommand(int linkId, const std::string& deviceCode,
                                     const Json::Value& elements,
                                     int userId, int deviceId = 0) {
-        std::string funcCode = co_await resolveCommandFuncCode(deviceCode, deviceId, elements);
+        auto device = co_await requireCommandDevice(deviceCode, deviceId);
+        validateCommandElements(device, elements);
+        std::string funcCode = resolveCommandFuncCode(device, elements);
 
         CommandRequest req;
         req.linkId = linkId;
-        req.deviceId = deviceId;
+        req.deviceId = device.id;
         req.deviceCode = deviceCode;
         req.funcCode = funcCode;
         req.elements = elements;
