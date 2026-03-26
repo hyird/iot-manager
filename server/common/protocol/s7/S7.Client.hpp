@@ -79,6 +79,7 @@ inline constexpr int kS7ErrResponseTooShort = -19;
 inline constexpr std::uint16_t kDefaultRemotePort = 102;
 inline constexpr std::uint16_t kDefaultIsoPduSize = 1024;
 inline constexpr std::uint16_t kDefaultS7PduRequest = 480;
+inline constexpr std::uint16_t kDefaultSourceRef = 0x0001;
 inline constexpr int kDefaultTimeoutMs = 3000;
 
 inline constexpr std::uint16_t kConnTypePg = 0x01;
@@ -435,8 +436,8 @@ private:
     int sendDisconnectRequest();
     int openSocket();
     int sendAll(const std::uint8_t* data, std::size_t size);
-    int recvAll(std::uint8_t* data, std::size_t size);
-    int recvTpktFrame(std::vector<std::uint8_t>& frame);
+    int recvAll(std::uint8_t* data, std::size_t size, bool closeOnTimeout = true);
+    int recvTpktFrame(std::vector<std::uint8_t>& frame, bool closeOnTimeout = true);
     int sendConnectionRequest();
     int negotiatePduLength();
     int sendPayload(std::string_view stage, const std::vector<std::uint8_t>& payload);
@@ -449,6 +450,11 @@ private:
     int parseReadResponse(const std::vector<std::uint8_t>& response, std::uint8_t* target,
                           std::size_t capacity, std::size_t& copied);
     int parseWriteResponse(const std::vector<std::uint8_t>& response) const;
+    std::vector<std::uint8_t> buildDisconnectFrame(std::uint16_t dstRef,
+                                                   std::uint16_t srcRef,
+                                                   std::uint8_t reason) const;
+    int sendDisconnectProbe(std::string_view stage, std::uint16_t dstRef,
+                            std::uint16_t srcRef, std::uint8_t reason);
     std::uint16_t nextSequence() { return sequence_++; }
     void traceFrame(std::string_view stage, bool outbound,
                     const std::vector<std::uint8_t>& frame) const {
@@ -492,14 +498,19 @@ inline int Client::closeSocketOnly() {
 }
 
 inline int Client::sendDisconnectRequest() {
-    if (socket_ == kInvalidSocket || disconnectFrame_.size() < 11) {
+    if (socket_ == kInvalidSocket) {
         return kS7Ok;
     }
 
-    auto frame = disconnectFrame_;
-    frame[5] = kCotpDr;
-    traceFrame("iso.dr", true, frame);
-    return sendAll(frame.data(), frame.size());
+    if (disconnectFrame_.size() >= 11) {
+        auto frame = disconnectFrame_;
+        frame[5] = kCotpDr;
+        frame[10] = 0x00;
+        traceFrame("iso.dr", true, frame);
+        return sendAll(frame.data(), frame.size());
+    }
+
+    return sendDisconnectProbe("iso.dr", 0x0000, kDefaultSourceRef, 0x00);
 }
 
 inline int Client::openSocket() {
@@ -628,10 +639,13 @@ inline int Client::sendAll(const std::uint8_t* data, std::size_t size) {
     return lastError_ = kS7Ok;
 }
 
-inline int Client::recvAll(std::uint8_t* data, std::size_t size) {
+inline int Client::recvAll(std::uint8_t* data, std::size_t size, bool closeOnTimeout) {
     if (transportHooks_.recv) {
         const int rc = transportHooks_.recv(data, size, recvTimeoutMs_);
         if (rc != kS7Ok) {
+            if (rc == kS7ErrTimeout && !closeOnTimeout) {
+                return lastError_ = rc;
+            }
             disconnect();
             return lastError_ = rc;
         }
@@ -642,6 +656,9 @@ inline int Client::recvAll(std::uint8_t* data, std::size_t size) {
     while (received < size) {
         const int waitRc = waitForSocket(socket_, true, recvTimeoutMs_);
         if (waitRc != kS7Ok) {
+            if (waitRc == kS7ErrTimeout && !closeOnTimeout) {
+                return lastError_ = waitRc;
+            }
             closeSocketOnly();
             return lastError_ = waitRc;
         }
@@ -659,9 +676,9 @@ inline int Client::recvAll(std::uint8_t* data, std::size_t size) {
     return lastError_ = kS7Ok;
 }
 
-inline int Client::recvTpktFrame(std::vector<std::uint8_t>& frame) {
+inline int Client::recvTpktFrame(std::vector<std::uint8_t>& frame, bool closeOnTimeout) {
     std::array<std::uint8_t, 4> header{};
-    int rc = recvAll(header.data(), header.size());
+    int rc = recvAll(header.data(), header.size(), closeOnTimeout);
     if (rc != kS7Ok) {
         return rc;
     }
@@ -680,12 +697,39 @@ inline int Client::recvTpktFrame(std::vector<std::uint8_t>& frame) {
     frame.resize(totalLength);
     std::copy(header.begin(), header.end(), frame.begin());
     if (totalLength > 4) {
-        rc = recvAll(frame.data() + 4, totalLength - 4);
+        rc = recvAll(frame.data() + 4, totalLength - 4, closeOnTimeout);
         if (rc != kS7Ok) {
             return rc;
         }
     }
     return lastError_ = kS7Ok;
+}
+
+inline std::vector<std::uint8_t> Client::buildDisconnectFrame(
+    std::uint16_t dstRef,
+    std::uint16_t srcRef,
+    std::uint8_t reason) const {
+
+    std::vector<std::uint8_t> frame;
+    frame.reserve(11);
+    frame.push_back(kIsoTcpVersion);
+    frame.push_back(0x00);
+    appendBe16(frame, 11);
+    frame.push_back(0x06);
+    frame.push_back(kCotpDr);
+    appendBe16(frame, dstRef);
+    appendBe16(frame, srcRef);
+    frame.push_back(reason);
+    return frame;
+}
+
+inline int Client::sendDisconnectProbe(std::string_view stage,
+                                       std::uint16_t dstRef,
+                                       std::uint16_t srcRef,
+                                       std::uint8_t reason) {
+    auto frame = buildDisconnectFrame(dstRef, srcRef, reason);
+    traceFrame(stage, true, frame);
+    return sendAll(frame.data(), frame.size());
 }
 
 inline int Client::sendConnectionRequest() {
@@ -698,8 +742,7 @@ inline int Client::sendConnectionRequest() {
     frame.push_back(kCotpCr);
     frame.push_back(0x00);
     frame.push_back(0x00);
-    frame.push_back(0x00);
-    frame.push_back(0x01);
+    appendBe16(frame, kDefaultSourceRef);
     frame.push_back(0x00);
     frame.push_back(0xC0);
     frame.push_back(0x01);
@@ -718,8 +761,15 @@ inline int Client::sendConnectionRequest() {
     }
 
     std::vector<std::uint8_t> response;
-    rc = recvTpktFrame(response);
+    rc = recvTpktFrame(response, false);
     if (rc != kS7Ok) {
+        if (rc == kS7ErrTimeout) {
+            const int drRc = sendDisconnectProbe("iso.dr.connect-timeout", 0x0000, kDefaultSourceRef, 0x00);
+            if (drRc != kS7Ok) {
+                lastError_ = rc;
+            }
+        }
+        closeSocketOnly();
         return rc;
     }
     traceFrame("iso.cc", false, response);
