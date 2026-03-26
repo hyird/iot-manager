@@ -423,6 +423,10 @@ public:
         transportHooks_ = std::move(hooks);
     }
 
+    std::uint16_t negotiatedPduLength() const {
+        return pduLength_;
+    }
+
     int readArea(int area, int dbNumber, int start, int amount, int wordLen, void* data);
     int writeArea(int area, int dbNumber, int start, int amount, int wordLen, void* data);
 

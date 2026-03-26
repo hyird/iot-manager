@@ -456,9 +456,6 @@ private:
         try {
             std::vector<uint8_t> bytes(data.begin(), data.end());
 
-            LOG_DEBUG << "[Link " << linkId << "] RX " << bytes.size() << "B from " << clientAddr
-                      << " | " << bytesToHex(bytes);
-
             if (!DeviceCache::instance().isLoaded()) {
                 LOG_WARN << "[ProtocolDispatcher] DeviceCache not loaded, dropping data from link " << linkId;
                 scheduleDeviceCacheReload();

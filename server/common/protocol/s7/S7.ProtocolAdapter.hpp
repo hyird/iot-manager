@@ -53,6 +53,7 @@ struct S7ConnectionConfig {
     int pingTimeoutMs = kDefaultTimeoutMs;
     int sendTimeoutMs = kDefaultTimeoutMs;
     int recvTimeoutMs = kDefaultTimeoutMs;
+    int retryDelayMs = 1000;
     int pollIntervalSec = 5;
     std::string connectionType = "PG";
 };
@@ -63,6 +64,23 @@ struct S7ConnectionPreset {
     int slot = 1;
     std::uint16_t localTSAP = 0x0100;
     std::uint16_t remoteTSAP = 0x0100;
+};
+
+struct S7ReadBlockMember {
+    const S7AreaDefinition* area = nullptr;
+    std::size_t offsetBytes = 0;
+};
+
+struct S7ReadBlockPlan {
+    std::string area;
+    int areaCode = S7AreaDB;
+    int wordLen = S7WLByte;
+    int unitSize = 1;
+    int dbNumber = 0;
+    int start = 0;
+    int amount = 0;
+    std::size_t byteSize = 0;
+    std::vector<S7ReadBlockMember> members;
 };
 
 struct S7DeviceRuntime {
@@ -504,6 +522,8 @@ public:
     }
 
 private:
+    inline static constexpr const char* FUNC_READ = "S7_READ";
+
     static std::string toUpper(std::string value) {
         std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
         return value;
@@ -545,6 +565,111 @@ private:
             return std::max(1, static_cast<int>((size + 1) / 2));
         }
         return static_cast<int>(size);
+    }
+
+    static int resolvedDbNumber(const S7AreaDefinition& area) {
+        return area.area == "V" ? 1 : area.dbNumber;
+    }
+
+    static int areaUnitSize(const std::string& area) {
+        return wordLenByteSize(areaWordLen(area));
+    }
+
+    static int areaSpanUnits(const S7AreaDefinition& area) {
+        return transferAmount(area.area, static_cast<std::size_t>(area.size));
+    }
+
+    static std::vector<S7ReadBlockPlan> planReadBlocks(const std::vector<S7AreaDefinition>& areas) {
+        struct Candidate {
+            const S7AreaDefinition* area = nullptr;
+            int areaCode = S7AreaDB;
+            int wordLen = S7WLByte;
+            int unitSize = 1;
+            int dbNumber = 0;
+            int start = 0;
+            int amount = 0;
+        };
+
+        std::vector<Candidate> candidates;
+        candidates.reserve(areas.size());
+        for (const auto& area : areas) {
+            if (area.size <= 0) {
+                continue;
+            }
+
+            const int wordLen = areaWordLen(area.area);
+            const int unitSize = wordLenByteSize(wordLen);
+            const int amount = areaSpanUnits(area);
+            if (unitSize <= 0 || amount <= 0) {
+                continue;
+            }
+
+            candidates.push_back(Candidate{
+                .area = &area,
+                .areaCode = areaToCode(area.area),
+                .wordLen = wordLen,
+                .unitSize = unitSize,
+                .dbNumber = resolvedDbNumber(area),
+                .start = area.start,
+                .amount = amount
+            });
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](const Candidate& lhs, const Candidate& rhs) {
+            if (lhs.areaCode != rhs.areaCode) return lhs.areaCode < rhs.areaCode;
+            if (lhs.dbNumber != rhs.dbNumber) return lhs.dbNumber < rhs.dbNumber;
+            if (lhs.wordLen != rhs.wordLen) return lhs.wordLen < rhs.wordLen;
+            if (lhs.start != rhs.start) return lhs.start < rhs.start;
+            return lhs.amount < rhs.amount;
+        });
+
+        constexpr int kMergeGapUnits = 0;
+        std::vector<S7ReadBlockPlan> plans;
+        std::optional<S7ReadBlockPlan> current;
+        int currentEnd = 0;
+
+        auto flushCurrent = [&]() {
+            if (!current.has_value()) {
+                return;
+            }
+            current->byteSize = static_cast<std::size_t>(current->amount) * current->unitSize;
+            plans.push_back(std::move(*current));
+            current.reset();
+        };
+
+        for (const auto& candidate : candidates) {
+            const int candidateEnd = candidate.start + candidate.amount;
+            const bool compatible = current.has_value()
+                && candidate.areaCode == current->areaCode
+                && candidate.dbNumber == current->dbNumber
+                && candidate.wordLen == current->wordLen
+                && candidate.start <= currentEnd + kMergeGapUnits;
+
+            if (!compatible) {
+                flushCurrent();
+                current = S7ReadBlockPlan{
+                    .area = candidate.area->area,
+                    .areaCode = candidate.areaCode,
+                    .wordLen = candidate.wordLen,
+                    .unitSize = candidate.unitSize,
+                    .dbNumber = candidate.dbNumber,
+                    .start = candidate.start,
+                    .amount = candidate.amount
+                };
+                currentEnd = candidateEnd;
+            } else if (candidateEnd > currentEnd) {
+                currentEnd = candidateEnd;
+                current->amount = currentEnd - current->start;
+            }
+
+            current->members.push_back(S7ReadBlockMember{
+                .area = candidate.area,
+                .offsetBytes = static_cast<std::size_t>(candidate.start - current->start) * current->unitSize
+            });
+        }
+
+        flushCurrent();
+        return plans;
     }
 
     static std::string normalizeConnectionMode(std::string value) {
@@ -656,6 +781,362 @@ private:
             }
         }
         return out;
+    }
+
+    static std::string hexByte(uint8_t value) {
+        std::ostringstream oss;
+        oss << "0x" << std::hex << std::uppercase << std::setfill('0')
+            << std::setw(2) << static_cast<int>(value);
+        return oss.str();
+    }
+
+    static std::string hexWord(uint16_t value) {
+        std::ostringstream oss;
+        oss << "0x" << std::hex << std::uppercase << std::setfill('0')
+            << std::setw(4) << value;
+        return oss.str();
+    }
+
+    static std::optional<uint16_t> readU16BEAt(const std::vector<uint8_t>& bytes, std::size_t offset) {
+        if (offset + 1 >= bytes.size()) {
+            return std::nullopt;
+        }
+        return static_cast<uint16_t>((static_cast<uint16_t>(bytes[offset]) << 8) | bytes[offset + 1]);
+    }
+
+    static std::optional<uint16_t> readU16LEAt(const std::vector<uint8_t>& bytes, std::size_t offset) {
+        if (offset + 1 >= bytes.size()) {
+            return std::nullopt;
+        }
+        return static_cast<uint16_t>(static_cast<uint16_t>(bytes[offset])
+            | (static_cast<uint16_t>(bytes[offset + 1]) << 8));
+    }
+
+    static std::optional<uint32_t> readU24BEAt(const std::vector<uint8_t>& bytes, std::size_t offset) {
+        if (offset + 2 >= bytes.size()) {
+            return std::nullopt;
+        }
+        return (static_cast<uint32_t>(bytes[offset]) << 16)
+            | (static_cast<uint32_t>(bytes[offset + 1]) << 8)
+            | static_cast<uint32_t>(bytes[offset + 2]);
+    }
+
+    static std::string bytesToHexLimited(const std::vector<uint8_t>& bytes, std::size_t maxBytes = 16) {
+        if (bytes.size() <= maxBytes) {
+            return bytesToHex(bytes);
+        }
+        std::vector<uint8_t> prefix(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(maxBytes));
+        return bytesToHex(prefix) + " ...";
+    }
+
+    static const char* transportSizeName(uint8_t transportSize) {
+        switch (transportSize) {
+            case kTsResBit:
+                return "BIT";
+            case kTsResByte:
+                return "BYTE";
+            case kTsResInt:
+                return "INT";
+            case kTsResReal:
+                return "REAL";
+            case kTsResOctet:
+                return "OCTET";
+            default:
+                return nullptr;
+        }
+    }
+
+    static const char* wordLenName(uint8_t wordLen) {
+        switch (wordLen) {
+            case S7WLBit:
+                return "BIT";
+            case S7WLByte:
+                return "BYTE";
+            case S7WLChar:
+                return "CHAR";
+            case S7WLWord:
+                return "WORD";
+            case S7WLInt:
+                return "INT";
+            case S7WLDWord:
+                return "DWORD";
+            case S7WLDInt:
+                return "DINT";
+            case S7WLReal:
+                return "REAL";
+            case S7WLCounter:
+                return "COUNTER";
+            case S7WLTimer:
+                return "TIMER";
+            default:
+                return nullptr;
+        }
+    }
+
+    static const char* areaCodeName(uint8_t areaCode) {
+        switch (areaCode) {
+            case S7AreaPE:
+                return "PE";
+            case S7AreaPA:
+                return "PA";
+            case S7AreaMK:
+                return "MK";
+            case S7AreaDB:
+                return "DB";
+            case S7AreaCT:
+                return "CT";
+            case S7AreaTM:
+                return "TM";
+            default:
+                return nullptr;
+        }
+    }
+
+    static std::size_t decodedTransportSize(uint8_t transportSize, uint16_t rawLength) {
+        if (transportSize == kTsResOctet || transportSize == kTsResReal || transportSize == kTsResBit) {
+            return rawLength;
+        }
+        return (static_cast<std::size_t>(rawLength) + 7) / 8;
+    }
+
+    static std::uint16_t decodeTpduSize(uint8_t encoded) {
+        switch (encoded) {
+            case 0x07: return 128;
+            case 0x08: return 256;
+            case 0x09: return 512;
+            case 0x0A: return 1024;
+            case 0x0B: return 2048;
+            case 0x0C: return 4096;
+            case 0x0D: return 8192;
+            default: return 0;
+        }
+    }
+
+    static uint32_t decodeS7StartAddress(uint8_t wordLen, uint32_t rawAddress) {
+        if (wordLen == S7WLBit || wordLen == S7WLCounter || wordLen == S7WLTimer) {
+            return rawAddress;
+        }
+        return rawAddress / 8;
+    }
+
+    static std::string summarizeIsoPacket(std::string_view stage, bool outbound, const std::vector<uint8_t>& frame) {
+        const uint8_t expectedCode = outbound ? kCotpCr : kCotpCc;
+        if (((outbound && stage != "iso.cr") || (!outbound && stage != "iso.cc"))
+            || frame.size() < 11
+            || frame[5] != expectedCode) {
+            return {};
+        }
+
+        std::ostringstream oss;
+        if (const auto dstRef = readU16BEAt(frame, 6)) {
+            oss << " dstRef=" << hexWord(*dstRef);
+        }
+        if (const auto srcRef = readU16BEAt(frame, 8)) {
+            oss << " srcRef=" << hexWord(*srcRef);
+        }
+
+        for (std::size_t i = 11; i + 1 < frame.size();) {
+            const uint8_t code = frame[i];
+            const uint8_t length = frame[i + 1];
+            const std::size_t valueOffset = i + 2;
+            const std::size_t next = valueOffset + length;
+            if (next > frame.size()) {
+                break;
+            }
+
+            if (code == 0xC0 && length == 1) {
+                const auto tpduSize = decodeTpduSize(frame[valueOffset]);
+                if (tpduSize > 0) {
+                    oss << " tpduSize=" << tpduSize;
+                }
+            } else if (code == 0xC1 && length == 2) {
+                if (const auto localTsap = readU16BEAt(frame, valueOffset)) {
+                    oss << " localTsap=" << hexWord(*localTsap);
+                }
+            } else if (code == 0xC2 && length == 2) {
+                if (const auto remoteTsap = readU16BEAt(frame, valueOffset)) {
+                    oss << " remoteTsap=" << hexWord(*remoteTsap);
+                }
+            }
+
+            i = next;
+        }
+
+        return oss.str();
+    }
+
+    static std::string summarizeS7Request(std::string_view stage, const std::vector<uint8_t>& frame) {
+        if (frame.size() < 17 || frame[0] != kIsoTcpVersion || frame[5] != kCotpDt || frame[7] != kS7ProtocolId) {
+            return {};
+        }
+
+        const auto pduRef = readU16LEAt(frame, 11);
+        const auto parLen = readU16BEAt(frame, 13);
+        const auto dataLen = readU16BEAt(frame, 15);
+        if (!pduRef || !parLen || !dataLen) {
+            return {};
+        }
+
+        std::ostringstream oss;
+        oss << " pduRef=" << *pduRef;
+
+        if (stage == "s7.setup-comm.req") {
+            if (frame.size() >= 25) {
+                if (const auto maxCalling = readU16BEAt(frame, 19)) {
+                    oss << " maxCalling=" << *maxCalling;
+                }
+                if (const auto maxCalled = readU16BEAt(frame, 21)) {
+                    oss << " maxCalled=" << *maxCalled;
+                }
+                if (const auto pduLength = readU16BEAt(frame, 23)) {
+                    oss << " pduLength=" << *pduLength;
+                }
+            }
+            return oss.str();
+        }
+
+        if (stage != "s7.read.req" && stage != "s7.write.req") {
+            return {};
+        }
+
+        if (frame.size() >= 31) {
+            const uint8_t itemCount = frame[18];
+            oss << " items=" << static_cast<unsigned>(itemCount);
+            if (itemCount > 0) {
+                const uint8_t wordLen = frame[22];
+                const auto amount = readU16BEAt(frame, 23);
+                const auto dbNumber = readU16BEAt(frame, 25);
+                const uint8_t areaCode = frame[27];
+                const auto rawAddress = readU24BEAt(frame, 28);
+                if (const char* area = areaCodeName(areaCode)) {
+                    oss << " area=" << area;
+                } else {
+                    oss << " area=" << hexByte(areaCode);
+                }
+                if (areaCode == S7AreaDB && dbNumber) {
+                    oss << " db=" << *dbNumber;
+                }
+                if (const char* name = wordLenName(wordLen)) {
+                    oss << " wordLen=" << name;
+                } else {
+                    oss << " wordLen=" << hexByte(wordLen);
+                }
+                if (amount) {
+                    oss << " amount=" << *amount;
+                }
+                if (rawAddress) {
+                    oss << " start=" << decodeS7StartAddress(wordLen, *rawAddress);
+                }
+            }
+        }
+
+        if (stage == "s7.write.req") {
+            const std::size_t dataOffset = 17 + static_cast<std::size_t>(*parLen);
+            if (dataOffset + 4 <= frame.size()) {
+                const uint8_t transportSize = frame[dataOffset + 1];
+                if (const char* name = transportSizeName(transportSize)) {
+                    oss << " transport=" << name;
+                } else {
+                    oss << " transport=" << hexByte(transportSize);
+                }
+                if (const auto rawLength = readU16BEAt(frame, dataOffset + 2)) {
+                    const std::size_t payloadBytes = decodedTransportSize(transportSize, *rawLength);
+                    oss << " dataBytes=" << payloadBytes;
+                    const std::size_t payloadOffset = dataOffset + 4;
+                    if (payloadOffset + payloadBytes <= frame.size()) {
+                        std::vector<uint8_t> payload(
+                            frame.begin() + static_cast<std::ptrdiff_t>(payloadOffset),
+                            frame.begin() + static_cast<std::ptrdiff_t>(payloadOffset + payloadBytes));
+                        oss << " dataHex=" << bytesToHexLimited(payload);
+                    }
+                }
+            }
+        }
+
+        return oss.str();
+    }
+
+    static std::string summarizeS7Response(std::string_view stage, const std::vector<uint8_t>& frame) {
+        if (frame.size() < 19 || frame[0] != kIsoTcpVersion || frame[5] != kCotpDt || frame[7] != kS7ProtocolId) {
+            return {};
+        }
+
+        const auto pduRef = readU16LEAt(frame, 11);
+        const auto parLen = readU16BEAt(frame, 13);
+        const auto dataLen = readU16BEAt(frame, 15);
+        const auto error = readU16BEAt(frame, 17);
+        if (!pduRef || !parLen || !dataLen || !error) {
+            return {};
+        }
+
+        std::ostringstream oss;
+        oss << " pduRef=" << *pduRef
+            << " error=" << hexWord(*error);
+
+        if (stage == "s7.setup-comm.resp") {
+            if (frame.size() >= 27) {
+                if (const auto maxCalling = readU16BEAt(frame, 21)) {
+                    oss << " maxCalling=" << *maxCalling;
+                }
+                if (const auto maxCalled = readU16BEAt(frame, 23)) {
+                    oss << " maxCalled=" << *maxCalled;
+                }
+                if (const auto pduLength = readU16BEAt(frame, 25)) {
+                    oss << " pduLength=" << *pduLength;
+                }
+            }
+            return oss.str();
+        }
+
+        const std::size_t dataOffset = 19 + static_cast<std::size_t>(*parLen);
+        if (dataOffset >= frame.size()) {
+            return oss.str();
+        }
+
+        const uint8_t returnCode = frame[dataOffset];
+        oss << " returnCode=" << (returnCode == 0xFF ? "OK" : hexByte(returnCode));
+
+        if (stage == "s7.write.resp") {
+            return oss.str();
+        }
+
+        if (dataOffset + 4 > frame.size()) {
+            return oss.str();
+        }
+
+        const uint8_t transportSize = frame[dataOffset + 1];
+        const auto payloadBitsOrBytes = readU16BEAt(frame, dataOffset + 2);
+        if (!payloadBitsOrBytes) {
+            return oss.str();
+        }
+
+        const std::size_t payloadBytes = decodedTransportSize(transportSize, *payloadBitsOrBytes);
+        const std::size_t payloadOffset = dataOffset + 4;
+        oss << " transport=";
+        if (const char* name = transportSizeName(transportSize)) {
+            oss << name;
+        } else {
+            oss << hexByte(transportSize);
+        }
+        oss << " dataBytes=" << payloadBytes;
+
+        if (payloadOffset + payloadBytes <= frame.size()) {
+            std::vector<uint8_t> payload(frame.begin() + static_cast<std::ptrdiff_t>(payloadOffset),
+                                         frame.begin() + static_cast<std::ptrdiff_t>(payloadOffset + payloadBytes));
+            oss << " dataHex=" << bytesToHexLimited(payload);
+        }
+
+        return oss.str();
+    }
+
+    static std::string summarizePacket(std::string_view stage, bool outbound, const std::vector<uint8_t>& frame) {
+        if (const std::string isoSummary = summarizeIsoPacket(stage, outbound, frame); !isoSummary.empty()) {
+            return isoSummary;
+        }
+        if (outbound) {
+            return summarizeS7Request(stage, frame);
+        }
+        return summarizeS7Response(stage, frame);
     }
 
     static std::string explainClientRc(int rc) {
@@ -828,25 +1309,10 @@ private:
         return Json::Value(bytesToHex(buffer));
     }
 
-    static ParsedFrameResult buildReadResult(int deviceId,
-                                             int linkId,
-                                             const S7AreaDefinition& area,
-                                             const std::vector<uint8_t>& buffer) {
-        ParsedFrameResult result;
-        result.deviceId = deviceId;
-        result.linkId = linkId;
-        result.protocol = Constants::PROTOCOL_S7;
-        result.funcCode = area.id;
-        result.reportTime = makeUtcNowString();
-
-        Json::Value payload(Json::objectValue);
-        payload["funcCode"] = area.id;
-        payload["funcName"] = area.name;
-        payload["direction"] = "UP";
-
-        Json::Value data(Json::objectValue);
+    static Json::Value buildReadElement(const S7AreaDefinition& area,
+                                        const std::vector<uint8_t>& buffer) {
         Json::Value element(Json::objectValue);
-        const int dbNumber = area.area == "V" ? 1 : area.dbNumber;
+        const int dbNumber = resolvedDbNumber(area);
         element["name"] = area.name;
         element["value"] = decodeAreaValue(area, buffer);
         element["hex"] = bytesToHex(buffer);
@@ -864,8 +1330,24 @@ private:
         if (!area.remark.empty()) {
             element["remark"] = area.remark;
         }
+        return element;
+    }
 
-        data[area.id] = std::move(element);
+    static ParsedFrameResult buildPollReadResult(int deviceId,
+                                                 int linkId,
+                                                 Json::Value data,
+                                                 const std::string& reportTime) {
+        ParsedFrameResult result;
+        result.deviceId = deviceId;
+        result.linkId = linkId;
+        result.protocol = Constants::PROTOCOL_S7;
+        result.funcCode = FUNC_READ;
+        result.reportTime = reportTime.empty() ? makeUtcNowString() : reportTime;
+
+        Json::Value payload(Json::objectValue);
+        payload["funcCode"] = FUNC_READ;
+        payload["funcName"] = "S7采集";
+        payload["direction"] = "UP";
         payload["data"] = std::move(data);
         result.data = std::move(payload);
         return result;
@@ -923,9 +1405,11 @@ private:
             connection.pingTimeoutMs = conn.get("pingTimeout", connection.pingTimeoutMs).asInt();
             connection.sendTimeoutMs = conn.get("sendTimeout", connection.sendTimeoutMs).asInt();
             connection.recvTimeoutMs = conn.get("recvTimeout", connection.recvTimeoutMs).asInt();
+            connection.retryDelayMs = conn.get("retryDelay", connection.retryDelayMs).asInt();
             if (connection.pingTimeoutMs <= 0) connection.pingTimeoutMs = kDefaultTimeoutMs;
             if (connection.sendTimeoutMs <= 0) connection.sendTimeoutMs = kDefaultTimeoutMs;
             if (connection.recvTimeoutMs <= 0) connection.recvTimeoutMs = kDefaultTimeoutMs;
+            if (connection.retryDelayMs < 0) connection.retryDelayMs = 1000;
             if (connection.recvTimeoutMs < connection.sendTimeoutMs) {
                 connection.recvTimeoutMs = connection.sendTimeoutMs;
             }
@@ -993,9 +1477,7 @@ private:
         const std::string plcModel = device.protocolConfig.get("plcModel", "").asString();
         runtime->connection = parseConnection(device.protocolConfig, plcModel);
         if (runtime->bridgeMode) {
-            if (runtime->connection.host.empty()) {
-                runtime->connection.host = device.linkIp.empty() ? "tcpserver" : device.linkIp;
-            }
+            runtime->connection.host = "tcpserver";
         } else if (!device.linkIp.empty()) {
             runtime->connection.host = device.linkIp;
         }
@@ -1057,6 +1539,13 @@ private:
                 client.reset();
             }
         };
+        const auto markConnectFailed = [&](const std::shared_ptr<S7DeviceRuntime>& failedRuntime) {
+            if (!failedRuntime) {
+                return;
+            }
+            std::lock_guard runtimeLock(failedRuntime->mutex);
+            failedRuntime->lastConnectAttempt = std::chrono::steady_clock::now();
+        };
 
         int deviceId = 0;
         int linkId = 0;
@@ -1077,6 +1566,12 @@ private:
             linkId = runtime->linkId;
             bridgeMode = runtime->bridgeMode;
             connection = runtime->connection;
+            if (runtime->lastConnectAttempt != std::chrono::steady_clock::time_point{}
+                && connection.retryDelayMs > 0
+                && std::chrono::duration_cast<std::chrono::milliseconds>(now - runtime->lastConnectAttempt).count()
+                    < connection.retryDelayMs) {
+                return false;
+            }
 
             LOG_DEBUG << "[S7][Adapter] Connecting device " << deviceId
                       << " to " << connection.host
@@ -1084,7 +1579,8 @@ private:
                       << (bridgeMode ? " (bridge)" : "")
                       << ", pingTimeout=" << connection.pingTimeoutMs << "ms"
                       << ", sendTimeout=" << connection.sendTimeoutMs << "ms"
-                      << ", recvTimeout=" << connection.recvTimeoutMs << "ms";
+                      << ", recvTimeout=" << connection.recvTimeoutMs << "ms"
+                      << ", retryDelay=" << connection.retryDelayMs << "ms";
 
             runtime->resetClient();
             runtime->lastConnectAttempt = now;
@@ -1098,6 +1594,7 @@ private:
             if (runtime->connectGeneration == attemptId) {
                 runtime->connectInProgress = false;
                 runtime->connected = false;
+                runtime->lastConnectAttempt = std::chrono::steady_clock::now();
             }
             return false;
         }
@@ -1105,10 +1602,12 @@ private:
         applyConnectionTimeouts(*client, connection);
         client->setTraceCallback(
             [deviceId](std::string_view stage, bool outbound, const std::vector<std::uint8_t>& frame) {
+                const std::string summary = summarizePacket(stage, outbound, frame);
                 LOG_DEBUG << "[S7][Packet] deviceId=" << deviceId
                           << " " << (outbound ? "TX " : "RX ")
                           << stage
                           << " len=" << frame.size()
+                          << summary
                           << " hex=" << bytesToHex(frame);
             }
         );
@@ -1145,6 +1644,7 @@ private:
                 if (runtime->connectGeneration == attemptId) {
                     runtime->connectInProgress = false;
                     runtime->connected = false;
+                    runtime->lastConnectAttempt = std::chrono::steady_clock::now();
                 }
                 return false;
             }
@@ -1158,6 +1658,7 @@ private:
                 if (runtime->connectGeneration == attemptId) {
                     runtime->connectInProgress = false;
                     runtime->connected = false;
+                    runtime->lastConnectAttempt = std::chrono::steady_clock::now();
                 }
                 return false;
             }
@@ -1187,6 +1688,7 @@ private:
                      << ", host=" << connection.host
                      << ", mode=" << connection.mode;
             destroyClient(client);
+            markConnectFailed(runtime);
             return false;
         }
 
@@ -1379,10 +1881,6 @@ private:
             return kS7Ok;
         }
 
-        LOG_DEBUG << "[S7][Adapter] TX DTU client=" << bridgeClientAddr
-                  << ", linkId=" << bridgeLinkId
-                  << ", bytes=" << bytes.size()
-                  << ", hex=" << bytesToHex(bytes);
         if (LinkTransportFacade::instance().sendToClient(bridgeLinkId, bridgeClientAddr, payload)) {
             return kS7Ok;
         }
@@ -1457,7 +1955,7 @@ private:
             if (!dtuKey.empty()) {
                 runtime->dtuKey = dtuKey;
             }
-            shouldFlush = runtime->bridgeTransportOpen;
+            shouldFlush = runtime->bridgeTransportOpen && !runtime->pendingBridgeToDtu.empty();
         }
 
         if (shouldLog) {
@@ -1468,8 +1966,6 @@ private:
         }
 
         if (shouldFlush) {
-            LOG_DEBUG << "[S7][Adapter] Bridge session ready, flushing pending payloads for device "
-                      << deviceId;
             flushBridgeSession(deviceId);
         }
     }
@@ -1531,12 +2027,6 @@ private:
             runtime->bridgeIoCv.notify_all();
         }
 
-        LOG_DEBUG << "[S7][Adapter] RX DTU payload: deviceId=" << deviceId
-                  << ", linkId=" << linkId
-                  << ", client=" << (bridgeClientAddr.empty() ? "<unbound>" : bridgeClientAddr)
-                  << ", bytes=" << byteCount
-                  << ", hex=" << bytesToHex(bytes);
-
         if (!accepted) {
             LOG_DEBUG << "[S7][Direct] Drop DTU payload because bridge transport is not open: deviceId="
                       << deviceId << ", linkId=" << linkId
@@ -1584,11 +2074,8 @@ private:
         };
 
         auto remainingToDtu = sendPending(pendingToDtu, [&](const std::vector<uint8_t>& frame) {
-            LOG_DEBUG << "[S7][Adapter] TX DTU client=" << bridgeClientAddr
-                      << ", linkId=" << bridgeLinkId
-                      << ", bytes=" << frame.size()
-                      << ", hex=" << bytesToHex(frame);
-            return LinkTransportFacade::instance().sendToClient(bridgeLinkId, bridgeClientAddr, bytesToString(frame));
+            return LinkTransportFacade::instance().sendToClient(
+                bridgeLinkId, bridgeClientAddr, bytesToString(frame));
         });
 
         const std::size_t flushedToDtu = queuedToDtu - remainingToDtu.size();
@@ -1626,39 +2113,52 @@ private:
             bridgeBound = runtime->bridgeBound;
             areas = runtime->areas;
         }
+        const auto readBlocks = planReadBlocks(areas);
 
         LOG_TRACE << "[S7][Adapter] Poll device " << deviceId
                   << ", areas=" << areas.size()
+                  << ", blocks=" << readBlocks.size()
                   << ", bridge=" << (bridgeMode ? "yes" : "no")
                   << ", bound=" << (bridgeBound ? "yes" : "no");
-        for (const auto& area : areas) {
-            if (area.size <= 0) continue;
 
-            std::vector<uint8_t> buffer(static_cast<size_t>(area.size), 0);
+        Json::Value aggregatedData(Json::objectValue);
+        const std::string reportTime = makeUtcNowString();
+        bool pollFailed = false;
+
+        for (const auto& block : readBlocks) {
+            std::vector<uint8_t> buffer(block.byteSize, 0);
             int rc = 0;
             {
                 std::lock_guard clientLock(runtime->clientMutex);
-                rc = readArea(*runtime, area, buffer);
+                rc = readBlock(*runtime, block, buffer);
             }
             if (rc != 0) {
                 bool shouldResetClient = false;
                 {
                     std::lock_guard runtimeLock(runtime->mutex);
                     if (runtime->bridgeMode && !runtime->bridgeBound) {
-                        LOG_DEBUG << "[S7][Adapter] Read area pending bridge bind: deviceId="
+                        LOG_DEBUG << "[S7][Adapter] Read block pending bridge bind: deviceId="
                                   << runtime->deviceId
-                                  << ", area=" << area.id
+                                  << ", area=" << block.area
+                                  << ", db=" << block.dbNumber
+                                  << ", start=" << block.start
+                                  << ", amount=" << block.amount
                                   << ", rc=" << rc;
                         if (runtime->bridgeDiscoveryInFlight) {
                             LOG_DEBUG << "[S7][Adapter] Clearing discovery probe state after read failure: deviceId="
                                       << runtime->deviceId
-                                      << ", area=" << area.id;
+                                      << ", area=" << block.area
+                                      << ", start=" << block.start;
                         }
                         runtime->bridgeDiscoveryInFlight = false;
                         runtime->bridgeDiscoveryStartedAt = {};
                     } else {
-                        LOG_WARN << "[S7][Adapter] Read area failed: deviceId=" << runtime->deviceId
-                                 << ", area=" << area.id
+                        LOG_WARN << "[S7][Adapter] Read block failed: deviceId=" << runtime->deviceId
+                                 << ", area=" << block.area
+                                 << ", db=" << block.dbNumber
+                                 << ", start=" << block.start
+                                 << ", amount=" << block.amount
+                                 << ", mergedAreas=" << block.members.size()
                                  << ", rc=" << rc
                                  << " (" << explainClientRc(rc) << ")"
                                  << ", bridge=" << (runtime->bridgeMode ? "yes" : "no")
@@ -1670,15 +2170,56 @@ private:
                     std::lock_guard clientLock(runtime->clientMutex);
                     runtime->resetClient();
                 }
+                pollFailed = true;
                 break;
             }
 
-            LOG_TRACE << "[S7][Adapter] Read area OK: deviceId=" << deviceId
-                      << ", area=" << area.id
-                      << ", bytes=" << buffer.size();
+            LOG_TRACE << "[S7][Adapter] Read block OK: deviceId=" << deviceId
+                      << ", area=" << block.area
+                      << ", db=" << block.dbNumber
+                      << ", start=" << block.start
+                      << ", amount=" << block.amount
+                      << ", bytes=" << buffer.size()
+                      << ", mergedAreas=" << block.members.size();
 
-            results.push_back(buildReadResult(deviceId, linkId, area, buffer));
+            for (const auto& member : block.members) {
+                if (!member.area || member.offsetBytes + static_cast<std::size_t>(member.area->size) > buffer.size()) {
+                    LOG_WARN << "[S7][Adapter] Read block slice out of range: deviceId=" << deviceId
+                             << ", area=" << block.area
+                             << ", blockStart=" << block.start
+                             << ", blockBytes=" << buffer.size();
+                    pollFailed = true;
+                    continue;
+                }
+
+                std::vector<uint8_t> areaBuffer(
+                    buffer.begin() + static_cast<std::ptrdiff_t>(member.offsetBytes),
+                    buffer.begin() + static_cast<std::ptrdiff_t>(member.offsetBytes + member.area->size));
+                aggregatedData[member.area->id] = buildReadElement(*member.area, areaBuffer);
+            }
+
+            if (pollFailed) {
+                break;
+            }
         }
+
+        if (!pollFailed && aggregatedData.isObject() && !aggregatedData.empty()) {
+            results.push_back(buildPollReadResult(deviceId, linkId, std::move(aggregatedData), reportTime));
+        }
+    }
+
+    int readBlock(const S7DeviceRuntime& runtime, const S7ReadBlockPlan& block,
+                  std::vector<uint8_t>& buffer) const {
+        if (!runtime.client) {
+            return -1;
+        }
+        return runtime.client->readArea(
+            block.areaCode,
+            block.dbNumber,
+            block.start,
+            block.amount,
+            block.wordLen,
+            buffer.data());
     }
 
     int readArea(const S7DeviceRuntime& runtime, const S7AreaDefinition& area,
@@ -1686,7 +2227,7 @@ private:
         if (!runtime.client) {
             return -1;
         }
-        const int dbNumber = area.area == "V" ? 1 : area.dbNumber;
+        const int dbNumber = resolvedDbNumber(area);
         return runtime.client->readArea(areaToCode(area.area), dbNumber, area.start,
             transferAmount(area.area, buffer.size()), areaWordLen(area.area), buffer.data());
     }

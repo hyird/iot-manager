@@ -234,7 +234,6 @@ public:
             buf->retrieveAll();
 
             std::string clientAddr = conn->peerAddr().toIpPort();
-            LOG_DEBUG << "[Link " << linkId << "] Recv " << data.size() << "B from " << clientAddr;
 
             totalBytesRx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
             totalPacketsRx_.fetch_add(1, std::memory_order_relaxed);
@@ -337,7 +336,6 @@ public:
                 buf->retrieveAll();
 
                 std::string serverAddr = conn->peerAddr().toIpPort();
-                LOG_DEBUG << "[Link " << linkId << "] Recv " << data.size() << "B from " << serverAddr;
 
                 totalBytesRx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
                 totalPacketsRx_.fetch_add(1, std::memory_order_relaxed);
@@ -539,7 +537,6 @@ public:
             runtime->clientConn->send(data);
             totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
             totalPacketsTx_.fetch_add(1, std::memory_order_relaxed);
-            LOG_TRACE << "[Link " << linkId << "] Sent " << data.size() << "B";
             return true;
         }
 
@@ -553,8 +550,6 @@ public:
             }
             totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()) * sentCount, std::memory_order_relaxed);
             totalPacketsTx_.fetch_add(sentCount, std::memory_order_relaxed);
-            LOG_DEBUG << "[Link " << linkId << "] Broadcast " << data.size() << " bytes to "
-                     << runtime->serverConns.size() << " clients";
             return true;
         }
 
@@ -589,8 +584,6 @@ public:
             if (sentCount > 0) {
                 totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()) * sentCount, std::memory_order_relaxed);
                 totalPacketsTx_.fetch_add(sentCount, std::memory_order_relaxed);
-                LOG_DEBUG << "[Link " << linkId << "] Broadcast " << data.size() << " bytes to "
-                         << sentCount << " clients (excluded " << excludeAddrs.size() << ")";
                 return true;
             }
         }
@@ -613,7 +606,6 @@ public:
                 conn->send(data);
                 totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
                 totalPacketsTx_.fetch_add(1, std::memory_order_relaxed);
-                LOG_DEBUG << "[Link " << linkId << "] Sent " << data.size() << "B to " << clientAddr;
                 return true;
             }
         }
