@@ -4,6 +4,7 @@
 #include "S7.DtuSessionManager.hpp"
 #include "S7.RegistrationNormalizer.hpp"
 #include "S7.Client.hpp"
+#include "S7.PollScheduler.hpp"
 #include "common/cache/DeviceCache.hpp"
 #include "common/network/LinkTransportFacade.hpp"
 #include "common/protocol/ProtocolAdapter.hpp"
@@ -105,11 +106,9 @@ struct S7DeviceRuntime {
     bool bridgeTransportOpen = false;
     bool bridgeDiscoveryInFlight = false;
     bool connectInProgress = false;
-    bool immediatePollPending = false;
     std::uint64_t connectGeneration = 0;
     std::chrono::steady_clock::time_point bridgeDiscoveryStartedAt{};
     std::chrono::steady_clock::time_point lastConnectAttempt{};
-    std::chrono::steady_clock::time_point lastPoll{};
 
     S7DeviceRuntime() = default;
 
@@ -138,11 +137,9 @@ struct S7DeviceRuntime {
         , bridgeTransportOpen(other.bridgeTransportOpen)
         , bridgeDiscoveryInFlight(other.bridgeDiscoveryInFlight)
         , connectInProgress(other.connectInProgress)
-        , immediatePollPending(other.immediatePollPending)
         , connectGeneration(other.connectGeneration)
         , bridgeDiscoveryStartedAt(other.bridgeDiscoveryStartedAt)
-        , lastConnectAttempt(other.lastConnectAttempt)
-        , lastPoll(other.lastPoll) {
+        , lastConnectAttempt(other.lastConnectAttempt) {
         other.connected = false;
     }
 
@@ -170,11 +167,9 @@ struct S7DeviceRuntime {
         bridgeTransportOpen = other.bridgeTransportOpen;
         bridgeDiscoveryInFlight = other.bridgeDiscoveryInFlight;
         connectInProgress = other.connectInProgress;
-        immediatePollPending = other.immediatePollPending;
         connectGeneration = other.connectGeneration;
         bridgeDiscoveryStartedAt = other.bridgeDiscoveryStartedAt;
         lastConnectAttempt = other.lastConnectAttempt;
-        lastPoll = other.lastPoll;
         other.connected = false;
         return *this;
     }
@@ -201,6 +196,10 @@ public:
         bridgeRegistry_ = std::make_unique<DtuRegistry>();
         bridgeSessionManager_ = std::make_unique<DtuSessionManager>();
         bridgeNormalizer_ = std::make_unique<RegistrationNormalizer>(*bridgeRegistry_, *bridgeSessionManager_);
+        pollScheduler_ = std::make_unique<S7PollScheduler>();
+        pollScheduler_->setEnqueuePollCallback([this](int deviceId) {
+            return enqueueScheduledPoll(deviceId);
+        });
         bridgeSessionManager_->setOldSessionDisplacedCallback(
             [](int linkId, const std::string& clientAddr) {
                 LinkTransportFacade::instance().disconnectServerClient(linkId, clientAddr);
@@ -307,61 +306,6 @@ public:
     }
 
     void onMaintenanceTick() override {
-        std::vector<ParsedFrameResult> results;
-        const auto now = std::chrono::steady_clock::now();
-
-        auto runtimes = snapshotRuntimesLocked();
-        for (const auto& runtime : runtimes) {
-            if (!ensureConnected(runtime, now)) {
-                continue;
-            }
-
-            int deviceId = 0;
-            bool bridgeMode = false;
-            bool connected = false;
-            bool bridgeBound = false;
-            std::string bridgeClientAddr;
-            bool shouldPoll = true;
-
-            {
-                std::lock_guard runtimeLock(runtime->mutex);
-                deviceId = runtime->deviceId;
-                bridgeMode = runtime->bridgeMode;
-                connected = runtime->connected;
-                bridgeBound = runtime->bridgeBound;
-                bridgeClientAddr = runtime->bridgeClientAddr;
-
-                if (runtime->areas.empty()) {
-                    shouldPoll = false;
-                } else if (runtime->immediatePollPending) {
-                    shouldPoll = false;
-                } else if (runtime->connection.pollIntervalSec > 0
-                    && runtime->lastPoll != std::chrono::steady_clock::time_point{}
-                    && std::chrono::duration_cast<std::chrono::seconds>(now - runtime->lastPoll).count()
-                        < runtime->connection.pollIntervalSec) {
-                    shouldPoll = false;
-                } else {
-                    runtime->lastPoll = now;
-                }
-            }
-
-            if (bridgeMode) {
-                LOG_TRACE << "[S7][Adapter] Poll bridge device " << deviceId
-                          << " connected=" << connected
-                          << " bound=" << bridgeBound
-                          << " dtu=" << (bridgeClientAddr.empty() ? "<unbound>" : bridgeClientAddr);
-            }
-
-            if (!shouldPoll) {
-                continue;
-            }
-
-            pollDevice(runtime, results);
-        }
-
-        if (!results.empty() && runtimeContext_.submitParsedResults) {
-            runtimeContext_.submitParsedResults(std::move(results));
-        }
     }
 
     ProtocolAdapterMetrics getMetrics() const override {
@@ -547,7 +491,9 @@ public:
                 runtimeContext_.notifyCommandCompletion(deviceCode,
                     "SUCCESS", true, downCommandId);
             }
-            triggerImmediatePoll(runtime);
+            if (pollScheduler_) {
+                pollScheduler_->triggerNow(deviceId);
+            }
             guard.release();
             co_return CommandResult::success();
         } catch (const std::exception& e) {
@@ -1736,12 +1682,20 @@ private:
         auto devices = co_await DeviceCache::instance().getDevices();
         std::unordered_map<int, std::shared_ptr<S7DeviceRuntime>> next;
         std::size_t bridgeCount = 0;
+        std::vector<S7PollScheduler::DeviceConfig> pollConfigs;
         for (const auto& device : devices) {
             if (device.protocolType != Constants::PROTOCOL_S7) continue;
             auto runtime = buildRuntime(device);
             if (!runtime) continue;
             if (runtime->bridgeMode) {
                 ++bridgeCount;
+            }
+            if (!runtime->areas.empty()) {
+                pollConfigs.push_back(S7PollScheduler::DeviceConfig{
+                    .deviceId = runtime->deviceId,
+                    .readIntervalSec = runtime->connection.pollIntervalSec,
+                    .enabled = true
+                });
             }
             next.emplace(runtime->deviceId, runtime);
         }
@@ -1754,6 +1708,9 @@ private:
         }
         LOG_INFO << "[S7][Adapter] Reloaded " << deviceCount
                  << " S7 device(s), bridge devices=" << bridgeCount;
+        if (pollScheduler_) {
+            pollScheduler_->reload(pollConfigs);
+        }
         co_return;
     }
 
@@ -2202,6 +2159,9 @@ private:
         if (shouldFlush) {
             flushBridgeSession(deviceId);
         }
+        if (shouldLog && pollScheduler_) {
+            pollScheduler_->triggerNow(deviceId);
+        }
     }
 
     void closeRuntimeClient(int deviceId) {
@@ -2217,7 +2177,6 @@ private:
             runtime->bridgeBound = false;
             runtime->bridgeDiscoveryInFlight = false;
             runtime->connectInProgress = false;
-            runtime->immediatePollPending = false;
             ++runtime->connectGeneration;
             runtime->bridgeDiscoveryStartedAt = {};
             runtime->bridgeLinkId = 0;
@@ -2330,60 +2289,57 @@ private:
         }
     }
 
-    void triggerImmediatePoll(const std::shared_ptr<S7DeviceRuntime>& runtime) {
+    bool enqueueScheduledPoll(int deviceId) {
+        auto runtime = findRuntimeLocked(deviceId);
         if (!runtime) {
-            return;
+            return false;
         }
 
-        int deviceId = 0;
-        bool shouldStart = false;
-        const auto triggerAt = std::chrono::steady_clock::now();
+        bool hasAreas = false;
         {
             std::lock_guard runtimeLock(runtime->mutex);
-            deviceId = runtime->deviceId;
-            if (!runtime->areas.empty() && !runtime->immediatePollPending) {
-                runtime->immediatePollPending = true;
-                runtime->lastPoll = triggerAt;
-                shouldStart = true;
-            }
+            hasAreas = !runtime->areas.empty();
+        }
+        if (!hasAreas) {
+            return false;
         }
 
-        if (!shouldStart) {
-            return;
-        }
-
-        LOG_DEBUG << "[S7][Adapter] Trigger immediate poll after write: deviceId=" << deviceId;
-
-        drogon::async_run([this, runtime, deviceId]() -> Task<> {
-            try {
-                std::vector<ParsedFrameResult> results;
-                if (ensureConnected(runtime, std::chrono::steady_clock::now())) {
-                    pollDevice(runtime, results);
-                }
-
-                if (!results.empty() && runtimeContext_.submitParsedResults) {
-                    runtimeContext_.submitParsedResults(std::move(results));
-                }
-            } catch (const std::exception& e) {
-                LOG_WARN << "[S7][Adapter] Immediate poll after write failed: deviceId="
-                         << deviceId << ", error=" << e.what();
-            } catch (...) {
-                LOG_WARN << "[S7][Adapter] Immediate poll after write failed: deviceId="
-                         << deviceId << ", error=<unknown>";
-            }
-
-            {
-                std::lock_guard runtimeLock(runtime->mutex);
-                runtime->immediatePollPending = false;
-            }
-
-            co_return;
+        drogon::async_run([this, deviceId]() -> Task<> {
+            co_await runScheduledPoll(deviceId);
         });
+        return true;
     }
 
-    void pollDevice(const std::shared_ptr<S7DeviceRuntime>& runtime, std::vector<ParsedFrameResult>& results) {
+    Task<> runScheduledPoll(int deviceId) {
+        bool success = false;
+        std::vector<ParsedFrameResult> results;
+
+        try {
+            auto runtime = findRuntimeLocked(deviceId);
+            if (runtime && ensureConnected(runtime, std::chrono::steady_clock::now())) {
+                success = pollDevice(runtime, results);
+            }
+
+            if (!results.empty() && runtimeContext_.submitParsedResults) {
+                runtimeContext_.submitParsedResults(std::move(results));
+            }
+        } catch (const std::exception& e) {
+            LOG_WARN << "[S7][Adapter] Scheduled poll failed: deviceId="
+                     << deviceId << ", error=" << e.what();
+        } catch (...) {
+            LOG_WARN << "[S7][Adapter] Scheduled poll failed: deviceId="
+                     << deviceId << ", error=<unknown>";
+        }
+
+        if (pollScheduler_) {
+            pollScheduler_->onPollCompleted(deviceId, success);
+        }
+        co_return;
+    }
+
+    bool pollDevice(const std::shared_ptr<S7DeviceRuntime>& runtime, std::vector<ParsedFrameResult>& results) {
         if (!runtime) {
-            return;
+            return false;
         }
 
         int deviceId = 0;
@@ -2492,6 +2448,7 @@ private:
         if (!pollFailed && aggregatedData.isObject() && !aggregatedData.empty()) {
             results.push_back(buildPollReadResult(deviceId, linkId, std::move(aggregatedData), reportTime));
         }
+        return !pollFailed;
     }
 
     int readBlock(const S7DeviceRuntime& runtime, const S7ReadBlockPlan& block,
@@ -2534,6 +2491,7 @@ private:
     std::unique_ptr<DtuRegistry> bridgeRegistry_;
     std::unique_ptr<DtuSessionManager> bridgeSessionManager_;
     std::unique_ptr<RegistrationNormalizer> bridgeNormalizer_;
+    std::unique_ptr<S7PollScheduler> pollScheduler_;
 };
 
 }  // namespace s7
