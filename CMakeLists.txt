@@ -34,8 +34,6 @@ option(BUILD_FRONTEND "Build and copy frontend" ON)
 # MSVC 与 Windows SDK 的默认头文件路径，避免 C1083: string not found。
 if(MSVC)
     if(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES STREQUAL "")
-        message(WARNING "未检测到 C++ 自动包含目录，尝试自动补齐 MSVC/Windows SDK 头文件路径。")
-
         string(REGEX REPLACE "[\\/]+bin[\\/].*$" "" _MSVC_TOOL_ROOT "${CMAKE_CXX_COMPILER}")
         set(_IOT_MANAGER_EXTRA_INCLUDE_DIRS "")
         set(_IOT_MANAGER_EXTRA_LIBRARY_DIRS "")
