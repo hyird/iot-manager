@@ -79,6 +79,7 @@ inline constexpr int kS7ErrResponseTooShort = -19;
 inline constexpr std::uint16_t kDefaultRemotePort = 102;
 inline constexpr std::uint16_t kDefaultIsoPduSize = 1024;
 inline constexpr std::uint16_t kDefaultS7PduRequest = 480;
+inline constexpr int kDefaultTimeoutMs = 3000;
 
 inline constexpr std::uint16_t kConnTypePg = 0x01;
 inline constexpr std::uint16_t kConnTypeOp = 0x02;
@@ -87,6 +88,7 @@ inline constexpr std::uint16_t kConnTypeBasic = 0x03;
 inline constexpr std::uint8_t kIsoTcpVersion = 0x03;
 inline constexpr std::uint8_t kCotpCr = 0xE0;
 inline constexpr std::uint8_t kCotpCc = 0xD0;
+inline constexpr std::uint8_t kCotpDr = 0x80;
 inline constexpr std::uint8_t kCotpDt = 0xF0;
 inline constexpr std::uint8_t kCotpDtLength = 0x02;
 inline constexpr std::uint8_t kCotpEot = 0x80;
@@ -266,6 +268,19 @@ inline std::size_t decodeResponseDataSize(std::uint8_t transportSize, std::uint1
 
 class Client {
 public:
+    struct TransportHooks {
+        std::function<int(const std::string& remoteAddress,
+                          std::uint16_t remotePort,
+                          int pingTimeoutMs,
+                          int sendTimeoutMs,
+                          int recvTimeoutMs,
+                          std::uint16_t& localPort)> open;
+        std::function<void()> close;
+        std::function<bool()> connected;
+        std::function<int(const std::uint8_t* data, std::size_t size)> send;
+        std::function<int(std::uint8_t* data, std::size_t size, int timeoutMs)> recv;
+    };
+
     using TraceCallback = std::function<void(std::string_view stage, bool outbound,
                                              const std::vector<std::uint8_t>& frame)>;
 
@@ -354,25 +369,25 @@ public:
             return kS7ErrInvalidParams;
         }
 
-        disconnect();
+        closeSocketOnly();
         sequence_ = 0;
         pduLength_ = kDefaultS7PduRequest;
 
         int rc = openSocket();
         if (rc != kS7Ok) {
-            disconnect();
+            closeSocketOnly();
             return rc;
         }
 
         rc = sendConnectionRequest();
         if (rc != kS7Ok) {
-            disconnect();
+            closeSocketOnly();
             return rc;
         }
 
         rc = negotiatePduLength();
         if (rc != kS7Ok) {
-            disconnect();
+            closeSocketOnly();
             return rc;
         }
 
@@ -382,16 +397,21 @@ public:
 
     int disconnect() {
         connected_ = false;
-        localPort_ = 0;
-        if (socket_ != kInvalidSocket) {
-            shutdownSocket(socket_);
-            closeSocket(socket_);
-            socket_ = kInvalidSocket;
+        if (transportHooks_.close) {
+            return closeSocketOnly();
         }
-        return kS7Ok;
+        const int rc = sendDisconnectRequest();
+        if (rc != kS7Ok) {
+            closeSocketOnly();
+            return rc;
+        }
+        return closeSocketOnly();
     }
 
     bool connected() const {
+        if (transportHooks_.connected) {
+            return connected_ && transportHooks_.connected();
+        }
         return connected_ && socket_ != kInvalidSocket;
     }
 
@@ -399,10 +419,16 @@ public:
         traceCallback_ = std::move(callback);
     }
 
+    void setTransportHooks(TransportHooks hooks) {
+        transportHooks_ = std::move(hooks);
+    }
+
     int readArea(int area, int dbNumber, int start, int amount, int wordLen, void* data);
     int writeArea(int area, int dbNumber, int start, int amount, int wordLen, void* data);
 
 private:
+    int closeSocketOnly();
+    int sendDisconnectRequest();
     int openSocket();
     int sendAll(const std::uint8_t* data, std::size_t size);
     int recvAll(std::uint8_t* data, std::size_t size);
@@ -434,17 +460,57 @@ private:
     std::uint16_t remotePort_ = kDefaultRemotePort;
     std::uint16_t localPort_ = 0;
     std::uint16_t connectionType_ = kConnTypePg;
-    int pingTimeoutMs_ = 10000;
-    int sendTimeoutMs_ = 10000;
-    int recvTimeoutMs_ = 10000;
+    int pingTimeoutMs_ = kDefaultTimeoutMs;
+    int sendTimeoutMs_ = kDefaultTimeoutMs;
+    int recvTimeoutMs_ = kDefaultTimeoutMs;
     std::uint16_t pduLength_ = kDefaultS7PduRequest;
     std::uint16_t sequence_ = 0;
     bool connected_ = false;
     int lastError_ = kS7Ok;
+    std::vector<std::uint8_t> disconnectFrame_;
     TraceCallback traceCallback_;
+    TransportHooks transportHooks_;
 };
 
+inline int Client::closeSocketOnly() {
+    connected_ = false;
+    localPort_ = 0;
+    disconnectFrame_.clear();
+    if (transportHooks_.close) {
+        transportHooks_.close();
+    }
+    if (socket_ != kInvalidSocket) {
+        shutdownSocket(socket_);
+        closeSocket(socket_);
+        socket_ = kInvalidSocket;
+    }
+    return kS7Ok;
+}
+
+inline int Client::sendDisconnectRequest() {
+    if (socket_ == kInvalidSocket || disconnectFrame_.size() < 11) {
+        return kS7Ok;
+    }
+
+    auto frame = disconnectFrame_;
+    frame[5] = kCotpDr;
+    traceFrame("iso.dr", true, frame);
+    return sendAll(frame.data(), frame.size());
+}
+
 inline int Client::openSocket() {
+    if (transportHooks_.open) {
+        disconnectFrame_.clear();
+        localPort_ = 0;
+        return lastError_ = transportHooks_.open(
+            remoteAddress_,
+            remotePort_,
+            pingTimeoutMs_,
+            sendTimeoutMs_,
+            recvTimeoutMs_,
+            localPort_);
+    }
+
     lastError_ = ensureSocketSubsystem();
     if (lastError_ != 0) {
         return kS7ErrSocketInit;
@@ -528,11 +594,20 @@ inline int Client::openSocket() {
 }
 
 inline int Client::sendAll(const std::uint8_t* data, std::size_t size) {
+    if (transportHooks_.send) {
+        const int rc = transportHooks_.send(data, size);
+        if (rc != kS7Ok) {
+            disconnect();
+            return lastError_ = rc;
+        }
+        return lastError_ = kS7Ok;
+    }
+
     std::size_t sent = 0;
     while (sent < size) {
         const int waitRc = waitForSocket(socket_, false, sendTimeoutMs_);
         if (waitRc != kS7Ok) {
-            disconnect();
+            closeSocketOnly();
             return lastError_ = waitRc;
         }
 
@@ -541,7 +616,7 @@ inline int Client::sendAll(const std::uint8_t* data, std::size_t size) {
             static_cast<int>(size - sent),
             0);
         if (rc <= 0) {
-            disconnect();
+            closeSocketOnly();
             return lastError_ = kS7ErrSocketIo;
         }
         sent += static_cast<std::size_t>(rc);
@@ -550,11 +625,20 @@ inline int Client::sendAll(const std::uint8_t* data, std::size_t size) {
 }
 
 inline int Client::recvAll(std::uint8_t* data, std::size_t size) {
+    if (transportHooks_.recv) {
+        const int rc = transportHooks_.recv(data, size, recvTimeoutMs_);
+        if (rc != kS7Ok) {
+            disconnect();
+            return lastError_ = rc;
+        }
+        return lastError_ = kS7Ok;
+    }
+
     std::size_t received = 0;
     while (received < size) {
         const int waitRc = waitForSocket(socket_, true, recvTimeoutMs_);
         if (waitRc != kS7Ok) {
-            disconnect();
+            closeSocketOnly();
             return lastError_ = waitRc;
         }
 
@@ -563,7 +647,7 @@ inline int Client::recvAll(std::uint8_t* data, std::size_t size) {
             static_cast<int>(size - received),
             0);
         if (rc <= 0) {
-            disconnect();
+            closeSocketOnly();
             return lastError_ = kS7ErrSocketIo;
         }
         received += static_cast<std::size_t>(rc);
@@ -579,13 +663,13 @@ inline int Client::recvTpktFrame(std::vector<std::uint8_t>& frame) {
     }
 
     if (header[0] != kIsoTcpVersion) {
-        disconnect();
+        closeSocketOnly();
         return lastError_ = kS7ErrProtocol;
     }
 
     const std::uint16_t totalLength = readBe16(header.data() + 2);
     if (totalLength < 4) {
-        disconnect();
+        closeSocketOnly();
         return lastError_ = kS7ErrProtocol;
     }
 
@@ -637,9 +721,10 @@ inline int Client::sendConnectionRequest() {
     traceFrame("iso.cc", false, response);
 
     if (response.size() < 11 || response[5] != kCotpCc) {
-        disconnect();
+        closeSocketOnly();
         return lastError_ = kS7ErrProtocol;
     }
+    disconnectFrame_ = response;
     return lastError_ = kS7Ok;
 }
 
@@ -708,7 +793,7 @@ inline int Client::recvPayload(std::string_view stage, std::vector<std::uint8_t>
         traceFrame(stage, false, frame);
 
         if (frame.size() < 7 || frame[4] != kCotpDtLength || frame[5] != kCotpDt) {
-            disconnect();
+            closeSocketOnly();
             return lastError_ = kS7ErrProtocol;
         }
 

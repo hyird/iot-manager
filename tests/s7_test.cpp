@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <csignal>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
@@ -18,6 +19,10 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -30,8 +35,32 @@ struct Options {
     std::size_t ioBytes = 1;
     std::size_t cycles = 0;
     std::uint32_t intervalMs = 500;
+    std::uint32_t timeoutMs = 3000;
+    std::uint32_t retryDelayMs = 1000;
     bool reverse = false;
 };
+
+struct PacketTraceState {
+    std::size_t packetIndex = 0;
+    std::string currentStep;
+};
+
+struct PacketStepScope {
+    PacketTraceState& state;
+    std::string previousStep;
+
+    PacketStepScope(PacketTraceState& traceState, std::string step)
+        : state(traceState)
+        , previousStep(std::move(traceState.currentStep)) {
+        state.currentStep = std::move(step);
+    }
+
+    ~PacketStepScope() {
+        state.currentStep = std::move(previousStep);
+    }
+};
+
+volatile std::sig_atomic_t gStopRequested = 0;
 
 enum class ParseResult {
     Ok,
@@ -49,6 +78,45 @@ std::string normalizeHex(std::string text) {
     }
 
     return text;
+}
+
+void requestStop() {
+    gStopRequested = 1;
+}
+
+bool stopRequested() {
+    return gStopRequested != 0;
+}
+
+#ifdef _WIN32
+BOOL WINAPI handleConsoleSignal(DWORD signal) {
+    switch (signal) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_LOGOFF_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        requestStop();
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+#else
+void handleConsoleSignal(int) {
+    requestStop();
+}
+#endif
+
+void installStopHandler() {
+#ifdef _WIN32
+    if (!SetConsoleCtrlHandler(handleConsoleSignal, TRUE)) {
+        std::cerr << "Failed to install console control handler\n";
+    }
+#else
+    std::signal(SIGINT, handleConsoleSignal);
+    std::signal(SIGTERM, handleConsoleSignal);
+#endif
 }
 
 bool parseTsap(const std::string& text, std::uint16_t& value) {
@@ -200,6 +268,34 @@ ParseResult parseArgs(int argc, char** argv, Options& options) {
             continue;
         }
 
+        if (arg.rfind("--timeout-ms=", 0) == 0) {
+            if (!parseUInt32(arg.substr(13), options.timeoutMs) || options.timeoutMs == 0) {
+                return ParseResult::Error;
+            }
+            continue;
+        }
+        if (arg == "--timeout-ms") {
+            std::string value;
+            if (!takeNext(value) || !parseUInt32(value, options.timeoutMs) || options.timeoutMs == 0) {
+                return ParseResult::Error;
+            }
+            continue;
+        }
+
+        if (arg.rfind("--retry-delay-ms=", 0) == 0) {
+            if (!parseUInt32(arg.substr(17), options.retryDelayMs)) {
+                return ParseResult::Error;
+            }
+            continue;
+        }
+        if (arg == "--retry-delay-ms") {
+            std::string value;
+            if (!takeNext(value) || !parseUInt32(value, options.retryDelayMs)) {
+                return ParseResult::Error;
+            }
+            continue;
+        }
+
         if (arg == "--reverse") {
             options.reverse = true;
             continue;
@@ -217,8 +313,10 @@ void printUsage(const char* exe) {
         << "Usage: " << exe
         << " [--host IP] [--local-tsap HEX] [--remote-tsap HEX]\n"
         << "       [--io-bytes N] [--cycles N] [--interval-ms N]\n"
+        << "       [--timeout-ms N] [--retry-delay-ms N]\n"
         << "Defaults: host=192.168.1.12, port=102, local-tsap=4D57, remote-tsap=4D57,\n"
-        << "          io-bytes=1, cycles=0(forever), interval-ms=500\n"
+        << "          io-bytes=1, cycles=0(forever), interval-ms=500,\n"
+        << "          timeout-ms=3000, retry-delay-ms=1000\n"
         << "Mode: clear-first running light\n"
         << "Reads V area: DB1 start=100 -> VW100 / VW105\n"
         << "Flags: --reverse\n";
@@ -257,9 +355,13 @@ void printHexDump(const std::vector<uint8_t>& bytes, const char* indent = "    "
     std::cout.fill(oldFill);
 }
 
-void printPacketTrace(std::size_t index, std::string_view stage, bool outbound,
+void printPacketTrace(std::size_t index, std::string_view step, std::string_view stage, bool outbound,
                       const std::vector<uint8_t>& frame) {
-    std::cout << "[packet " << index << "] "
+    std::cout << "[packet " << index << "] ";
+    if (!step.empty()) {
+        std::cout << "[" << step << "] ";
+    }
+    std::cout
               << (outbound ? "TX " : "RX ")
               << stage
               << " len=" << frame.size() << '\n';
@@ -284,6 +386,39 @@ std::string bytesToBits(const std::vector<uint8_t>& bytes) {
         oss << byteToBits(bytes[i]);
     }
     return oss.str();
+}
+
+std::string explainClientRc(int rc) {
+    switch (rc) {
+    case s7::kS7Ok:
+        return "OK";
+    case s7::kS7ErrInvalidHandle:
+        return "Invalid handle";
+    case s7::kS7ErrInvalidParams:
+        return "Invalid params";
+    case s7::kS7ErrSocketInit:
+        return "Socket init failed";
+    case s7::kS7ErrResolveFailed:
+        return "Resolve failed";
+    case s7::kS7ErrConnectFailed:
+        return "Connect failed";
+    case s7::kS7ErrTimeout:
+        return "Timeout";
+    case s7::kS7ErrSocketIo:
+        return "Socket IO error";
+    case s7::kS7ErrProtocol:
+        return "Protocol error";
+    case s7::kS7ErrNotConnected:
+        return "Not connected";
+    case s7::kS7ErrPduNegotiation:
+        return "PDU negotiation failed";
+    case s7::kS7ErrUnsupported:
+        return "Unsupported";
+    case s7::kS7ErrResponseTooShort:
+        return "Response too short";
+    default:
+        return "Unknown";
+    }
 }
 
 uint16_t readU16BE(const std::vector<uint8_t>& bytes, std::size_t offset) {
@@ -324,8 +459,8 @@ void printVAreaSnapshot(const std::vector<uint8_t>& buffer) {
     std::cout << "  VW105=" << readI16BE(buffer, 5) << '\n';
 }
 
-bool readAreaBytes(TestClient& client, int area, int start, std::vector<uint8_t>& buffer,
-                   const char* label) {
+bool readAreaBytes(TestClient& client, PacketTraceState& traceState, int area, int start,
+                   std::vector<uint8_t>& buffer, const char* label) {
     if (buffer.empty()) {
         std::cerr << "Empty buffer for " << label << '\n';
         return false;
@@ -335,8 +470,15 @@ bool readAreaBytes(TestClient& client, int area, int start, std::vector<uint8_t>
               << " area=0x" << std::uppercase << std::hex << area
               << " start=" << std::dec << start
               << " size=" << buffer.size() << '\n';
-    const int rc = client.readArea(
-        area, 0, start, static_cast<int>(buffer.size()), S7WLByte, buffer.data());
+    PacketStepScope stepScope(
+        traceState,
+        std::string("Read ") + label + " area=0x" + [&]() {
+            std::ostringstream oss;
+            oss << std::uppercase << std::hex << area;
+            return oss.str();
+        }()
+    );
+    const int rc = client.readArea(area, 0, start, static_cast<int>(buffer.size()), S7WLByte, buffer.data());
     if (rc != 0) {
         std::cerr << "Read " << label << " failed, rc=" << rc << '\n';
         return false;
@@ -345,8 +487,8 @@ bool readAreaBytes(TestClient& client, int area, int start, std::vector<uint8_t>
     return true;
 }
 
-bool writeAreaBytes(TestClient& client, int area, int start, const std::vector<uint8_t>& buffer,
-                    const char* label) {
+bool writeAreaBytes(TestClient& client, PacketTraceState& traceState, int area, int start,
+                    const std::vector<uint8_t>& buffer, const char* label) {
     if (buffer.empty()) {
         std::cerr << "Empty buffer for " << label << '\n';
         return false;
@@ -358,8 +500,15 @@ bool writeAreaBytes(TestClient& client, int area, int start, const std::vector<u
               << " start=" << std::dec << start
               << " size=" << writable.size()
               << " data=[" << bytesToHex(writable) << "]\n";
-    const int rc = client.writeArea(
-        area, 0, start, static_cast<int>(writable.size()), S7WLByte, writable.data());
+    PacketStepScope stepScope(
+        traceState,
+        std::string("Write ") + label + " area=0x" + [&]() {
+            std::ostringstream oss;
+            oss << std::uppercase << std::hex << area;
+            return oss.str();
+        }()
+    );
+    const int rc = client.writeArea(area, 0, start, static_cast<int>(writable.size()), S7WLByte, writable.data());
     if (rc != 0) {
         std::cerr << "Write " << label << " failed, rc=" << rc << '\n';
         return false;
@@ -368,8 +517,55 @@ bool writeAreaBytes(TestClient& client, int area, int start, const std::vector<u
     return true;
 }
 
+bool sleepBeforeRetry(std::uint32_t retryDelayMs) {
+    constexpr auto chunk = std::chrono::milliseconds(100);
+    auto remaining = std::chrono::milliseconds(retryDelayMs);
+    while (remaining.count() > 0) {
+        if (stopRequested()) {
+            return false;
+        }
+        const auto step = std::min(remaining, chunk);
+        std::this_thread::sleep_for(step);
+        remaining -= step;
+    }
+    return !stopRequested();
+}
+
+bool connectWithRetry(TestClient& client, PacketTraceState& traceState,
+                      std::uint32_t timeoutMs, std::uint32_t retryDelayMs) {
+    std::size_t attempt = 0;
+    while (!stopRequested()) {
+        ++attempt;
+        std::cout << "[step] Connect attempt " << attempt
+                  << " timeout=" << timeoutMs << "ms\n";
+        PacketStepScope stepScope(traceState, "Connect attempt " + std::to_string(attempt));
+        const int rc = client.connect();
+        if (rc == 0 && client.connected()) {
+            std::cout << "Connected successfully\n";
+            return true;
+        }
+
+        std::cerr << "Connect failed, rc=" << rc
+                  << " (" << explainClientRc(rc) << ")"
+                  << ", retry in " << retryDelayMs << "ms\n";
+        client.disconnect();
+        if (!sleepBeforeRetry(retryDelayMs)) {
+            break;
+        }
+    }
+    return false;
+}
+
+bool reconnectWithRetry(TestClient& client, PacketTraceState& traceState,
+                        std::uint32_t timeoutMs, std::uint32_t retryDelayMs, const char* reason) {
+    std::cerr << reason << ", reconnecting\n";
+    client.disconnect();
+    return connectWithRetry(client, traceState, timeoutMs, retryDelayMs);
+}
+
 struct OutputRestoreGuard {
     TestClient* client = nullptr;
+    PacketTraceState* traceState = nullptr;
     int start = 0;
     std::vector<uint8_t> snapshot;
     bool active = false;
@@ -382,7 +578,10 @@ struct OutputRestoreGuard {
         if (!active || snapshot.empty() || client == nullptr || !client->connected()) {
             return;
         }
-        (void)writeAreaBytes(*client, S7AreaPA, start, snapshot, "DO restore");
+        if (traceState == nullptr) {
+            return;
+        }
+        (void)writeAreaBytes(*client, *traceState, S7AreaPA, start, snapshot, "DO restore");
         active = false;
     }
 };
@@ -390,6 +589,7 @@ struct OutputRestoreGuard {
 }  // namespace
 
 int main(int argc, char** argv) {
+    installStopHandler();
     Options options;
     const ParseResult parseResult = parseArgs(argc, argv, options);
     if (parseResult == ParseResult::Help) {
@@ -418,6 +618,8 @@ int main(int argc, char** argv) {
     std::cout << std::dec;
     std::cout << "IO bytes: " << options.ioBytes
               << ", interval: " << options.intervalMs << "ms\n";
+    std::cout << "Connect/recv timeout: " << options.timeoutMs
+              << "ms, retry delay: " << options.retryDelayMs << "ms\n";
     std::cout << "Mode: clear-first running light";
     if (options.reverse) {
         std::cout << " (reverse)";
@@ -425,10 +627,10 @@ int main(int argc, char** argv) {
     std::cout << '\n';
 
     TestClient client;
-    std::size_t packetIndex = 0;
+    PacketTraceState traceState;
     client.setTraceCallback(
-        [&packetIndex](std::string_view stage, bool outbound, const std::vector<uint8_t>& frame) {
-            printPacketTrace(++packetIndex, stage, outbound, frame);
+        [&traceState](std::string_view stage, bool outbound, const std::vector<uint8_t>& frame) {
+            printPacketTrace(++traceState.packetIndex, traceState.currentStep, stage, outbound, frame);
         }
     );
 
@@ -438,24 +640,39 @@ int main(int argc, char** argv) {
         std::cerr << "Failed to set connection params\n";
         return 2;
     }
-
-    std::cout << "[step] Connect\n";
-    const int rc = client.connect();
-    if (rc != 0 || !client.connected()) {
-        std::cerr << "Connect failed, rc=" << rc << '\n';
-        return 3;
+    const std::int32_t timeoutMs = static_cast<std::int32_t>(options.timeoutMs);
+    if (client.setParam(p_i32_PingTimeout, &timeoutMs) != 0
+        || client.setParam(p_i32_SendTimeout, &timeoutMs) != 0
+        || client.setParam(p_i32_RecvTimeout, &timeoutMs) != 0) {
+        std::cerr << "Failed to set timeout params\n";
+        return 2;
     }
 
-    std::cout << "Connected successfully\n";
+    int exitCode = 0;
+    if (!connectWithRetry(client, traceState, options.timeoutMs, options.retryDelayMs)) {
+        return stopRequested() ? 130 : 3;
+    }
 
     std::vector<uint8_t> inputs(options.ioBytes, 0);
     std::vector<uint8_t> outputs(options.ioBytes, 0);
+    std::vector<uint8_t> vSnapshot(7, 0);
+    OutputRestoreGuard restoreGuard;
+    std::size_t round = 0;
+    std::size_t step = 0;
 
-    if (!readAreaBytes(client, S7AreaPE, 0, inputs, "DI")) {
-        return 4;
+    while (!readAreaBytes(client, traceState, S7AreaPE, 0, inputs, "DI")) {
+        if (!reconnectWithRetry(client, traceState, options.timeoutMs, options.retryDelayMs,
+                "Initial DI read failed")) {
+            exitCode = stopRequested() ? 130 : 4;
+            goto shutdown;
+        }
     }
-    if (!readAreaBytes(client, S7AreaPA, 0, outputs, "DO")) {
-        return 5;
+    while (!readAreaBytes(client, traceState, S7AreaPA, 0, outputs, "DO")) {
+        if (!reconnectWithRetry(client, traceState, options.timeoutMs, options.retryDelayMs,
+                "Initial DO read failed")) {
+            exitCode = stopRequested() ? 130 : 5;
+            goto shutdown;
+        }
     }
 
     std::cout << "Initial states:\n";
@@ -463,65 +680,93 @@ int main(int argc, char** argv) {
     printBuffer("  DO", outputs);
 
     // S7-200/LOGO 的 V 区通常映射为 DB1，这里按 DB1 读取。
-    std::vector<uint8_t> vSnapshot(7, 0);
     std::cout << "[step] Read V snapshot area=0x" << std::uppercase << std::hex << S7AreaDB
               << " db=1 start=" << std::dec << 100
               << " size=" << vSnapshot.size() << '\n';
-    if (client.readArea(S7AreaDB, 1, 100, static_cast<int>(vSnapshot.size()),
-                        S7WLByte, vSnapshot.data()) == 0) {
-        printVAreaSnapshot(vSnapshot);
-    } else {
-        std::cerr << "Read V area snapshot failed (DB1, start=100, size=7)\n";
+    while (true) {
+        PacketStepScope stepScope(traceState, "Read V snapshot DB1 start=100 size=7");
+        if (client.readArea(S7AreaDB, 1, 100, static_cast<int>(vSnapshot.size()),
+                S7WLByte, vSnapshot.data()) == 0) {
+            break;
+        }
+        if (!reconnectWithRetry(client, traceState, options.timeoutMs, options.retryDelayMs,
+                "Read V area snapshot failed (DB1, start=100, size=7)")) {
+            exitCode = stopRequested() ? 130 : 6;
+            goto shutdown;
+        }
     }
+    printVAreaSnapshot(vSnapshot);
 
-    OutputRestoreGuard restoreGuard;
     restoreGuard.client = &client;
+    restoreGuard.traceState = &traceState;
     restoreGuard.start = 0;
     restoreGuard.snapshot = outputs;
     restoreGuard.active = true;
 
-    std::size_t round = 0;
-    std::size_t step = 0;
-    while (options.cycles == 0 || round < options.cycles) {
-        ++round;
+    while (!stopRequested() && (options.cycles == 0 || round < options.cycles)) {
         const std::size_t bitCount = options.ioBytes * 8;
-        const std::size_t rawIndex = step++ % bitCount;
+        const std::size_t rawIndex = step % bitCount;
         const std::size_t lightIndex = options.reverse ? (bitCount - 1 - rawIndex) : rawIndex;
         auto writeBuffer = buildRunningLightPattern(options.ioBytes, lightIndex);
         const std::size_t byteIndex = lightIndex / 8;
         const std::size_t bitIndex = lightIndex % 8;
 
-        std::cout << "Round " << round;
+        std::cout << "Round " << (round + 1);
         if (options.cycles != 0) {
             std::cout << "/" << options.cycles;
         }
         std::cout << ": write running light DO Q" << byteIndex << "." << bitIndex << '\n';
 
-        if (!writeAreaBytes(client, S7AreaPA, 0, writeBuffer, "DO")) {
-            return 6;
+        if (!writeAreaBytes(client, traceState, S7AreaPA, 0, writeBuffer, "DO")) {
+            if (!reconnectWithRetry(client, traceState, options.timeoutMs, options.retryDelayMs,
+                    "Write DO failed")) {
+                exitCode = stopRequested() ? 130 : 7;
+                break;
+            }
+            continue;
         }
 
-        if (options.intervalMs != 0) {
+        if (!stopRequested() && options.intervalMs != 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(options.intervalMs));
         }
 
-        if (!readAreaBytes(client, S7AreaPE, 0, inputs, "DI")) {
-            return 7;
+        if (stopRequested()) {
+            break;
         }
-        if (!readAreaBytes(client, S7AreaPA, 0, outputs, "DO")) {
-            return 8;
+
+        if (!readAreaBytes(client, traceState, S7AreaPE, 0, inputs, "DI")) {
+            if (!reconnectWithRetry(client, traceState, options.timeoutMs, options.retryDelayMs,
+                    "Read DI failed")) {
+                exitCode = stopRequested() ? 130 : 8;
+                break;
+            }
+            continue;
+        }
+        if (!readAreaBytes(client, traceState, S7AreaPA, 0, outputs, "DO")) {
+            if (!reconnectWithRetry(client, traceState, options.timeoutMs, options.retryDelayMs,
+                    "Read DO failed")) {
+                exitCode = stopRequested() ? 130 : 9;
+                break;
+            }
+            continue;
         }
 
         printBuffer("  DI", inputs);
         printBuffer("  DO", outputs);
+        ++step;
+        ++round;
     }
 
+shutdown:
+    if (stopRequested()) {
+        std::cout << "Stop requested, restoring outputs and disconnecting\n";
+    }
     restoreGuard.restore();
-    if (readAreaBytes(client, S7AreaPA, 0, outputs, "DO")) {
+    if (!stopRequested() && readAreaBytes(client, traceState, S7AreaPA, 0, outputs, "DO")) {
         std::cout << "Restored DO:\n";
         printBuffer("  DO", outputs);
     }
 
     client.disconnect();
-    return 0;
+    return stopRequested() ? 130 : exitCode;
 }
