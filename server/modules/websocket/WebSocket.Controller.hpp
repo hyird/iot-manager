@@ -33,6 +33,13 @@ public:
         // 优先从 Sec-WebSocket-Protocol 获取 token（避免 URL query 泄露）
         std::string token = extractTokenFromWsProtocol(req->getHeader("Sec-WebSocket-Protocol"));
         if (token.empty()) {
+            // 回退：兼容 query token（部分浏览器/代理不会回显子协议，导致握手失败）
+            token = req->getParameter("token");
+        }
+        if (token.empty()) {
+            token = req->getParameter("access_token");
+        }
+        if (token.empty()) {
             // 回退：尝试 Authorization header
             auto authHeader = req->getHeader("Authorization");
             if (authHeader.size() > 7 && authHeader.substr(0, 7) == "Bearer ") {

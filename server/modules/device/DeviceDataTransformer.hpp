@@ -304,6 +304,47 @@ public:
     }
 
     /**
+     * @brief 解析 S7 区域为 elements 格式
+     */
+    static void parseS7Areas(
+        const DeviceCache::CachedDevice& device,
+        const std::map<std::string, ElementData>& realtimeValues,
+        Json::Value& outElements,
+        bool includeElementId = false
+    ) {
+        const auto& config = device.protocolConfig;
+        const Json::Value* areas = nullptr;
+
+        if (config.isMember("areas") && config["areas"].isArray()) {
+            areas = &config["areas"];
+        } else if (config.isMember("poll") && config["poll"].isObject()
+            && config["poll"].isMember("areas") && config["poll"]["areas"].isArray()) {
+            areas = &config["poll"]["areas"];
+        }
+
+        if (!areas) return;
+
+        for (const auto& area : *areas) {
+            std::string areaId = area.get("id", "").asString();
+            if (areaId.empty()) continue;
+
+            Json::Value element;
+            if (includeElementId) {
+                element["elementId"] = areaId;
+            }
+            element["name"] = area.get("name", areaId).asString();
+
+            std::string unit = area.get("unit", "").asString();
+            if (!unit.empty()) element["unit"] = unit;
+
+            auto it = realtimeValues.find(areaId);
+            element["value"] = (it != realtimeValues.end()) ? it->second.value : Json::nullValue;
+
+            outElements.append(element);
+        }
+    }
+
+    /**
      * @brief 解析协议配置中的功能定义
      * @param device 缓存的设备信息
      * @param realtimeValues 实时数据（可选，用于填充 elements 的 value）
@@ -358,6 +399,8 @@ public:
         } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
             parseModbusRegisters(device, realtimeValues, outElements);
             parseModbusDownFuncs(device, outDownFuncs);
+        } else if (device.protocolType == Constants::PROTOCOL_S7) {
+            parseS7Areas(device, realtimeValues, outElements);
         }
     }
 
@@ -524,6 +567,8 @@ public:
                 }
             } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
                 parseModbusRegisters(device, realtimeValues, elements);
+            } else if (device.protocolType == Constants::PROTOCOL_S7) {
+                parseS7Areas(device, realtimeValues, elements);
             }
         }
 
@@ -600,6 +645,8 @@ public:
                 }
             } else if (device.protocolType == Constants::PROTOCOL_MODBUS) {
                 parseModbusRegisters(device, realtimeValues, elements, true);
+            } else if (device.protocolType == Constants::PROTOCOL_S7) {
+                parseS7Areas(device, realtimeValues, elements, true);
             }
         }
 

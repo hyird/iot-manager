@@ -87,10 +87,11 @@ export default function EdgeNodeTerminal({ agentId, visible }: EdgeNodeTerminalP
     term.writeln("\x1b[33m连接到边缘节点...\x1b[0m");
 
     // 建立独立 WebSocket
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${window.location.host}/ws`;
-    // 通过 Sec-WebSocket-Protocol 传递 JWT，避免 Token 暴露在 URL 中
-    const ws = new WebSocket(url, ["auth", token]);
+    const url = new URL("/ws", window.location.href);
+    url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("token", token);
+    // 使用 query token，避免浏览器因子协议未回显而直接判定握手失败
+    const ws = new WebSocket(url.toString());
     ws.binaryType = "arraybuffer"; // 二进制帧直接返回 ArrayBuffer
     wsRef.current = ws;
 

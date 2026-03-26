@@ -162,11 +162,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const connect = useCallback(() => {
     if (!token) return;
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${window.location.host}/ws`;
+    const url = new URL("/ws", window.location.href);
+    url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("token", token);
 
-    // 通过 Sec-WebSocket-Protocol 传递 JWT，避免 Token 暴露在 URL 中
-    const ws = new WebSocket(url, ["auth", token]);
+    // 使用 query token，避免浏览器因子协议未回显而直接判定握手失败
+    const ws = new WebSocket(url.toString());
     wsRef.current = ws;
 
     ws.onopen = () => {
