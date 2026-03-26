@@ -222,6 +222,7 @@ private:
     std::optional<ModbusJob> buildDiscoveryJob(
         const DtuDefinition& dtu,
         uint16_t transactionId) const;
+    bool triggerDiscoveryForSession(const DtuSession& sessionSnapshot);
     std::vector<ModbusJob> buildWriteJobs(
         const ModbusDeviceDef& device,
         const std::string& commandKey,
@@ -941,19 +942,18 @@ inline bool ModbusSessionEngine::enqueuePoll(int deviceId, size_t readGroupIndex
     return true;
 }
 
-inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string& clientAddr) {
-    auto sessionOpt = sessions_.getSession(linkId, clientAddr);
-    if (!sessionOpt || sessionOpt->bindState == SessionBindState::Bound) return false;
-    if (sessionOpt->inflight) return false;
-    if (sessionOpt->discoveryRequested) return false;
+inline bool ModbusSessionEngine::triggerDiscoveryForSession(const DtuSession& sessionSnapshot) {
+    if (sessionSnapshot.bindState != SessionBindState::Unknown) return false;
+    if (sessionSnapshot.inflight) return false;
+    if (sessionSnapshot.discoveryRequested) return false;
 
     const auto now = std::chrono::steady_clock::now();
-    if (sessionOpt->nextDiscoveryTime != std::chrono::steady_clock::time_point{}
-        && now < sessionOpt->nextDiscoveryTime) {
+    if (sessionSnapshot.nextDiscoveryTime != std::chrono::steady_clock::time_point{}
+        && now < sessionSnapshot.nextDiscoveryTime) {
         return false;
     }
 
-    auto definitions = registry_.getDefinitionsByLink(linkId);
+    auto definitions = registry_.getDefinitionsByLink(sessionSnapshot.linkId);
     std::vector<DtuDefinition> candidates;
     candidates.reserve(definitions.size());
     for (const auto& dtu : definitions) {
@@ -963,7 +963,7 @@ inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string&
     }
     if (candidates.empty()) return false;
 
-    const size_t startIndex = sessionOpt->discoveryCursor % candidates.size();
+    const size_t startIndex = sessionSnapshot.discoveryCursor % candidates.size();
     std::optional<ModbusJob> discoveryJob;
     size_t nextCursor = startIndex;
     for (size_t offset = 0; offset < candidates.size(); ++offset) {
@@ -978,7 +978,7 @@ inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string&
     }
     if (!discoveryJob) return false;
 
-    const bool queued = sessions_.mutateSession(linkId, clientAddr, [&](DtuSession& session) {
+    const bool queued = sessions_.mutateSession(sessionSnapshot.linkId, sessionSnapshot.clientAddr, [&](DtuSession& session) {
         if (session.bindState == SessionBindState::Bound || session.inflight) return;
 
         session.bindState = SessionBindState::Probing;
@@ -989,7 +989,17 @@ inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string&
     });
     if (!queued) return false;
 
-    return tryDispatchNext(linkId, clientAddr);
+    return tryDispatchNext(sessionSnapshot.linkId, sessionSnapshot.clientAddr);
+}
+
+inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string& clientAddr) {
+    (void)clientAddr;
+    bool dispatched = false;
+    auto sessions = sessions_.listUnknownSessions(linkId);
+    for (const auto& session : sessions) {
+        dispatched = triggerDiscoveryForSession(session) || dispatched;
+    }
+    return dispatched;
 }
 
 inline void ModbusSessionEngine::cancelDiscovery(int linkId, const std::string& clientAddr) {

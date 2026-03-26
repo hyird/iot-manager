@@ -16,6 +16,7 @@
 #include <atomic>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -499,12 +500,15 @@ private:
         sessionEngine_->processTimeouts();
 
         auto sessions = sessionManager_->listSessions();
+        std::set<int> pendingLinks;
         for (const auto& session : sessions) {
             if (session.bindState == SessionBindState::Bound) continue;
-            sessionEngine_->triggerDiscovery(session.linkId, session.clientAddr);
+            pendingLinks.insert(session.linkId);
+        }
+        for (int linkId : pendingLinks) {
+            sessionEngine_->triggerDiscovery(linkId, "");
         }
     }
-
     static std::string registrationMatchKindToString(RegistrationMatchKind kind) {
         switch (kind) {
             case RegistrationMatchKind::StandaloneFrame:
