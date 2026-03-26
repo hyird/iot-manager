@@ -80,7 +80,7 @@ inline constexpr std::uint16_t kDefaultRemotePort = 102;
 inline constexpr std::uint16_t kDefaultIsoPduSize = 1024;
 inline constexpr std::uint16_t kDefaultS7PduRequest = 480;
 inline constexpr std::uint16_t kDefaultSourceRef = 0x0001;
-inline constexpr int kDefaultTimeoutMs = 3000;
+inline constexpr int kDefaultTimeoutMs = 5000;
 
 inline constexpr std::uint16_t kConnTypePg = 0x01;
 inline constexpr std::uint16_t kConnTypeOp = 0x02;
