@@ -139,7 +139,7 @@ std::vector<std::string> getStageHints(const std::string& stage) {
         return {
             "数据库连接是否稳定",
             "device 和 protocol_config 表是否已正确创建",
-            "snap7 依赖是否正确链接",
+            "S7 自研客户端协议栈是否初始化成功",
         };
     }
     if (stage == "resource-version:load-and-reset") {

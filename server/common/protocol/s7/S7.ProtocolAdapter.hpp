@@ -4,7 +4,7 @@
 #include "S7.DtuSessionManager.hpp"
 #include "S7.LocalTcpProxy.hpp"
 #include "S7.RegistrationNormalizer.hpp"
-#include "S7.Snap7Compat.hpp"
+#include "S7.Client.hpp"
 #include "common/cache/DeviceCache.hpp"
 #include "common/network/LinkTransportFacade.hpp"
 #include "common/protocol/ProtocolAdapter.hpp"
@@ -78,7 +78,7 @@ struct S7DeviceRuntime {
     S7ConnectionConfig connection;
     std::vector<S7AreaDefinition> areas;
     std::deque<std::vector<uint8_t>> pendingProxyToDtu;
-    S7ClientHandle client = kS7InvalidObject;
+    std::unique_ptr<Client> client;
     bool connected = false;
     bool bridgeMode = false;
     bool bridgeBound = false;
@@ -109,7 +109,7 @@ struct S7DeviceRuntime {
         , connection(std::move(other.connection))
         , areas(std::move(other.areas))
         , pendingProxyToDtu(std::move(other.pendingProxyToDtu))
-        , client(std::exchange(other.client, kS7InvalidObject))
+        , client(std::move(other.client))
         , connected(other.connected)
         , bridgeMode(other.bridgeMode)
         , bridgeBound(other.bridgeBound)
@@ -139,7 +139,7 @@ struct S7DeviceRuntime {
         connection = std::move(other.connection);
         areas = std::move(other.areas);
         pendingProxyToDtu = std::move(other.pendingProxyToDtu);
-        client = std::exchange(other.client, kS7InvalidObject);
+        client = std::move(other.client);
         connected = other.connected;
         bridgeMode = other.bridgeMode;
         bridgeBound = other.bridgeBound;
@@ -154,11 +154,9 @@ struct S7DeviceRuntime {
     }
 
     void resetClient() {
-        if (s7IsValidHandle(client)) {
-            s7CliDisconnect(client);
-            s7CliDestroy(client);
-        } else {
-            client = kS7InvalidObject;
+        if (client) {
+            client->disconnect();
+            client.reset();
         }
         connected = false;
     }
@@ -556,6 +554,17 @@ private:
             return "TSAP";
         }
         return "RACK_SLOT";
+    }
+
+    static std::uint16_t connectionTypeToCode(std::string value) {
+        value = toUpper(std::move(value));
+        if (value == "OP") {
+            return kConnTypeOp;
+        }
+        if (value == "S7_BASIC" || value == "BASIC") {
+            return kConnTypeBasic;
+        }
+        return kConnTypePg;
     }
 
     static std::optional<std::uint16_t> parseTsapHex(const Json::Value& value) {
@@ -1023,12 +1032,11 @@ private:
             return false;
         }
 
-        const auto destroyClient = [](S7ClientHandle& client) {
-            if (s7IsValidHandle(client)) {
-                s7CliDisconnect(client);
-                s7CliDestroy(client);
+        const auto destroyClient = [](std::unique_ptr<Client>& client) {
+            if (client) {
+                client->disconnect();
+                client.reset();
             }
-            client = kS7InvalidObject;
         };
 
         int deviceId = 0;
@@ -1039,7 +1047,7 @@ private:
 
         {
             std::scoped_lock runtimeLock(runtime->clientMutex, runtime->mutex);
-            if (runtime->connected && s7IsValidHandle(runtime->client) && s7CliGetConnected(runtime->client)) {
+            if (runtime->connected && runtime->client && runtime->client->connected()) {
                 return true;
             }
             if (runtime->connectInProgress) {
@@ -1065,8 +1073,8 @@ private:
             attemptId = ++runtime->connectGeneration;
         }
 
-        S7ClientHandle client = s7CliCreate();
-        if (!s7IsValidHandle(client)) {
+        auto client = std::unique_ptr<Client>(new (std::nothrow) Client());
+        if (!client) {
             std::lock_guard runtimeLock(runtime->mutex);
             if (runtime->connectGeneration == attemptId) {
                 runtime->connectInProgress = false;
@@ -1075,7 +1083,7 @@ private:
             return false;
         }
 
-        applyConnectionTimeouts(client, connection);
+        applyConnectionTimeouts(*client, connection);
 
         std::unique_lock<std::mutex> connectLock;
         if (bridgeMode) {
@@ -1092,8 +1100,7 @@ private:
 
         int rc = -1;
         if (connection.mode == "TSAP") {
-            if (s7CliSetConnectionParams(
-                    client,
+            if (client->setConnectionParams(
                     connection.host.c_str(),
                     connection.localTSAP,
                     connection.remoteTSAP) != 0) {
@@ -1107,9 +1114,9 @@ private:
                 }
                 return false;
             }
-            rc = s7CliConnect(client);
+            rc = client->connect();
         } else {
-            if (s7CliSetConnectionType(client, connection.connectionType) != 0) {
+            if (client->setConnectionType(connectionTypeToCode(connection.connectionType)) != 0) {
                 LOG_WARN << "[S7][Adapter] Set connection type failed for device " << deviceId
                          << ", type=" << connection.connectionType;
                 destroyClient(client);
@@ -1120,14 +1127,14 @@ private:
                 }
                 return false;
             }
-            rc = s7CliConnectTo(client, connection.host.c_str(), connection.rack, connection.slot);
+            rc = client->connectTo(connection.host.c_str(), connection.rack, connection.slot);
         }
 
-        const bool connected = (rc == 0) && s7CliGetConnected(client);
+        const bool connected = (rc == 0) && client->connected();
         std::string proxyAddr;
         if (bridgeMode) {
             std::uint16_t localPort = 0;
-            if (s7CliGetParam(client, p_u16_LocalPort, &localPort) == 0 && localPort != 0) {
+            if (client->getParam(p_u16_LocalPort, &localPort) == 0 && localPort != 0) {
                 proxyAddr = "127.0.0.1:" + std::to_string(localPort);
             }
         }
@@ -1137,7 +1144,7 @@ private:
             std::scoped_lock runtimeLock(runtime->clientMutex, runtime->mutex);
             if (runtime->connectGeneration != attemptId) {
                 destroyClient(client);
-                return runtime->connected && s7IsValidHandle(runtime->client) && s7CliGetConnected(runtime->client);
+                return runtime->connected && runtime->client && runtime->client->connected();
             }
 
             runtime->connectInProgress = false;
@@ -1151,8 +1158,7 @@ private:
             finalProxyAddr = runtime->proxyClientAddr;
 
             if (connected) {
-                runtime->client = client;
-                client = kS7InvalidObject;
+                runtime->client = std::move(client);
             }
         }
 
@@ -1231,17 +1237,13 @@ private:
         return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     }
 
-    static void applyConnectionTimeouts(S7ClientHandle client, const S7ConnectionConfig& connection) {
-        if (!s7IsValidHandle(client)) {
-            return;
-        }
-
+    static void applyConnectionTimeouts(Client& client, const S7ConnectionConfig& connection) {
         const auto setTimeout = [&](int param, int value, const char* name) {
             if (value <= 0) {
                 return;
             }
             int32_t timeout = value;
-            if (s7CliSetParam(client, param, &timeout) != 0) {
+            if (client.setParam(param, &timeout) != 0) {
                 LOG_DEBUG << "[S7][Adapter] Failed to set " << name
                           << " for host=" << connection.host
                           << ", value=" << value;
@@ -1665,22 +1667,22 @@ private:
 
     int readArea(const S7DeviceRuntime& runtime, const S7AreaDefinition& area,
                  std::vector<uint8_t>& buffer) const {
-        if (!s7IsValidHandle(runtime.client)) {
+        if (!runtime.client) {
             return -1;
         }
         const int dbNumber = area.area == "V" ? 1 : area.dbNumber;
-        return s7CliReadArea(runtime.client, areaToCode(area.area), dbNumber, area.start,
+        return runtime.client->readArea(areaToCode(area.area), dbNumber, area.start,
             transferAmount(area.area, buffer.size()), areaWordLen(area.area), buffer.data());
     }
 
     int writeArea(const S7DeviceRuntime& runtime, const std::string& area, int dbNumber,
                   int start, const std::vector<uint8_t>& buffer) const {
-        if (!s7IsValidHandle(runtime.client)) {
+        if (!runtime.client) {
             return -1;
         }
         auto writable = buffer;
         const int resolvedDbNumber = area == "V" && dbNumber <= 0 ? 1 : dbNumber;
-        return s7CliWriteArea(runtime.client, areaToCode(area), resolvedDbNumber, start,
+        return runtime.client->writeArea(areaToCode(area), resolvedDbNumber, start,
             transferAmount(area, writable.size()), areaWordLen(area), writable.data());
     }
 

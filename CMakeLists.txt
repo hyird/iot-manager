@@ -12,9 +12,6 @@ endif()
 # vcpkg overlay triplets（项目内自定义 triplet 优先）
 set(VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/triplets" CACHE STRING "")
 
-# vcpkg overlay ports（项目内自定义 port 优先，用于修复 snap7 静态构建等）
-set(VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_SOURCE_DIR}/ports" CACHE STRING "")
-
 # vcpkg triplet - 完全静态链接
 if(NOT DEFINED VCPKG_TARGET_TRIPLET)
     if(DEFINED ENV{VCPKG_DEFAULT_TRIPLET})
@@ -176,9 +173,6 @@ find_package(Drogon CONFIG REQUIRED)
 # 查找 mimalloc (高性能内存分配器)
 find_package(mimalloc CONFIG REQUIRED)
 
-# 查找 snap7 (S7 协议客户端库)
-find_package(snap7 CONFIG REQUIRED)
-
 # 包含目录
 include_directories(${PROJECT_SOURCE_DIR}/server)
 
@@ -206,7 +200,10 @@ target_sources(${PROJECT_NAME} PRIVATE ${HEADERS})
 set_source_files_properties(${HEADERS} PROPERTIES HEADER_FILE_ONLY TRUE)
 
 # 链接 Drogon + mimalloc
-target_link_libraries(${PROJECT_NAME} PRIVATE Drogon::Drogon mimalloc-static snap7::snap7)
+target_link_libraries(${PROJECT_NAME} PRIVATE Drogon::Drogon mimalloc-static)
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
+endif()
 
 # EdgeNode 子项目
 add_subdirectory(edgenode)

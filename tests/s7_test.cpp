@@ -4,7 +4,7 @@
 #endif
 #endif
 
-#include "common/protocol/s7/S7.Snap7Compat.hpp"
+#include "common/protocol/s7/S7.Client.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -19,6 +19,8 @@
 #include <vector>
 
 namespace {
+
+using TestClient = s7::Client;
 
 struct Options {
     std::string host = "192.168.1.12";
@@ -291,15 +293,15 @@ void printVAreaSnapshot(const std::vector<uint8_t>& buffer) {
     std::cout << "  VW105=" << readI16BE(buffer, 5) << '\n';
 }
 
-bool readAreaBytes(S7ClientHandle client, int area, int start, std::vector<uint8_t>& buffer,
+bool readAreaBytes(TestClient& client, int area, int start, std::vector<uint8_t>& buffer,
                    const char* label) {
-    if (!s7IsValidHandle(client) || buffer.empty()) {
-        std::cerr << "Invalid client or empty buffer for " << label << '\n';
+    if (buffer.empty()) {
+        std::cerr << "Empty buffer for " << label << '\n';
         return false;
     }
 
-    const int rc = s7CliReadArea(
-        client, area, 0, start, static_cast<int>(buffer.size()), S7WLByte, buffer.data());
+    const int rc = client.readArea(
+        area, 0, start, static_cast<int>(buffer.size()), S7WLByte, buffer.data());
     if (rc != 0) {
         std::cerr << "Read " << label << " failed, rc=" << rc << '\n';
         return false;
@@ -308,16 +310,16 @@ bool readAreaBytes(S7ClientHandle client, int area, int start, std::vector<uint8
     return true;
 }
 
-bool writeAreaBytes(S7ClientHandle client, int area, int start, const std::vector<uint8_t>& buffer,
+bool writeAreaBytes(TestClient& client, int area, int start, const std::vector<uint8_t>& buffer,
                     const char* label) {
-    if (!s7IsValidHandle(client) || buffer.empty()) {
-        std::cerr << "Invalid client or empty buffer for " << label << '\n';
+    if (buffer.empty()) {
+        std::cerr << "Empty buffer for " << label << '\n';
         return false;
     }
 
     std::vector<uint8_t> writable = buffer;
-    const int rc = s7CliWriteArea(
-        client, area, 0, start, static_cast<int>(writable.size()), S7WLByte, writable.data());
+    const int rc = client.writeArea(
+        area, 0, start, static_cast<int>(writable.size()), S7WLByte, writable.data());
     if (rc != 0) {
         std::cerr << "Write " << label << " failed, rc=" << rc << '\n';
         return false;
@@ -326,26 +328,8 @@ bool writeAreaBytes(S7ClientHandle client, int area, int start, const std::vecto
     return true;
 }
 
-struct ClientGuard {
-    S7ClientHandle client = kS7InvalidObject;
-
-    ~ClientGuard() {
-        reset();
-    }
-
-    void reset() {
-        if (!s7IsValidHandle(client)) {
-            client = kS7InvalidObject;
-            return;
-        }
-        s7CliDisconnect(client);
-        s7CliDestroy(client);
-        client = kS7InvalidObject;
-    }
-};
-
 struct OutputRestoreGuard {
-    S7ClientHandle client = kS7InvalidObject;
+    TestClient* client = nullptr;
     int start = 0;
     std::vector<uint8_t> snapshot;
     bool active = false;
@@ -355,10 +339,10 @@ struct OutputRestoreGuard {
     }
 
     void restore() {
-        if (!active || snapshot.empty() || !s7IsValidHandle(client)) {
+        if (!active || snapshot.empty() || client == nullptr || !client->connected()) {
             return;
         }
-        (void)writeAreaBytes(client, S7AreaPA, start, snapshot, "DO restore");
+        (void)writeAreaBytes(*client, S7AreaPA, start, snapshot, "DO restore");
         active = false;
     }
 };
@@ -400,24 +384,19 @@ int main(int argc, char** argv) {
     }
     std::cout << '\n';
 
-    ClientGuard guard;
-    guard.client = s7CliCreate();
-    if (!s7IsValidHandle(guard.client)) {
-        std::cerr << "Failed to create S7 client\n";
+    TestClient client;
+
+    // S7-200 走 TSAP，不使用 rack/slot 模式。
+    if (client.setConnectionParams(
+            options.host.c_str(), options.localTsap, options.remoteTsap) != 0) {
+        std::cerr << "Failed to set connection params\n";
         return 2;
     }
 
-    // S7-200 走 TSAP，不使用 rack/slot 模式。
-    if (s7CliSetConnectionParams(
-            guard.client, options.host.c_str(), options.localTsap, options.remoteTsap) != 0) {
-        std::cerr << "Failed to set connection params\n";
-        return 3;
-    }
-
-    const int rc = s7CliConnect(guard.client);
-    if (rc != 0 || !s7CliGetConnected(guard.client)) {
+    const int rc = client.connect();
+    if (rc != 0 || !client.connected()) {
         std::cerr << "Connect failed, rc=" << rc << '\n';
-        return 4;
+        return 3;
     }
 
     std::cout << "Connected successfully\n";
@@ -425,28 +404,28 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> inputs(options.ioBytes, 0);
     std::vector<uint8_t> outputs(options.ioBytes, 0);
 
-    if (!readAreaBytes(guard.client, S7AreaPE, 0, inputs, "DI")) {
-        return 5;
+    if (!readAreaBytes(client, S7AreaPE, 0, inputs, "DI")) {
+        return 4;
     }
-    if (!readAreaBytes(guard.client, S7AreaPA, 0, outputs, "DO")) {
-        return 6;
+    if (!readAreaBytes(client, S7AreaPA, 0, outputs, "DO")) {
+        return 5;
     }
 
     std::cout << "Initial states:\n";
     printBuffer("  DI", inputs);
     printBuffer("  DO", outputs);
 
-    // 按 Snap7 对 S7-200/LOGO 的常见做法，V 区按 DB1 读取。
+    // S7-200/LOGO 的 V 区通常映射为 DB1，这里按 DB1 读取。
     std::vector<uint8_t> vSnapshot(7, 0);
-    if (s7CliReadArea(guard.client, S7AreaDB, 1, 100, static_cast<int>(vSnapshot.size()),
-                      S7WLByte, vSnapshot.data()) == 0) {
+    if (client.readArea(S7AreaDB, 1, 100, static_cast<int>(vSnapshot.size()),
+                        S7WLByte, vSnapshot.data()) == 0) {
         printVAreaSnapshot(vSnapshot);
     } else {
         std::cerr << "Read V area snapshot failed (DB1, start=100, size=7)\n";
     }
 
     OutputRestoreGuard restoreGuard;
-    restoreGuard.client = guard.client;
+    restoreGuard.client = &client;
     restoreGuard.start = 0;
     restoreGuard.snapshot = outputs;
     restoreGuard.active = true;
@@ -468,19 +447,19 @@ int main(int argc, char** argv) {
         }
         std::cout << ": write running light DO Q" << byteIndex << "." << bitIndex << '\n';
 
-        if (!writeAreaBytes(guard.client, S7AreaPA, 0, writeBuffer, "DO")) {
-            return 7;
+        if (!writeAreaBytes(client, S7AreaPA, 0, writeBuffer, "DO")) {
+            return 6;
         }
 
         if (options.intervalMs != 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(options.intervalMs));
         }
 
-        if (!readAreaBytes(guard.client, S7AreaPE, 0, inputs, "DI")) {
-            return 8;
+        if (!readAreaBytes(client, S7AreaPE, 0, inputs, "DI")) {
+            return 7;
         }
-        if (!readAreaBytes(guard.client, S7AreaPA, 0, outputs, "DO")) {
-            return 9;
+        if (!readAreaBytes(client, S7AreaPA, 0, outputs, "DO")) {
+            return 8;
         }
 
         printBuffer("  DI", inputs);
@@ -488,10 +467,11 @@ int main(int argc, char** argv) {
     }
 
     restoreGuard.restore();
-    if (readAreaBytes(guard.client, S7AreaPA, 0, outputs, "DO")) {
+    if (readAreaBytes(client, S7AreaPA, 0, outputs, "DO")) {
         std::cout << "Restored DO:\n";
         printBuffer("  DO", outputs);
     }
 
+    client.disconnect();
     return 0;
 }

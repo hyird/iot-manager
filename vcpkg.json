@@ -15,7 +15,6 @@
     },
     "libpq",
     "mimalloc",
-    "sqlite3",
-    "snap7"
+    "sqlite3"
   ]
 }
