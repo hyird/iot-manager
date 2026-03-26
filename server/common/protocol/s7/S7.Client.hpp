@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -265,6 +266,9 @@ inline std::size_t decodeResponseDataSize(std::uint8_t transportSize, std::uint1
 
 class Client {
 public:
+    using TraceCallback = std::function<void(std::string_view stage, bool outbound,
+                                             const std::vector<std::uint8_t>& frame)>;
+
     Client() = default;
     ~Client() { disconnect(); }
 
@@ -391,6 +395,10 @@ public:
         return connected_ && socket_ != kInvalidSocket;
     }
 
+    void setTraceCallback(TraceCallback callback) {
+        traceCallback_ = std::move(callback);
+    }
+
     int readArea(int area, int dbNumber, int start, int amount, int wordLen, void* data);
     int writeArea(int area, int dbNumber, int start, int amount, int wordLen, void* data);
 
@@ -401,9 +409,10 @@ private:
     int recvTpktFrame(std::vector<std::uint8_t>& frame);
     int sendConnectionRequest();
     int negotiatePduLength();
-    int sendPayload(const std::vector<std::uint8_t>& payload);
-    int recvPayload(std::vector<std::uint8_t>& payload);
-    int exchangePayload(const std::vector<std::uint8_t>& request, std::vector<std::uint8_t>& response);
+    int sendPayload(std::string_view stage, const std::vector<std::uint8_t>& payload);
+    int recvPayload(std::string_view stage, std::vector<std::uint8_t>& payload);
+    int exchangePayload(std::string_view requestStage, std::string_view responseStage,
+                        const std::vector<std::uint8_t>& request, std::vector<std::uint8_t>& response);
     std::vector<std::uint8_t> buildReadRequest(int area, int dbNumber, int start, int amount, int wordLen);
     std::vector<std::uint8_t> buildWriteRequest(int area, int dbNumber, int start, int amount,
                                                 int wordLen, const std::uint8_t* source, std::size_t size);
@@ -411,6 +420,12 @@ private:
                           std::size_t capacity, std::size_t& copied);
     int parseWriteResponse(const std::vector<std::uint8_t>& response) const;
     std::uint16_t nextSequence() { return sequence_++; }
+    void traceFrame(std::string_view stage, bool outbound,
+                    const std::vector<std::uint8_t>& frame) const {
+        if (traceCallback_) {
+            traceCallback_(stage, outbound, frame);
+        }
+    }
 
     SocketHandle socket_ = kInvalidSocket;
     std::string remoteAddress_;
@@ -426,6 +441,7 @@ private:
     std::uint16_t sequence_ = 0;
     bool connected_ = false;
     int lastError_ = kS7Ok;
+    TraceCallback traceCallback_;
 };
 
 inline int Client::openSocket() {
@@ -607,6 +623,7 @@ inline int Client::sendConnectionRequest() {
     frame.push_back(0x02);
     appendBe16(frame, remoteTsap_);
 
+    traceFrame("iso.cr", true, frame);
     int rc = sendAll(frame.data(), frame.size());
     if (rc != kS7Ok) {
         return rc;
@@ -617,6 +634,7 @@ inline int Client::sendConnectionRequest() {
     if (rc != kS7Ok) {
         return rc;
     }
+    traceFrame("iso.cc", false, response);
 
     if (response.size() < 11 || response[5] != kCotpCc) {
         disconnect();
@@ -641,7 +659,7 @@ inline int Client::negotiatePduLength() {
     appendBe16(request, kDefaultS7PduRequest);
 
     std::vector<std::uint8_t> response;
-    const int rc = exchangePayload(request, response);
+    const int rc = exchangePayload("s7.setup-comm.req", "s7.setup-comm.resp", request, response);
     if (rc != kS7Ok) {
         return rc;
     }
@@ -665,7 +683,7 @@ inline int Client::negotiatePduLength() {
     return lastError_ = kS7Ok;
 }
 
-inline int Client::sendPayload(const std::vector<std::uint8_t>& payload) {
+inline int Client::sendPayload(std::string_view stage, const std::vector<std::uint8_t>& payload) {
     std::vector<std::uint8_t> frame;
     frame.reserve(7 + payload.size());
     frame.push_back(kIsoTcpVersion);
@@ -675,10 +693,11 @@ inline int Client::sendPayload(const std::vector<std::uint8_t>& payload) {
     frame.push_back(kCotpDt);
     frame.push_back(kCotpEot);
     frame.insert(frame.end(), payload.begin(), payload.end());
+    traceFrame(stage, true, frame);
     return sendAll(frame.data(), frame.size());
 }
 
-inline int Client::recvPayload(std::vector<std::uint8_t>& payload) {
+inline int Client::recvPayload(std::string_view stage, std::vector<std::uint8_t>& payload) {
     payload.clear();
     while (true) {
         std::vector<std::uint8_t> frame;
@@ -686,6 +705,7 @@ inline int Client::recvPayload(std::vector<std::uint8_t>& payload) {
         if (rc != kS7Ok) {
             return rc;
         }
+        traceFrame(stage, false, frame);
 
         if (frame.size() < 7 || frame[4] != kCotpDtLength || frame[5] != kCotpDt) {
             disconnect();
@@ -700,12 +720,14 @@ inline int Client::recvPayload(std::vector<std::uint8_t>& payload) {
     return lastError_ = kS7Ok;
 }
 
-inline int Client::exchangePayload(const std::vector<std::uint8_t>& request, std::vector<std::uint8_t>& response) {
-    int rc = sendPayload(request);
+inline int Client::exchangePayload(std::string_view requestStage, std::string_view responseStage,
+                                   const std::vector<std::uint8_t>& request,
+                                   std::vector<std::uint8_t>& response) {
+    int rc = sendPayload(requestStage, request);
     if (rc != kS7Ok) {
         return rc;
     }
-    rc = recvPayload(response);
+    rc = recvPayload(responseStage, response);
     if (rc != kS7Ok) {
         return rc;
     }
@@ -860,7 +882,7 @@ inline int Client::readArea(int area, int dbNumber, int start, int amount, int w
         const int sliceElements = std::min(remaining, maxElements);
         auto request = buildReadRequest(area, dbNumber, currentStart, sliceElements, wordLen);
         std::vector<std::uint8_t> response;
-        const int rc = exchangePayload(request, response);
+        const int rc = exchangePayload("s7.read.req", "s7.read.resp", request, response);
         if (rc != kS7Ok) {
             return rc;
         }
@@ -906,7 +928,7 @@ inline int Client::writeArea(int area, int dbNumber, int start, int amount, int 
         auto request = buildWriteRequest(area, dbNumber, currentStart, sliceElements,
             wordLen, source + offset, sliceBytes);
         std::vector<std::uint8_t> response;
-        const int rc = exchangePayload(request, response);
+        const int rc = exchangePayload("s7.write.req", "s7.write.resp", request, response);
         if (rc != kS7Ok) {
             return rc;
         }

@@ -15,6 +15,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -235,6 +236,36 @@ std::string bytesToHex(const std::vector<uint8_t>& bytes) {
     return oss.str();
 }
 
+void printHexDump(const std::vector<uint8_t>& bytes, const char* indent = "    ") {
+    constexpr std::size_t bytesPerLine = 16;
+    const auto oldFlags = std::cout.flags();
+    const auto oldFill = std::cout.fill();
+    for (std::size_t offset = 0; offset < bytes.size(); offset += bytesPerLine) {
+        std::cout << indent << std::uppercase << std::hex
+                  << std::setw(4) << std::setfill('0') << offset << " : ";
+        const std::size_t lineEnd = std::min(offset + bytesPerLine, bytes.size());
+        for (std::size_t i = offset; i < lineEnd; ++i) {
+            if (i != offset) {
+                std::cout << ' ';
+            }
+            std::cout << std::setw(2) << std::setfill('0')
+                      << static_cast<int>(bytes[i]);
+        }
+        std::cout << '\n';
+    }
+    std::cout.flags(oldFlags);
+    std::cout.fill(oldFill);
+}
+
+void printPacketTrace(std::size_t index, std::string_view stage, bool outbound,
+                      const std::vector<uint8_t>& frame) {
+    std::cout << "[packet " << index << "] "
+              << (outbound ? "TX " : "RX ")
+              << stage
+              << " len=" << frame.size() << '\n';
+    printHexDump(frame);
+}
+
 std::string byteToBits(uint8_t value) {
     std::string bits;
     bits.reserve(8);
@@ -300,6 +331,10 @@ bool readAreaBytes(TestClient& client, int area, int start, std::vector<uint8_t>
         return false;
     }
 
+    std::cout << "[step] Read " << label
+              << " area=0x" << std::uppercase << std::hex << area
+              << " start=" << std::dec << start
+              << " size=" << buffer.size() << '\n';
     const int rc = client.readArea(
         area, 0, start, static_cast<int>(buffer.size()), S7WLByte, buffer.data());
     if (rc != 0) {
@@ -318,6 +353,11 @@ bool writeAreaBytes(TestClient& client, int area, int start, const std::vector<u
     }
 
     std::vector<uint8_t> writable = buffer;
+    std::cout << "[step] Write " << label
+              << " area=0x" << std::uppercase << std::hex << area
+              << " start=" << std::dec << start
+              << " size=" << writable.size()
+              << " data=[" << bytesToHex(writable) << "]\n";
     const int rc = client.writeArea(
         area, 0, start, static_cast<int>(writable.size()), S7WLByte, writable.data());
     if (rc != 0) {
@@ -385,6 +425,12 @@ int main(int argc, char** argv) {
     std::cout << '\n';
 
     TestClient client;
+    std::size_t packetIndex = 0;
+    client.setTraceCallback(
+        [&packetIndex](std::string_view stage, bool outbound, const std::vector<uint8_t>& frame) {
+            printPacketTrace(++packetIndex, stage, outbound, frame);
+        }
+    );
 
     // S7-200 走 TSAP，不使用 rack/slot 模式。
     if (client.setConnectionParams(
@@ -393,6 +439,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    std::cout << "[step] Connect\n";
     const int rc = client.connect();
     if (rc != 0 || !client.connected()) {
         std::cerr << "Connect failed, rc=" << rc << '\n';
@@ -417,6 +464,9 @@ int main(int argc, char** argv) {
 
     // S7-200/LOGO 的 V 区通常映射为 DB1，这里按 DB1 读取。
     std::vector<uint8_t> vSnapshot(7, 0);
+    std::cout << "[step] Read V snapshot area=0x" << std::uppercase << std::hex << S7AreaDB
+              << " db=1 start=" << std::dec << 100
+              << " size=" << vSnapshot.size() << '\n';
     if (client.readArea(S7AreaDB, 1, 100, static_cast<int>(vSnapshot.size()),
                         S7WLByte, vSnapshot.data()) == 0) {
         printVAreaSnapshot(vSnapshot);
