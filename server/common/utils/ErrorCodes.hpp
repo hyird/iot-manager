@@ -5,9 +5,11 @@
  *
  * 错误码规则：
  * - 0: 成功
- * - 1xxx: 客户端错误（请求参数、资源不存在、权限等）
+ * - 1xxx: 通用客户端错误（请求参数、资源不存在、冲突等）
  * - 2xxx: 认证/授权错误
  * - 5xxx: 服务器内部错误
+ *
+ * 这里是后端错误契约的单一来源，AppException / Response / 前端请求层都应引用这里。
  */
 namespace ErrorCodes {
 
@@ -33,25 +35,31 @@ inline constexpr int CONFLICT = 1004;
 /** 数据验证失败 */
 inline constexpr int VALIDATION_FAILED = 1005;
 
+/** 请求过于频繁 */
+inline constexpr int TOO_MANY_REQUESTS = 429;
+
 // ==================== 认证错误 (2xxx) ====================
+
+/** 用户不存在 */
+inline constexpr int USER_NOT_FOUND = 2001;
+
+/** 用户名或密码错误 */
+inline constexpr int PASSWORD_INCORRECT = 2002;
+
+/** 用户已被禁用 */
+inline constexpr int USER_DISABLED = 2003;
 
 /** 未认证/Token 无效 */
 inline constexpr int UNAUTHORIZED = 2004;
 
 /** Token 已过期 */
-inline constexpr int TOKEN_EXPIRED = 2001;
+inline constexpr int TOKEN_EXPIRED = 2005;
+
+/** 无权限访问 */
+inline constexpr int NO_PERMISSION = 2006;
 
 /** Token 已被加入黑名单 */
-inline constexpr int TOKEN_BLACKLISTED = 2002;
-
-/** 用户名或密码错误 */
-inline constexpr int PASSWORD_INCORRECT = 2003;
-
-/** 用户已被禁用 */
-inline constexpr int USER_DISABLED = 2005;
-
-/** 用户不存在 */
-inline constexpr int USER_NOT_FOUND = 2006;
+inline constexpr int TOKEN_BLACKLISTED = 2007;
 
 // ==================== 服务器错误 (5xxx) ====================
 

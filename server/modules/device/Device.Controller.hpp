@@ -69,7 +69,7 @@ public:
      * @brief 获取设备详情
      */
     Task<HttpResponsePtr> detail(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
         co_return Response::ok(co_await service_.detail(id));
     }
@@ -80,17 +80,14 @@ public:
     Task<HttpResponsePtr> create(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:add"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         ValidatorHelper::requireNonEmptyString(*json, "name", "设备名称").throwIfInvalid();
         ValidatorHelper::requirePositiveInt(*json, "protocol_config_id", "协议配置").throwIfInvalid();
 
         // link_id: 0 = Agent 模式, > 0 = 本地链路模式
         const int linkId = json->get("link_id", -1).asInt();
-        if (linkId < 0) {
-            co_return Response::badRequest("缺少 link_id 参数");
-        }
+        ControllerUtils::requireNonNegativeValue(linkId, "缺少 link_id 参数");
         if (linkId == 0) {
             // Agent 模式必须指定 agent_id 和 agent_endpoint_id
             ValidatorHelper::requirePositiveInt(*json, "agent_id", "采集Agent").throwIfInvalid();
@@ -105,11 +102,10 @@ public:
      * @brief 更新设备
      */
     Task<HttpResponsePtr> update(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:edit"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         co_await service_.update(id, *json);
         co_return Response::updated("更新成功");
@@ -119,7 +115,7 @@ public:
      * @brief 删除设备
      */
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:delete"});
         co_await service_.remove(id);
         co_return Response::deleted("删除成功");
@@ -159,18 +155,11 @@ public:
 
         auto page = Pagination::fromRequest(req);
 
-        if (deviceId <= 0) {
-            co_return Response::badRequest("设备ID不能为空");
-        }
-
-        if (dataType.empty()) {
-            co_return Response::badRequest("数据类型不能为空");
-        }
+        ControllerUtils::requirePositiveId(deviceId, "设备ID不能为空");
+        ControllerUtils::requireNonEmptyString(dataType, "数据类型不能为空");
 
         // 验证时间范围必填，不允许查询全部数据
-        if (startTime.empty() || endTime.empty()) {
-            co_return Response::badRequest("必须指定时间范围");
-        }
+        ControllerUtils::requireTimeRange(startTime, endTime);
 
         // 参数化 ETag 检查
         std::string deviceIdStr = std::to_string(deviceId);
@@ -207,31 +196,21 @@ public:
         int userId = ControllerUtils::getUserId(req);
         co_await PermissionChecker::checkPermission(userId, {"iot:device:command"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         std::string deviceCode = (*json).get("deviceCode", "").asString();
         int deviceId = (*json).get("deviceId", 0).asInt();
 
-        if (deviceCode.empty() && deviceId == 0) co_return Response::badRequest("设备标识不能为空");
-
-        // 校验 elements 数组
-        Json::Value elements = (*json).get("elements", Json::arrayValue);
-        if (!elements.isArray() || elements.empty()) co_return Response::badRequest("要素列表不能为空");
-        for (const auto& elem : elements) {
-            if (!elem.isObject()) co_return Response::badRequest("要素格式错误");
-            if (elem.get("elementId", "").asString().empty()) co_return Response::badRequest("要素 elementId 不能为空");
-            if (elem.get("value", "").asString().empty()) co_return Response::badRequest("要素值不能为空");
-        }
+        ControllerUtils::requireDeviceSelector(deviceCode, deviceId, "设备标识不能为空");
+        const auto& elements = ControllerUtils::requireCommandElements(*json);
 
         // 通过 Service 层下发指令
         auto result = co_await service_.sendCommand(linkId, deviceCode, elements, userId, deviceId);
 
         if (result.ok()) {
             co_return Response::ok(Json::nullValue, result.message);
-        } else {
-            co_return Response::badRequest(result.message);
         }
+        throw result.toException();
     }
 
 };

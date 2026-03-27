@@ -208,11 +208,11 @@ inline DtuRegistry::Task<void> DtuRegistry::reload() {
             newLinkToDtuKeys[device.linkId].push_back(dtuKey);
         } else {
             if (dtu.linkId != device.linkId) {
-                throw ValidationException("DTU 聚合异常：同 dtuKey 出现跨链路设备");
+                throw ConflictException("DTU 聚合异常：同 dtuKey 出现跨链路设备");
             }
             if (!dtu.registrationBytes.empty() && !device.registrationBytes.empty()
                 && dtu.registrationBytes != device.registrationBytes) {
-                throw ValidationException("DTU 聚合异常：同 dtuKey 出现不同注册码");
+                throw ConflictException("DTU 聚合异常：同 dtuKey 出现不同注册码");
             }
             if (dtu.heartbeatBytes.empty() && !device.heartbeatBytes.empty()) {
                 dtu.heartbeatBytes = device.heartbeatBytes;
@@ -220,7 +220,7 @@ inline DtuRegistry::Task<void> DtuRegistry::reload() {
         }
 
         if (dtu.devicesBySlave.count(deviceDef.slaveId) > 0) {
-            throw ValidationException(
+            throw ConflictException(
                 "DTU 配置冲突：linkId=" + std::to_string(device.linkId)
                 + " dtuKey=" + dtuKey
                 + " slaveId=" + std::to_string(deviceDef.slaveId) + " 重复");

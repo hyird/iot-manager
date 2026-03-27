@@ -102,7 +102,7 @@ public:
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
-            throw ValidationException("该菜单下存在子菜单，无法删除");
+            throw ConflictException("该菜单下存在子菜单，无法删除");
         }
         co_return;
     }
@@ -114,7 +114,7 @@ public:
         return [newParentId](const Menu& menu) -> Task<void> {
             if (newParentId == 0) co_return;
             if (newParentId == menu.id()) {
-                throw ValidationException("不能将菜单设为自己的子菜单");
+                throw ConflictException("不能将菜单设为自己的子菜单");
             }
 
             DatabaseService db;
@@ -131,7 +131,7 @@ public:
             )", {std::to_string(newParentId), std::to_string(menu.id())});
 
             if (!result.empty()) {
-                throw ValidationException("不能将菜单设为其子菜单的下级，会导致循环引用");
+                throw ConflictException("不能将菜单设为其子菜单的下级，会导致循环引用");
             }
         };
     }
@@ -153,7 +153,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("权限标识已存在: " + menu.permissionCode_);
+            throw ConflictException("权限标识已存在: " + menu.permissionCode_);
         }
     }
 

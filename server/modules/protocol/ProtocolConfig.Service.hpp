@@ -1,6 +1,7 @@
 #pragma once
 
 #include "domain/ProtocolConfig.hpp"
+#include "ProtocolConfigValidator.hpp"
 #include "common/utils/Pagination.hpp"
 
 /**
@@ -40,6 +41,8 @@ public:
      * @brief 配置选项（下拉选择用）
      */
     Task<Json::Value> options(const std::string& protocol) {
+        ProtocolConfigValidator::requireSupportedProtocol(protocol);
+
         co_return co_await ProtocolConfig::options(protocol);
     }
 
@@ -48,6 +51,11 @@ public:
      */
     Task<void> create(const Json::Value& data) {
         auto config = ProtocolConfig::create(data);
+        ProtocolConfigValidator::requireSupportedProtocol(config.protocol());
+
+        if (data.isMember("config") && data["config"].isObject()) {
+            ProtocolConfigValidator::validate(config.protocol(), data["config"]);
+        }
 
         config.require(ProtocolConfig::protocolRequired)
               .require(ProtocolConfig::nameRequired)
@@ -58,18 +66,23 @@ public:
 
     /**
      * @brief 更新配置
-     * @param configValidator 可选的 config 字段验证回调，接收 (protocol, config)
      */
-    Task<void> update(int id, const Json::Value& data,
-                      std::function<void(const std::string&, const Json::Value&)> configValidator = nullptr) {
+    Task<void> update(int id, const Json::Value& data) {
         auto config = co_await ProtocolConfig::of(id);
 
         // 先应用更新，再检查约束（nameUnique 需要检查更新后的名称）
         config.update(data);
 
+        if (data.isMember("protocol")) {
+            std::string requestedProtocol = data["protocol"].asString();
+            if (!requestedProtocol.empty() && requestedProtocol != config.protocol()) {
+                throw ConflictException("协议类型不可修改");
+            }
+        }
+
         // 使用已加载的 protocol 校验 config 结构（即使请求体未携带 protocol 也能校验）
-        if (configValidator && data.isMember("config") && data["config"].isObject()) {
-            configValidator(config.protocol(), data["config"]);
+        if (data.isMember("config") && data["config"].isObject()) {
+            ProtocolConfigValidator::validate(config.protocol(), data["config"]);
         }
 
         if (data.isMember("name")) {

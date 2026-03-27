@@ -107,7 +107,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("分组名称已存在");
+            throw ConflictException("分组名称已存在");
         }
     }
 
@@ -122,7 +122,7 @@ public:
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
-            throw ValidationException("该分组下存在子分组，无法删除");
+            throw ConflictException("该分组下存在子分组，无法删除");
         }
         co_return;
     }
@@ -138,7 +138,7 @@ public:
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
-            throw ValidationException("该分组下存在设备，无法删除");
+            throw ConflictException("该分组下存在设备，无法删除");
         }
         co_return;
     }
@@ -156,7 +156,7 @@ public:
         );
 
         if (result.empty()) {
-            throw ValidationException("父分组不存在");
+            throw NotFoundException("父分组不存在");
         }
     }
 
@@ -166,7 +166,7 @@ public:
     static Task<void> notSelfParent(const DeviceGroup& group) {
         if (group.parentId_ <= 0 || group.id() <= 0) co_return;
         if (group.parentId_ == group.id()) {
-            throw ValidationException("不能将自己设为父分组");
+            throw ConflictException("不能将自己设为父分组");
         }
 
         // 递归检查：获取所有子孙 ID，确认新 parent_id 不在其中
@@ -183,7 +183,7 @@ public:
         )", {std::to_string(group.id()), std::to_string(group.parentId_)});
 
         if (!result.empty()) {
-            throw ValidationException("不能将子分组设为父分组，会造成循环引用");
+            throw ConflictException("不能将子分组设为父分组，会造成循环引用");
         }
     }
 

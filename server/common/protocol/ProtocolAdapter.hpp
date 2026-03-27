@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FrameResult.hpp"
+#include "../utils/AppException.hpp"
 #include "ProtocolCommandCoordinator.hpp"
 #include "ProtocolCommandStore.hpp"
 
@@ -51,6 +52,44 @@ struct CommandResult {
     std::string message;
 
     bool ok() const { return status == CommandStatus::Success; }
+
+    AppException toException() const {
+        using enum drogon::HttpStatusCode;
+
+        switch (status) {
+        case CommandStatus::Success:
+            return AppException(ErrorCodes::SUCCESS, "Success", k200OK);
+        case CommandStatus::DeviceOffline:
+            return AppException(
+                ErrorCodes::EXTERNAL_SERVICE_ERROR,
+                message.empty() ? "设备离线" : message,
+                k503ServiceUnavailable
+            );
+        case CommandStatus::DeviceBusy:
+            return ConflictException(
+                message.empty() ? "设备有未完成的指令" : message
+            );
+        case CommandStatus::SendFailed:
+            return AppException(
+                ErrorCodes::EXTERNAL_SERVICE_ERROR,
+                message.empty() ? "发送失败" : message,
+                k502BadGateway
+            );
+        case CommandStatus::Timeout:
+            return AppException(
+                ErrorCodes::EXTERNAL_SERVICE_ERROR,
+                message.empty() ? "设备应答超时" : message,
+                k504GatewayTimeout
+            );
+        case CommandStatus::Error:
+        default:
+            return AppException(
+                ErrorCodes::INTERNAL_ERROR,
+                message.empty() ? "未知错误" : message,
+                k500InternalServerError
+            );
+        }
+    }
 
     static CommandResult success() {
         return {CommandStatus::Success, "指令下发成功，设备已应答"};

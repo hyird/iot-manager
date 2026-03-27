@@ -485,12 +485,12 @@ inline std::vector<ModbusJob> ModbusSessionEngine::buildWriteJobs(
 
         auto regIt = regsById.find(registerId);
         if (regIt == regsById.end()) {
-            throw ValidationException("寄存器未找到: " + registerId);
+            throw NotFoundException("寄存器未找到: " + registerId);
         }
 
         const RegisterDef& reg = *regIt->second;
         if (!isWritable(reg.registerType)) {
-            throw ValidationException("寄存器「" + reg.name + "」不可写");
+            throw ForbiddenException("寄存器「" + reg.name + "」不可写");
         }
 
         double value = 0.0;

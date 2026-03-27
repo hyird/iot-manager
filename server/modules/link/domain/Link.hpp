@@ -195,7 +195,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("链路名称已存在");
+            throw ConflictException("链路名称已存在");
         }
     }
 
@@ -227,7 +227,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("相同模式、IP和端口的链路已存在");
+            throw ConflictException("相同模式、IP和端口的链路已存在");
         }
     }
 
@@ -242,7 +242,7 @@ public:
             {std::to_string(link.agentId_)}
         );
         if (result.empty()) {
-            throw ValidationException("指定的采集Agent不存在");
+            throw NotFoundException("指定的采集Agent不存在");
         }
     }
 
@@ -280,23 +280,23 @@ public:
             {std::to_string(link.agentId_)}
         );
         if (result.empty()) {
-            throw ValidationException("指定的采集Agent不存在");
+            throw NotFoundException("指定的采集Agent不存在");
         }
 
         const auto capabilities = parseJsonField(result[0]["capabilities"]);
         const auto interfaces = capabilities.get("interfaces", Json::Value(Json::arrayValue));
         if (!interfaces.isArray() || interfaces.empty()) {
-            throw ValidationException("采集Agent尚未上报可用网口，无法绑定链路");
+            throw ConflictException("采集Agent尚未上报可用网口，无法绑定链路");
         }
 
         const auto matchedInterface = findAgentInterfaceByName(interfaces, link.agentInterface_);
         if (!matchedInterface) {
-            throw ValidationException("所选网口不属于采集Agent当前上报能力");
+            throw ConflictException("所选网口不属于采集Agent当前上报能力");
         }
 
         const auto reportedName = matchedInterface->get("name", "").asString();
         if (reportedName.empty() || reportedName != link.agentInterface_) {
-            throw ValidationException("所选网口名称与采集Agent当前上报能力不一致");
+            throw ConflictException("所选网口名称与采集Agent当前上报能力不一致");
         }
 
         std::string sql = R"(
@@ -323,7 +323,7 @@ public:
 
         auto conflict = co_await db.execSqlCoro(sql, params);
         if (!conflict.empty()) {
-            throw ValidationException("同一块 Agent 网口只能配置一套本机网络参数");
+            throw ConflictException("同一块 Agent 网口只能配置一套本机网络参数");
         }
         co_return;
     }
@@ -348,7 +348,7 @@ public:
             {std::to_string(link.id())}
         );
         if (!result.empty()) {
-            throw ValidationException("该链路下存在关联设备，无法删除");
+            throw ConflictException("该链路下存在关联设备，无法删除");
         }
     }
 

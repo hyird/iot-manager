@@ -28,14 +28,13 @@ public:
     METHOD_LIST_END
 
     Task<HttpResponsePtr> login(HttpRequestPtr req) {
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         std::string username = (*json)["username"].asString();
         std::string password = (*json)["password"].asString();
 
         if (username.empty() || password.empty()) {
-            co_return Response::badRequest("用户名和密码不能为空");
+            throw ValidationException("用户名和密码不能为空");
         }
 
         auto data = co_await authService_.login(username, password);
@@ -43,12 +42,11 @@ public:
     }
 
     Task<HttpResponsePtr> refresh(HttpRequestPtr req) {
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         std::string refreshToken = (*json)["refreshToken"].asString();
         if (refreshToken.empty()) {
-            co_return Response::badRequest("刷新令牌不能为空");
+            throw ValidationException("刷新令牌不能为空");
         }
 
         auto data = co_await authService_.refresh(refreshToken);
@@ -59,14 +57,10 @@ public:
         int userId = ControllerUtils::getUserId(req);
 
         // 从 Header 中提取 Token
-        std::string authorization = req->getHeader("Authorization");
-        if (authorization.size() <= 7 || authorization.find("Bearer ") != 0) {
-            co_return Response::badRequest("Token 格式错误");
-        }
-        std::string token = authorization.substr(7);
+        std::string token = ControllerUtils::requireBearerToken(req);
 
         std::string refreshToken;
-        if (auto json = req->getJsonObject(); json && (*json).isMember("refreshToken")) {
+        if (auto json = ControllerUtils::getJson(req); json && (*json).isMember("refreshToken")) {
             refreshToken = (*json)["refreshToken"].asString();
         }
 
@@ -75,10 +69,8 @@ public:
     }
 
     Task<HttpResponsePtr> getCurrentUser(HttpRequestPtr req) {
+        ControllerUtils::requireAuthAttributes(req);
         auto attrs = req->attributes();
-        if (!attrs->find("userId") || !attrs->find("username")) {
-            co_return Response::unauthorized("未授权访问");
-        }
 
         int userId = attrs->get<int>("userId");
         std::string username = attrs->get<std::string>("username");

@@ -92,11 +92,11 @@ inline DtuRegistry::Task<void> DtuRegistry::reload() {
         auto [it, inserted] = newDefinitions.try_emplace(dtuKey, std::move(definition));
         if (!inserted) {
             if (it->second.linkId != device.linkId) {
-                throw ValidationException("S7 DTU 聚合异常：同 dtuKey 出现跨链路设备");
+                throw ConflictException("S7 DTU 聚合异常：同 dtuKey 出现跨链路设备");
             }
             if (!it->second.registrationBytes.empty() && !device.registrationBytes.empty()
                 && it->second.registrationBytes != device.registrationBytes) {
-                throw ValidationException("S7 DTU 聚合异常：同 dtuKey 出现不同注册码");
+                throw ConflictException("S7 DTU 聚合异常：同 dtuKey 出现不同注册码");
             }
             continue;
         }

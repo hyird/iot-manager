@@ -71,8 +71,7 @@ public:
     Task<HttpResponsePtr> createRule(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:add"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         ValidatorHelper::requireNonEmptyString(*json, "name", "规则名称").throwIfInvalid();
         ValidatorHelper::requirePositiveInt(*json, "device_id", "关联设备").throwIfInvalid();
@@ -82,25 +81,24 @@ public:
     }
 
     Task<HttpResponsePtr> ruleDetail(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:query"});
 
         co_return Response::ok(co_await service_.getRuleDetail(id));
     }
 
     Task<HttpResponsePtr> updateRule(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:edit"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         co_await service_.updateRule(id, *json);
         co_return Response::updated("更新成功");
     }
 
     Task<HttpResponsePtr> deleteRule(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:delete"});
 
         co_await service_.deleteRule(id);
@@ -123,7 +121,7 @@ public:
     }
 
     Task<HttpResponsePtr> acknowledgeRecord(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:ack"});
 
         int userId = ControllerUtils::getUserId(req);
@@ -134,17 +132,9 @@ public:
     Task<HttpResponsePtr> batchAcknowledge(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:ack"});
 
-        auto json = req->getJsonObject();
-        if (!json || !json->isMember("ids") || !(*json)["ids"].isArray()) {
-            co_return Response::badRequest("请提供 ids 数组");
-        }
-
-        std::vector<int64_t> ids;
-        for (const auto& idVal : (*json)["ids"]) {
-            ids.push_back(idVal.asInt64());
-        }
-
-        if (ids.empty()) co_return Response::badRequest("ids 不能为空");
+        auto json = ControllerUtils::requireJson(req);
+        const auto& idsArray = ControllerUtils::requireNonEmptyArrayField(*json, "ids", "请提供 ids 数组");
+        auto ids = ControllerUtils::toInt64Array(idsArray);
 
         int userId = ControllerUtils::getUserId(req);
         co_await service_.batchAcknowledge(ids, userId);
@@ -174,8 +164,7 @@ public:
     Task<HttpResponsePtr> createTemplate(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:add"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         ValidatorHelper::requireNonEmptyString(*json, "name", "模板名称").throwIfInvalid();
 
@@ -185,25 +174,24 @@ public:
     }
 
     Task<HttpResponsePtr> templateDetail(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:query"});
 
         co_return Response::ok(co_await service_.getTemplateDetail(id));
     }
 
     Task<HttpResponsePtr> updateTemplate(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:edit"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         co_await service_.updateTemplate(id, *json);
         co_return Response::updated("更新成功");
     }
 
     Task<HttpResponsePtr> deleteTemplate(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:delete"});
 
         co_await service_.deleteTemplate(id);
@@ -215,17 +203,9 @@ public:
     Task<HttpResponsePtr> batchDeleteRules(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:delete"});
 
-        auto json = req->getJsonObject();
-        if (!json || !json->isMember("ids") || !(*json)["ids"].isArray()) {
-            co_return Response::badRequest("请提供 ids 数组");
-        }
-
-        std::vector<int> ids;
-        for (const auto& idVal : (*json)["ids"]) {
-            ids.push_back(idVal.asInt());
-        }
-
-        if (ids.empty()) co_return Response::badRequest("ids 不能为空");
+        auto json = ControllerUtils::requireJson(req);
+        const auto& idsArray = ControllerUtils::requireNonEmptyArrayField(*json, "ids", "请提供 ids 数组");
+        auto ids = ControllerUtils::toIntArray(idsArray);
 
         co_await service_.batchDeleteRules(ids);
         co_return Response::ok("批量删除成功");
@@ -234,21 +214,13 @@ public:
     Task<HttpResponsePtr> applyTemplate(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:add"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         ValidatorHelper::requirePositiveInt(*json, "template_id", "模板ID").throwIfInvalid();
-        if (!json->isMember("device_ids") || !(*json)["device_ids"].isArray()) {
-            co_return Response::badRequest("请提供 device_ids 数组");
-        }
+        const auto& deviceIdsArray = ControllerUtils::requireNonEmptyArrayField(*json, "device_ids", "请提供 device_ids 数组");
 
         int templateId = (*json)["template_id"].asInt();
-        std::vector<int> deviceIds;
-        for (const auto& idVal : (*json)["device_ids"]) {
-            deviceIds.push_back(idVal.asInt());
-        }
-
-        if (deviceIds.empty()) co_return Response::badRequest("device_ids 不能为空");
+        auto deviceIds = ControllerUtils::toIntArray(deviceIdsArray);
 
         auto result = co_await service_.applyTemplate(templateId, deviceIds);
         co_return Response::ok(result, "应用模板成功");

@@ -1,7 +1,14 @@
 #pragma once
 
+#include <drogon/HttpTypes.h>
+
+#include "ErrorCodes.hpp"
+
 /**
  * @brief 应用异常基类
+ *
+ * AppException 只负责承载错误码、消息和 HTTP 状态；
+ * 具体错误码定义统一放在 ErrorCodes.hpp 中。
  */
 class AppException : public std::exception {
 public:
@@ -27,18 +34,12 @@ public:
 };
 
 /**
- * 错误码定义：
- * 1xxx - 通用错误
- * 2xxx - 认证相关错误
- */
-
-/**
  * @brief 通用异常 - 资源不存在
  */
 class NotFoundException : public AppException {
 public:
     explicit NotFoundException(const std::string& message = "资源不存在")
-        : AppException(1001, message, k404NotFound) {}
+        : AppException(ErrorCodes::NOT_FOUND, message, k404NotFound) {}
 };
 
 /**
@@ -47,7 +48,16 @@ public:
 class ValidationException : public AppException {
 public:
     explicit ValidationException(const std::string& message = "验证失败")
-        : AppException(1002, message, k400BadRequest) {}
+        : AppException(ErrorCodes::VALIDATION_FAILED, message, k400BadRequest) {}
+};
+
+/**
+ * @brief 通用异常 - 数据冲突
+ */
+class ConflictException : public AppException {
+public:
+    explicit ConflictException(const std::string& message = "数据冲突")
+        : AppException(ErrorCodes::CONFLICT, message, k409Conflict) {}
 };
 
 /**
@@ -56,7 +66,7 @@ public:
 class ForbiddenException : public AppException {
 public:
     explicit ForbiddenException(const std::string& message = "禁止访问")
-        : AppException(1003, message, k403Forbidden) {}
+        : AppException(ErrorCodes::FORBIDDEN, message, k403Forbidden) {}
 };
 
 /**
@@ -65,27 +75,31 @@ public:
 namespace AuthException {
     using enum drogon::HttpStatusCode;
 
-    inline AppException UserNotFound() {
-        return AppException(2001, "用户不存在", k404NotFound);
+    inline AppException UserNotFound(std::string message = "用户不存在") {
+        return AppException(ErrorCodes::USER_NOT_FOUND, std::move(message), k404NotFound);
     }
 
-    inline AppException PasswordIncorrect() {
-        return AppException(2002, "用户名或密码错误", k403Forbidden);
+    inline AppException PasswordIncorrect(std::string message = "用户名或密码错误") {
+        return AppException(ErrorCodes::PASSWORD_INCORRECT, std::move(message), k403Forbidden);
     }
 
-    inline AppException UserDisabled() {
-        return AppException(2003, "用户已被禁用", k403Forbidden);
+    inline AppException UserDisabled(std::string message = "用户已被禁用") {
+        return AppException(ErrorCodes::USER_DISABLED, std::move(message), k403Forbidden);
     }
 
-    inline AppException TokenInvalid() {
-        return AppException(2004, "令牌无效或已过期", k401Unauthorized);
+    inline AppException TokenInvalid(std::string message = "令牌无效或已过期") {
+        return AppException(ErrorCodes::UNAUTHORIZED, std::move(message), k401Unauthorized);
     }
 
-    inline AppException TokenExpired() {
-        return AppException(2005, "令牌已过期", k401Unauthorized);
+    inline AppException TokenExpired(std::string message = "令牌已过期") {
+        return AppException(ErrorCodes::TOKEN_EXPIRED, std::move(message), k401Unauthorized);
     }
 
-    inline AppException NoPermission() {
-        return AppException(2006, "无权限访问", k403Forbidden);
+    inline AppException TokenBlacklisted(std::string message = "令牌已失效，请重新登录") {
+        return AppException(ErrorCodes::TOKEN_BLACKLISTED, std::move(message), k401Unauthorized);
+    }
+
+    inline AppException NoPermission(std::string message = "无权限访问") {
+        return AppException(ErrorCodes::NO_PERMISSION, std::move(message), k403Forbidden);
     }
 }

@@ -87,7 +87,7 @@ public:
     }
 
     Task<HttpResponsePtr> detail(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:role:query"});
         co_return Response::ok(co_await service_.detail(id));
     }
@@ -95,8 +95,7 @@ public:
     Task<HttpResponsePtr> create(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:role:add"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         ValidatorHelper::requireNonEmptyString(*json, "name", "角色名称").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "code", "角色编码").throwIfInvalid();
@@ -106,9 +105,8 @@ public:
     }
 
     Task<HttpResponsePtr> update(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        ControllerUtils::requirePositiveId(id);
+        auto json = ControllerUtils::requireJson(req);
 
         // 根据更新内容动态检查权限（至少需要基础编辑权限）
         auto permissions = determineUpdatePermissions(*json);
@@ -122,7 +120,7 @@ public:
     }
 
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:role:delete"});
         co_await service_.remove(id);
         co_return Response::deleted("删除成功");

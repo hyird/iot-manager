@@ -39,7 +39,7 @@ public:
         // 检查登录失败次数
         auto failureCount = co_await authCache_.getLoginFailureCount(username);
         if (failureCount >= Constants::LOGIN_MAX_FAILURE_COUNT) {
-            throw AppException(429, "登录失败次数过多，请15分钟后再试", drogon::k429TooManyRequests);
+            throw AppException(ErrorCodes::TOO_MANY_REQUESTS, "登录失败次数过多，请15分钟后再试", drogon::k429TooManyRequests);
         }
 
         std::string sql = R"(
@@ -104,7 +104,7 @@ public:
 
         // 检查刷新令牌是否在黑名单中（用户登出后阻止刷新）
         if (co_await authCache_.isTokenBlacklisted(refreshToken)) {
-            throw AuthException::TokenInvalid();
+            throw AuthException::TokenBlacklisted();
         }
 
         std::string sql = R"(

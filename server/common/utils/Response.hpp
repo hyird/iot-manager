@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AppException.hpp"
 #include "ErrorCodes.hpp"
 
 /**
@@ -19,6 +20,10 @@ public:
         resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
         resp->setBody(std::move(body));
         return resp;
+    }
+
+    static HttpResponsePtr fromException(const AppException& e) {
+        return error(e.getCode(), e.getMessage(), e.getStatus());
     }
 
     static HttpResponsePtr ok(const Json::Value &data = Json::Value::null,
@@ -93,6 +98,7 @@ public:
         Json::Value json;
         json["code"] = code;
         json["message"] = message;
+        json["status"] = static_cast<int>(status);
 
         auto resp = HttpResponse::newHttpJsonResponse(json);
         resp->setStatusCode(status);

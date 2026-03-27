@@ -269,7 +269,7 @@ inline ParsedUrl parseWebhookUrl(const std::string& url) {
     std::string host = url.substr(schemeEnd, hostEnd - schemeEnd);
 
     if (isPrivateHost(host)) {
-        throw ValidationException("Webhook 地址不允许指向内网或回环地址");
+        throw ForbiddenException("Webhook 地址不允许指向内网或回环地址");
     }
 
     if (pathPos == std::string::npos) {

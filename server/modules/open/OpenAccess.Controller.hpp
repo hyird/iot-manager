@@ -116,10 +116,10 @@ private:
                 throw ForbiddenException("设备未开启远程控制");
             }
             if (device.linkId <= 0) {
-                throw ValidationException("设备未绑定链路，无法下发控制");
+                throw ConflictException("设备未绑定链路，无法下发控制");
             }
             if (device.protocolType == "SL651" && device.deviceCode.empty()) {
-                throw ValidationException("设备缺少设备编码，无法下发控制");
+                throw ConflictException("设备缺少设备编码，无法下发控制");
             }
 
             CommandTarget target;
@@ -167,29 +167,27 @@ public:
             {"iot:open-access:add"}
         );
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         auto data = co_await repository_.createAccessKey(*json, ControllerUtils::getUserId(req));
         co_return Response::ok(data, "创建成功");
     }
 
     Task<HttpResponsePtr> updateAccessKey(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的 AccessKey ID");
+        ControllerUtils::requirePositiveId(id, "无效的 AccessKey ID");
         co_await PermissionChecker::checkPermission(
             ControllerUtils::getUserId(req),
             {"iot:open-access:edit"}
         );
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         co_await repository_.updateAccessKey(id, *json);
         co_return Response::updated("更新成功");
     }
 
     Task<HttpResponsePtr> rotateAccessKey(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的 AccessKey ID");
+        ControllerUtils::requirePositiveId(id, "无效的 AccessKey ID");
         co_await PermissionChecker::checkPermission(
             ControllerUtils::getUserId(req),
             {"iot:open-access:edit"}
@@ -200,7 +198,7 @@ public:
     }
 
     Task<HttpResponsePtr> removeAccessKey(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的 AccessKey ID");
+        ControllerUtils::requirePositiveId(id, "无效的 AccessKey ID");
         co_await PermissionChecker::checkPermission(
             ControllerUtils::getUserId(req),
             {"iot:open-access:delete"}
@@ -224,29 +222,27 @@ public:
             {"iot:open-access:add"}
         );
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         auto data = co_await repository_.createWebhook(*json);
         co_return Response::ok(data, "创建成功");
     }
 
     Task<HttpResponsePtr> updateWebhook(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的 Webhook ID");
+        ControllerUtils::requirePositiveId(id, "无效的 Webhook ID");
         co_await PermissionChecker::checkPermission(
             ControllerUtils::getUserId(req),
             {"iot:open-access:edit"}
         );
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         co_await repository_.updateWebhook(id, *json);
         co_return Response::updated("更新成功");
     }
 
     Task<HttpResponsePtr> removeWebhook(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的 Webhook ID");
+        ControllerUtils::requirePositiveId(id, "无效的 Webhook ID");
         co_await PermissionChecker::checkPermission(
             ControllerUtils::getUserId(req),
             {"iot:open-access:delete"}
@@ -304,8 +300,10 @@ public:
             auto session = co_await authenticateOpenRequest(req, true, false);
             logAccessKeyId = session.id;
 
+            ControllerUtils::requireDeviceSelector(code, requestedDeviceId);
+
             int deviceId = co_await repository_.resolveDeviceId(code, requestedDeviceId);
-            if ((!code.empty() || requestedDeviceId > 0) && deviceId <= 0) {
+            if (deviceId <= 0) {
                 throw NotFoundException("设备不存在");
             }
             if (deviceId > 0 && !session.canAccessDevice(deviceId)) {
@@ -400,12 +398,8 @@ public:
             auto session = co_await authenticateOpenRequest(req, false, true);
             logAccessKeyId = session.id;
 
-            if (code.empty() && requestedDeviceId <= 0) {
-                throw ValidationException("设备编码或设备ID不能为空");
-            }
-            if (startTime.empty() || endTime.empty()) {
-                throw ValidationException("必须指定时间范围");
-            }
+            ControllerUtils::requireDeviceSelector(code, requestedDeviceId);
+            ControllerUtils::requireTimeRange(startTime, endTime);
 
             int deviceId = co_await repository_.resolveDeviceId(code, requestedDeviceId);
             if (deviceId <= 0) {
@@ -508,8 +502,8 @@ public:
         std::string clientIp = OpenAccess::resolveClientIp(req);
         int logAccessKeyId = 0;
 
-        auto json = req->getJsonObject();
-        Json::Value requestPayload = json ? *json : Json::Value(Json::objectValue);
+        auto json = ControllerUtils::requireJson(req);
+        Json::Value requestPayload = *json;
         std::exception_ptr capturedError;
         std::string errorMessage;
 
@@ -517,31 +511,11 @@ public:
             auto session = co_await authenticateOpenRequest(req, false, false, true, false);
             logAccessKeyId = session.id;
 
-            if (!json) {
-                throw ValidationException("请求体格式错误");
-            }
-
             std::string deviceCode = (*json).get("deviceCode", "").asString();
             int requestedDeviceId = (*json).get("deviceId", 0).asInt();
-            Json::Value elements = (*json).get("elements", Json::arrayValue);
+            const auto& elements = ControllerUtils::requireCommandElements(*json);
 
-            if (deviceCode.empty() && requestedDeviceId <= 0) {
-                throw ValidationException("设备标识不能为空");
-            }
-            if (!elements.isArray() || elements.empty()) {
-                throw ValidationException("要素列表不能为空");
-            }
-            for (const auto& elem : elements) {
-                if (!elem.isObject()) {
-                    throw ValidationException("要素格式错误");
-                }
-                if (elem.get("elementId", "").asString().empty()) {
-                    throw ValidationException("要素 elementId 不能为空");
-                }
-                if (elem.get("value", "").asString().empty()) {
-                    throw ValidationException("要素值不能为空");
-                }
-            }
+            ControllerUtils::requireDeviceSelector(deviceCode, requestedDeviceId, "设备标识不能为空");
 
             int deviceId = co_await repository_.resolveDeviceId(deviceCode, requestedDeviceId);
             if (deviceId <= 0) {
@@ -586,6 +560,7 @@ public:
                 co_return Response::ok(responsePayload, result.message);
             }
 
+            auto error = result.toException();
             co_await writeAccessLogSafe(
                 "pull",
                 "command",
@@ -596,14 +571,14 @@ public:
                 "POST",
                 "/open-api/device/command",
                 clientIp,
-                400,
+                static_cast<int>(error.getStatus()),
                 deviceId,
                 commandTarget.deviceCode,
-                result.message,
+                error.getMessage(),
                 requestPayload,
                 responsePayload
             );
-            co_return Response::badRequest(result.message);
+            throw error;
         } catch (const std::exception& e) {
             errorMessage = e.what();
             capturedError = std::current_exception();
@@ -662,8 +637,10 @@ public:
             auto session = co_await authenticateOpenRequest(req, false, false, false, true);
             logAccessKeyId = session.id;
 
+            ControllerUtils::requireDeviceSelector(code, requestedDeviceId);
+
             int deviceId = co_await repository_.resolveDeviceId(code, requestedDeviceId);
-            if ((!code.empty() || requestedDeviceId > 0) && deviceId <= 0) {
+            if (deviceId <= 0) {
                 throw NotFoundException("设备不存在");
             }
             if (deviceId > 0 && !session.canAccessDevice(deviceId)) {

@@ -5,6 +5,7 @@
 #include "common/utils/FieldHelper.hpp"
 #include "common/utils/JsonHelper.hpp"
 #include "common/utils/AppException.hpp"
+#include "common/utils/ValidatorHelper.hpp"
 
 class EdgeNodeService {
 public:
@@ -42,7 +43,7 @@ public:
             SELECT 1 FROM agent_node WHERE code = ? AND deleted_at IS NULL LIMIT 1
         )", {code});
         if (!existing.empty()) {
-            throw ValidationException("Agent 编码已存在: " + code);
+            throw ConflictException("Agent 编码已存在: " + code);
         }
 
         auto result = co_await db.execSqlCoro(R"(
@@ -366,7 +367,7 @@ public:
         const auto mode = data.get("mode", "").asString();
         const auto protocol = data.get("protocol", "").asString();
         const auto ip = data.get("ip", "").asString();
-        const auto port = data.get("port", 0).asInt();
+        int port = 0;
         const auto channel = data.get("channel", "").asString();
         const auto baudRate = data.get("baud_rate", 0).asInt();
 
@@ -377,7 +378,14 @@ public:
         }
         if (transport == "ethernet") {
             if (mode.empty()) throw ValidationException("以太网端点需要指定链路模式");
-            if (port <= 0 || port > 65535) throw ValidationException("端口范围 1-65535");
+            port = ValidatorHelper::optionalIntRangeField(
+                data,
+                "port",
+                0,
+                1,
+                65535,
+                "端口范围 1-65535"
+            );
         }
         if (transport == "serial" && channel.empty()) {
             throw ValidationException("串口端点需要指定通道");

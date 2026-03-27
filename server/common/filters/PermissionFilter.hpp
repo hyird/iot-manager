@@ -80,7 +80,7 @@ public:
     static Task<void> checkPermission(int userId, const std::vector<std::string>& requiredPermissions) {
         bool hasPermit = co_await hasPermission(userId, requiredPermissions);
         if (!hasPermit) {
-            throw ForbiddenException("无权限访问此资源");
+            throw AuthException::NoPermission("无权限访问此资源");
         }
     }
 };

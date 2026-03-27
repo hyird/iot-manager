@@ -1,5 +1,6 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from "@reduxjs/toolkit";
 import type { Auth } from "@/types";
+import { fetchCurrentUser, refreshToken as refreshAuthToken } from "@/services/auth/api";
 
 interface AuthState {
   token: string | null;
@@ -26,40 +27,22 @@ export const refreshAccessToken = createAsyncThunk<
   }
 
   try {
-    const response = await fetch("/api/auth/refresh", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken: currentRefreshToken }),
+    const { token, refreshToken } = await refreshAuthToken(currentRefreshToken, {
+      _silent: true,
     });
 
-    if (!response.ok) {
-      return rejectWithValue("刷新令牌失败");
-    }
-
-    const data = await response.json();
-    const { token, refreshToken } = data.data;
-
-    // 获取最新用户信息
-    const userResponse = await fetch("/api/auth/me", {
+    const user = await fetchCurrentUser({
+      _silent: true,
       headers: { Authorization: `Bearer ${token}` },
     });
-
-    if (!userResponse.ok) {
-      return rejectWithValue("获取用户信息失败");
-    }
-
-    const userData = await userResponse.json();
-    if (!userData.data) {
-      return rejectWithValue("用户信息格式错误");
-    }
 
     return {
       token,
       refreshToken,
-      user: userData.data,
+      user,
     };
-  } catch {
-    return rejectWithValue("刷新令牌失败");
+  } catch (error) {
+    return rejectWithValue(error instanceof Error ? error.message : "刷新令牌失败");
   }
 });
 

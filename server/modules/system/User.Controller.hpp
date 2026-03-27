@@ -52,7 +52,7 @@ public:
     }
 
     Task<HttpResponsePtr> detail(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:user:query"});
         co_return Response::ok(co_await service_.detail(id));
     }
@@ -60,8 +60,7 @@ public:
     Task<HttpResponsePtr> create(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:user:add"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         ValidatorHelper::requireNonEmptyString(*json, "username", "用户名").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "password", "密码").throwIfInvalid();
@@ -72,11 +71,10 @@ public:
     }
 
     Task<HttpResponsePtr> update(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:user:edit"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         ValidatorHelper::requireMinLength(*json, "password", Constants::PASSWORD_MIN_LENGTH, "密码").throwIfInvalid();
 
@@ -85,7 +83,7 @@ public:
     }
 
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"system:user:delete"});
         co_await service_.remove(id, ControllerUtils::getUserId(req));
         co_return Response::deleted("删除成功");

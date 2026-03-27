@@ -74,7 +74,7 @@ public:
      * @brief 获取链路详情
      */
     Task<HttpResponsePtr> detail(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:query"});
         co_return Response::ok(co_await service_.detail(id));
     }
@@ -85,8 +85,7 @@ public:
     Task<HttpResponsePtr> create(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:add"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         ValidatorHelper::requireNonEmptyString(*json, "name", "链路名称").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "mode", "模式").throwIfInvalid();
@@ -97,8 +96,8 @@ public:
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
         ValidatorHelper::requireInList(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
             "协议", "SL651、Modbus 或 S7").throwIfInvalid();
-        if (json->isMember("agent_id") && !(*json)["agent_id"].isNull() && (*json)["agent_id"].asInt() < 0) {
-            co_return Response::badRequest("采集Agent参数错误");
+        if (json->isMember("agent_id") && !(*json)["agent_id"].isNull()) {
+            ControllerUtils::requireNonNegativeValue((*json)["agent_id"].asInt(), "采集Agent参数错误");
         }
 
         co_await service_.create(*json);
@@ -109,18 +108,17 @@ public:
      * @brief 更新链路
      */
     Task<HttpResponsePtr> update(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:edit"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("请求体格式错误");
+        auto json = ControllerUtils::requireJson(req);
 
         ValidatorHelper::requireInListIfPresent(*json, "mode", ALLOWED_LINK_MODES,
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
         ValidatorHelper::requireInListIfPresent(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
             "协议", "SL651、Modbus 或 S7").throwIfInvalid();
-        if (json->isMember("agent_id") && !(*json)["agent_id"].isNull() && (*json)["agent_id"].asInt() < 0) {
-            co_return Response::badRequest("采集Agent参数错误");
+        if (json->isMember("agent_id") && !(*json)["agent_id"].isNull()) {
+            ControllerUtils::requireNonNegativeValue((*json)["agent_id"].asInt(), "采集Agent参数错误");
         }
 
         co_await service_.update(id, *json);
@@ -131,7 +129,7 @@ public:
      * @brief 删除链路
      */
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:delete"});
         co_await service_.remove(id);
         co_return Response::deleted("删除成功");

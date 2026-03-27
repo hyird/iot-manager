@@ -41,6 +41,11 @@ public:
 private:
     DatabaseService dbService_;
 
+    struct CommandElementInput {
+        std::string elementId;
+        std::string value;
+    };
+
     static std::string trimCopy(std::string value) {
         auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
         value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](unsigned char ch) {
@@ -309,6 +314,23 @@ private:
         }
     }
 
+    static CommandElementInput requireCommandElementInput(const Json::Value& elem) {
+        if (!elem.isObject()) {
+            throw ValidationException("要素格式错误");
+        }
+
+        CommandElementInput input;
+        input.elementId = elem.get("elementId", "").asString();
+        input.value = trimCopy(elem.get("value", "").asString());
+        if (input.elementId.empty()) {
+            throw ValidationException("要素 elementId 不能为空");
+        }
+        if (input.value.empty()) {
+            throw ValidationException("要素值不能为空");
+        }
+        return input;
+    }
+
     void validateCommandElements(
         const DeviceCache::CachedDevice& device,
         const Json::Value& elements
@@ -319,37 +341,27 @@ private:
 
         if (device.protocolType == Constants::PROTOCOL_MODBUS) {
             if (!device.protocolConfig.isMember("registers") || !device.protocolConfig["registers"].isArray()) {
-                throw ValidationException("设备协议配置缺失，无法校验写入要素");
+                throw ConflictException("设备协议配置缺失，无法校验写入要素");
             }
 
             for (const auto& elem : elements) {
-                if (!elem.isObject()) {
-                    throw ValidationException("要素格式错误");
-                }
-                std::string elementId = elem.get("elementId", "").asString();
-                std::string value = trimCopy(elem.get("value", "").asString());
-                if (elementId.empty()) {
-                    throw ValidationException("要素 elementId 不能为空");
-                }
-                if (value.empty()) {
-                    throw ValidationException("要素值不能为空");
-                }
+                auto input = requireCommandElementInput(elem);
 
                 const Json::Value* matched = nullptr;
                 for (const auto& reg : device.protocolConfig["registers"]) {
-                    if (reg.get("id", "").asString() == elementId) {
+                    if (reg.get("id", "").asString() == input.elementId) {
                         matched = &reg;
                         break;
                     }
                 }
                 if (!matched) {
-                    throw ValidationException("未找到要素对应的寄存器配置: " + elementId);
+                    throw NotFoundException("未找到要素对应的寄存器配置: " + input.elementId);
                 }
                 if (!matched->get("writable", false).asBool()) {
-                    throw ValidationException("寄存器未启用写入: "
-                        + matched->get("name", elementId).asString());
+                    throw ForbiddenException("寄存器未启用写入: "
+                        + matched->get("name", input.elementId).asString());
                 }
-                validateModbusElementValue(*matched, value);
+                validateModbusElementValue(*matched, input.value);
             }
             return;
         }
@@ -357,58 +369,38 @@ private:
         if (device.protocolType == Constants::PROTOCOL_S7) {
             const Json::Value* areas = resolveS7Areas(device.protocolConfig);
             if (!areas) {
-                throw ValidationException("设备协议配置缺失，无法校验写入要素");
+                throw ConflictException("设备协议配置缺失，无法校验写入要素");
             }
 
             for (const auto& elem : elements) {
-                if (!elem.isObject()) {
-                    throw ValidationException("要素格式错误");
-                }
-                std::string elementId = elem.get("elementId", "").asString();
-                std::string value = trimCopy(elem.get("value", "").asString());
-                if (elementId.empty()) {
-                    throw ValidationException("要素 elementId 不能为空");
-                }
-                if (value.empty()) {
-                    throw ValidationException("要素值不能为空");
-                }
+                auto input = requireCommandElementInput(elem);
 
                 const Json::Value* matched = nullptr;
                 for (const auto& area : *areas) {
-                    if (area.get("id", "").asString() == elementId) {
+                    if (area.get("id", "").asString() == input.elementId) {
                         matched = &area;
                         break;
                     }
                 }
                 if (!matched) {
-                    throw ValidationException("未找到要素对应的 S7 区域配置: " + elementId);
+                    throw NotFoundException("未找到要素对应的 S7 区域配置: " + input.elementId);
                 }
                 if (!matched->get("writable", false).asBool()) {
-                    throw ValidationException("S7 区域未启用写入: "
-                        + matched->get("name", elementId).asString());
+                    throw ForbiddenException("S7 区域未启用写入: "
+                        + matched->get("name", input.elementId).asString());
                 }
-                validateS7ElementValue(*matched, value);
+                validateS7ElementValue(*matched, input.value);
             }
             return;
         }
 
         if (device.protocolType == Constants::PROTOCOL_SL651) {
             if (!device.protocolConfig.isMember("funcs") || !device.protocolConfig["funcs"].isArray()) {
-                throw ValidationException("设备协议配置缺失，无法校验写入要素");
+                throw ConflictException("设备协议配置缺失，无法校验写入要素");
             }
 
             for (const auto& elem : elements) {
-                if (!elem.isObject()) {
-                    throw ValidationException("要素格式错误");
-                }
-                std::string elementId = elem.get("elementId", "").asString();
-                std::string value = trimCopy(elem.get("value", "").asString());
-                if (elementId.empty()) {
-                    throw ValidationException("要素 elementId 不能为空");
-                }
-                if (value.empty()) {
-                    throw ValidationException("要素值不能为空");
-                }
+                auto input = requireCommandElementInput(elem);
 
                 const Json::Value* matched = nullptr;
                 for (const auto& func : device.protocolConfig["funcs"]) {
@@ -417,7 +409,7 @@ private:
                         continue;
                     }
                     for (const auto& configured : func["elements"]) {
-                        if (configured.get("id", "").asString() == elementId) {
+                        if (configured.get("id", "").asString() == input.elementId) {
                             matched = &configured;
                             break;
                         }
@@ -427,9 +419,9 @@ private:
                     }
                 }
                 if (!matched) {
-                    throw ValidationException("未找到要素对应的配置: " + elementId);
+                    throw NotFoundException("未找到要素对应的配置: " + input.elementId);
                 }
-                validateSl651ElementValue(*matched, value);
+                validateSl651ElementValue(*matched, input.value);
             }
         }
     }
@@ -457,7 +449,7 @@ private:
         if (device.protocolConfig.isNull()
             || !device.protocolConfig.isMember("funcs")
             || !device.protocolConfig["funcs"].isArray()) {
-            throw ValidationException("设备协议配置缺失，无法推导功能码");
+            throw ConflictException("设备协议配置缺失，无法推导功能码");
         }
 
         std::unordered_map<std::string, std::string> elementFuncCodes;
@@ -475,32 +467,29 @@ private:
 
                 auto [it, inserted] = elementFuncCodes.emplace(elementId, funcCode);
                 if (!inserted && it->second != funcCode) {
-                    throw ValidationException("协议配置异常：同一要素归属多个功能码");
+                    throw ConflictException("协议配置异常：同一要素归属多个功能码");
                 }
             }
         }
 
         std::string resolvedFuncCode;
         for (const auto& element : elements) {
-            std::string elementId = element.get("elementId", "").asString();
-            if (elementId.empty()) {
-                throw ValidationException("要素 elementId 不能为空");
-            }
+            auto input = requireCommandElementInput(element);
 
-            auto it = elementFuncCodes.find(elementId);
+            auto it = elementFuncCodes.find(input.elementId);
             if (it == elementFuncCodes.end()) {
-                throw ValidationException("未找到要素对应的功能码: " + elementId);
+                throw NotFoundException("未找到要素对应的功能码: " + input.elementId);
             }
 
             if (resolvedFuncCode.empty()) {
                 resolvedFuncCode = it->second;
             } else if (resolvedFuncCode != it->second) {
-                throw ValidationException("一次下发只能包含同一功能码的要素");
+                throw ConflictException("一次下发只能包含同一功能码的要素");
             }
         }
 
         if (resolvedFuncCode.empty()) {
-            throw ValidationException("无法根据要素推导功能码");
+            throw ConflictException("无法根据要素推导功能码");
         }
 
         return resolvedFuncCode;
@@ -515,7 +504,7 @@ private:
         }
         if (device.protocolType == Constants::PROTOCOL_S7) {
             if (!elements.isArray() || elements.size() != 1) {
-                throw ValidationException("S7 写寄存器一次只能下发一个要素");
+                throw ConflictException("S7 写寄存器一次只能下发一个要素");
             }
             return "S7_WRITE";
         }
@@ -523,7 +512,7 @@ private:
             return resolveSl651CommandFuncCode(device, elements);
         }
 
-        throw ValidationException("暂不支持该协议的指令下发");
+        throw ForbiddenException("暂不支持该协议的指令下发");
     }
 
 public:

@@ -40,10 +40,7 @@ public:
     Task<HttpResponsePtr> create(HttpRequestPtr req) {
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:edit"});
 
-        auto json = req->getJsonObject();
-        if (!json) {
-            co_return Response::badRequest("无效的请求体");
-        }
+        auto json = ControllerUtils::requireJson(req, "无效的请求体");
 
         ValidatorHelper::requireNonEmptyString(*json, "code", "Agent编码").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "name", "名称").throwIfInvalid();
@@ -57,20 +54,14 @@ public:
     }
 
     Task<HttpResponsePtr> events(HttpRequestPtr req, int id) {
-        if (id <= 0) {
-            co_return Response::badRequest("无效的资源ID");
-        }
+        ControllerUtils::requirePositiveId(id);
 
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:query"});
 
         int hours = ValidatorHelper::getIntParam(req, "hours", 24);
         int limit = ValidatorHelper::getIntParam(req, "limit", 100);
-        if (hours <= 0 || hours > 168) {
-            co_return Response::badRequest("hours 参数范围必须在 1-168 之间");
-        }
-        if (limit <= 0 || limit > 500) {
-            co_return Response::badRequest("limit 参数范围必须在 1-500 之间");
-        }
+        ControllerUtils::requireInRange(hours, 1, 168, "hours 参数范围必须在 1-168 之间");
+        ControllerUtils::requireInRange(limit, 1, 500, "limit 参数范围必须在 1-500 之间");
 
         const auto result = co_await service_.recentEvents(id, hours, limit);
         if (!result.found) {
@@ -81,25 +72,18 @@ public:
     }
 
     Task<HttpResponsePtr> update(HttpRequestPtr req, int id) {
-        if (id <= 0) {
-            co_return Response::badRequest("无效的资源ID");
-        }
+        ControllerUtils::requirePositiveId(id);
 
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:edit"});
 
-        auto json = req->getJsonObject();
-        if (!json) {
-            co_return Response::badRequest("无效的请求体");
-        }
+        auto json = ControllerUtils::requireJson(req, "无效的请求体");
 
         co_await service_.update(id, *json);
         co_return Response::ok(Json::Value::null, "更新成功");
     }
 
     Task<HttpResponsePtr> resync(HttpRequestPtr req, int id) {
-        if (id <= 0) {
-            co_return Response::badRequest("无效的资源ID");
-        }
+        ControllerUtils::requirePositiveId(id);
 
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:edit"});
         const auto result = co_await service_.requestConfigSync(id);
@@ -114,15 +98,10 @@ public:
     }
 
     Task<HttpResponsePtr> updateNetworkConfig(HttpRequestPtr req, int id) {
-        if (id <= 0) {
-            co_return Response::badRequest("无效的资源ID");
-        }
+        ControllerUtils::requirePositiveId(id);
 
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:edit"});
-        auto json = req->getJsonObject();
-        if (!json) {
-            co_return Response::badRequest("无效的请求体");
-        }
+        auto json = ControllerUtils::requireJson(req, "无效的请求体");
 
         const auto result = co_await service_.updateNetworkConfig(id, *json);
         if (!result.found) {
@@ -134,9 +113,7 @@ public:
     }
 
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
-        if (id <= 0) {
-            co_return Response::badRequest("无效的资源ID");
-        }
+        ControllerUtils::requirePositiveId(id);
 
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:edit"});
         const auto result = co_await service_.remove(id);
@@ -153,17 +130,16 @@ public:
     // ========== Agent Endpoint ==========
 
     Task<HttpResponsePtr> listEndpoints(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:query"});
         co_return Response::ok(co_await service_.listEndpoints(id));
     }
 
     Task<HttpResponsePtr> createEndpoint(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:edit"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("无效的请求体");
+        auto json = ControllerUtils::requireJson(req, "无效的请求体");
 
         ValidatorHelper::requireNonEmptyString(*json, "name", "端点名称").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "protocol", "协议类型").throwIfInvalid();
@@ -172,18 +148,17 @@ public:
     }
 
     Task<HttpResponsePtr> updateEndpoint(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:edit"});
 
-        auto json = req->getJsonObject();
-        if (!json) co_return Response::badRequest("无效的请求体");
+        auto json = ControllerUtils::requireJson(req, "无效的请求体");
 
         co_await service_.updateEndpoint(id, *json);
         co_return Response::ok(Json::Value::null, "更新成功");
     }
 
     Task<HttpResponsePtr> removeEndpoint(HttpRequestPtr req, int id) {
-        if (id <= 0) co_return Response::badRequest("无效的资源ID");
+        ControllerUtils::requirePositiveId(id);
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:edit"});
 
         const auto result = co_await service_.removeEndpoint(id);

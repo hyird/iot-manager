@@ -1,6 +1,16 @@
 #pragma once
 
+#include <drogon/drogon.h>
+#include <json/json.h>
+
 #include "AppException.hpp"
+
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 /**
  * @brief 参数校验和解析工具类
@@ -159,6 +169,171 @@ public:
                                    const std::vector<std::string>& allowedValues) {
         if (!json.isMember(field)) return true;
         return isInList(json, field, allowedValues);
+    }
+
+    /**
+     * @brief 读取必填字符串字段
+     */
+    static std::string requireStringField(const Json::Value& json,
+                                          const std::string& field,
+                                          const std::string& message) {
+        if (!json.isMember(field) || json[field].asString().empty()) {
+            throw ValidationException(message);
+        }
+        return json[field].asString();
+    }
+
+    /**
+     * @brief 读取必填数组字段
+     */
+    static const Json::Value& requireArrayField(const Json::Value& json,
+                                                const std::string& field,
+                                                const std::string& message) {
+        if (!json.isMember(field) || !json[field].isArray()) {
+            throw ValidationException(message);
+        }
+        return json[field];
+    }
+
+    /**
+     * @brief 读取必填对象字段
+     */
+    static const Json::Value& requireObjectField(const Json::Value& json,
+                                                 const std::string& field,
+                                                 const std::string& message) {
+        if (!json.isMember(field) || !json[field].isObject()) {
+            throw ValidationException(message);
+        }
+        return json[field];
+    }
+
+    /**
+     * @brief 读取可选数组字段，存在且为数组时返回指针
+     */
+    static const Json::Value* optionalArrayField(const Json::Value& json,
+                                                 const std::string& field) {
+        if (!json.isMember(field) || !json[field].isArray()) {
+            return nullptr;
+        }
+        return &json[field];
+    }
+
+    /**
+     * @brief 读取可选对象字段，存在时要求必须为对象
+     */
+    static const Json::Value* optionalObjectField(const Json::Value& json,
+                                                  const std::string& field,
+                                                  const std::string& message) {
+        if (!json.isMember(field)) {
+            return nullptr;
+        }
+        if (!json[field].isObject()) {
+            throw ValidationException(message);
+        }
+        return &json[field];
+    }
+
+    /**
+     * @brief 读取必填数组值
+     */
+    static const Json::Value& requireArrayValue(const Json::Value& value,
+                                                const std::string& message) {
+        if (!value.isArray()) {
+            throw ValidationException(message);
+        }
+        return value;
+    }
+
+    /**
+     * @brief 读取必填对象值
+     */
+    static const Json::Value& requireObjectValue(const Json::Value& value,
+                                                 const std::string& message) {
+        if (!value.isObject()) {
+            throw ValidationException(message);
+        }
+        return value;
+    }
+
+    /**
+     * @brief 读取必填整数字段
+     */
+    static int requireIntField(const Json::Value& json,
+                               const std::string& field,
+                               const std::string& message) {
+        if (!json.isMember(field) || !json[field].isNumeric()) {
+            throw ValidationException(message);
+        }
+        return json[field].asInt();
+    }
+
+    /**
+     * @brief 读取必填的正整数值
+     */
+    static int requirePositiveIntField(const Json::Value& json,
+                                       const std::string& field,
+                                       const std::string& message) {
+        int value = requireIntField(json, field, message);
+        if (value <= 0) {
+            throw ValidationException(message);
+        }
+        return value;
+    }
+
+    /**
+     * @brief 读取必填的非负整数值
+     */
+    static int requireNonNegativeIntField(const Json::Value& json,
+                                          const std::string& field,
+                                          const std::string& message) {
+        int value = requireIntField(json, field, message);
+        if (value < 0) {
+            throw ValidationException(message);
+        }
+        return value;
+    }
+
+    /**
+     * @brief 读取必填的整数范围值
+     */
+    static int requireIntRangeField(const Json::Value& json,
+                                    const std::string& field,
+                                    int minValue,
+                                    int maxValue,
+                                    const std::string& message) {
+        int value = requireIntField(json, field, message);
+        if (value < minValue || value > maxValue) {
+            throw ValidationException(message);
+        }
+        return value;
+    }
+
+    /**
+     * @brief 读取可选的整数范围值
+     */
+    static int optionalIntRangeField(const Json::Value& json,
+                                     const std::string& field,
+                                     int defaultValue,
+                                     int minValue,
+                                     int maxValue,
+                                     const std::string& message) {
+        if (!json.isMember(field)) {
+            return defaultValue;
+        }
+        return requireIntRangeField(json, field, minValue, maxValue, message);
+    }
+
+    /**
+     * @brief 读取可选的非负整数值
+     */
+    static int optionalNonNegativeIntField(const Json::Value& json,
+                                           const std::string& field,
+                                           int defaultValue,
+                                           const std::string& message) {
+        if (!json.isMember(field)) {
+            return defaultValue;
+        }
+        return requireNonNegativeIntField(json, field, message);
     }
 
     // ==================== 批量校验（返回错误消息） ====================

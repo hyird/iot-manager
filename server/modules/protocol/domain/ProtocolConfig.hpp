@@ -150,7 +150,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("配置名称已存在");
+            throw ConflictException("配置名称已存在");
         }
     }
 
@@ -164,7 +164,7 @@ public:
             {std::to_string(config.id())}
         );
         if (!result.empty()) {
-            throw ValidationException("该协议配置下存在关联设备，无法删除");
+            throw ConflictException("该协议配置下存在关联设备，无法删除");
         }
     }
 

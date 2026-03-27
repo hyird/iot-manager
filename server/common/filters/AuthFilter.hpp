@@ -33,12 +33,12 @@ public:
         auto authHeader = req->getHeader("Authorization");
 
         if (authHeader.empty()) {
-            fcb(Response::unauthorized("缺少认证令牌"));
+            fcb(Response::fromException(AuthException::TokenInvalid("缺少认证令牌")));
             return;
         }
 
         if (!StringUtils::startsWith(authHeader, "Bearer ")) {
-            fcb(Response::unauthorized("令牌格式错误"));
+            fcb(Response::fromException(AuthException::TokenInvalid("令牌格式错误")));
             return;
         }
 
@@ -51,7 +51,7 @@ public:
                 bool isBlacklisted = co_await authCache_.isTokenBlacklisted(token);
                 if (isBlacklisted) {
                     LOG_INFO << "Token is blacklisted";
-                    fcb(Response::unauthorized("令牌已失效，请重新登录"));
+                    fcb(Response::fromException(AuthException::TokenBlacklisted()));
                     co_return;
                 }
 
@@ -64,10 +64,10 @@ public:
                 fccb();
 
             } catch (const AppException& e) {
-                fcb(Response::error(e.getCode(), e.getMessage(), e.getStatus()));
+                fcb(Response::fromException(e));
             } catch (const std::exception& e) {
                 LOG_WARN << "[AuthFilter] JWT validation failed: " << e.what();
-                fcb(Response::unauthorized("令牌验证失败"));
+                fcb(Response::fromException(AuthException::TokenInvalid("令牌验证失败")));
             }
         });
     }

@@ -148,7 +148,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("设备名称已存在");
+            throw ConflictException("设备名称已存在");
         }
     }
 
@@ -170,7 +170,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("设备编码已存在");
+            throw ConflictException("设备编码已存在");
         }
     }
 
@@ -187,13 +187,13 @@ public:
         );
 
         if (result.empty()) {
-            throw ValidationException("关联的链路不存在");
+            throw NotFoundException("关联的链路不存在");
         }
 
         if (LinkHelper::isReservedAgentLink(
                 FieldHelper::getString(result[0]["name"]),
                 FieldHelper::getString(result[0]["usage"], Constants::LINK_USAGE_DEVICE))) {
-            throw ValidationException("Agent链路为系统保留链路，不能绑定设备");
+            throw ForbiddenException("Agent链路为系统保留链路，不能绑定设备");
         }
     }
 
@@ -210,7 +210,7 @@ public:
         );
 
         if (result.empty()) {
-            throw ValidationException("关联的协议配置不存在");
+            throw NotFoundException("关联的协议配置不存在");
         }
     }
 
@@ -235,7 +235,7 @@ public:
             {std::to_string(agentId)}
         );
         if (result.empty()) {
-            throw ValidationException("指定的采集Agent不存在");
+            throw NotFoundException("指定的采集Agent不存在");
         }
 
         auto epResult = co_await db.execSqlCoro(
@@ -243,7 +243,7 @@ public:
             {std::to_string(endpointId), std::to_string(agentId)}
         );
         if (epResult.empty()) {
-            throw ValidationException("指定的接入端点不存在或不属于该Agent");
+            throw NotFoundException("指定的接入端点不存在或不属于该Agent");
         }
     }
 
@@ -291,7 +291,7 @@ public:
             && !reg.get("content", "").asString().empty();
 
         if (!hasRegistration) {
-            throw ValidationException("Modbus 链路存在多个设备时，必须配置注册包以区分不同 DTU");
+            throw ConflictException("Modbus 链路存在多个设备时，必须配置注册包以区分不同 DTU");
         }
 
         // 检查同链路其他设备是否都配置了注册包
@@ -318,7 +318,7 @@ public:
                 if (!names.empty()) names += ", ";
                 names += FieldHelper::getString(row["name"], "");
             }
-            throw ValidationException(
+            throw ConflictException(
                 "Modbus 链路存在多个设备时，所有设备都必须配置注册包。以下设备未配置: " + names);
         }
     }

@@ -114,7 +114,7 @@ public:
         }
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("规则名称已存在");
+            throw ConflictException("规则名称已存在");
         }
     }
 
@@ -128,7 +128,7 @@ public:
             {std::to_string(rule.deviceId_)}
         );
         if (result.empty()) {
-            throw ValidationException("关联的设备不存在");
+            throw NotFoundException("关联的设备不存在");
         }
     }
 

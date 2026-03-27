@@ -191,7 +191,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("角色编码已存在");
+            throw ConflictException("角色编码已存在");
         }
     }
 
@@ -206,7 +206,7 @@ public:
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
-            throw ValidationException("该角色已被用户使用，无法删除");
+            throw ConflictException("该角色已被用户使用，无法删除");
         }
         co_return;
     }

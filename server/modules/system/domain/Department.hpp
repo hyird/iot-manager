@@ -109,7 +109,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("部门编码已存在");
+            throw ConflictException("部门编码已存在");
         }
     }
 
@@ -120,7 +120,7 @@ public:
         return [newParentId](const Department& dept) -> Task<void> {
             if (newParentId == 0) co_return;
             if (newParentId == dept.id()) {
-                throw ValidationException("不能将部门设为自己的子部门");
+                throw ConflictException("不能将部门设为自己的子部门");
             }
 
             DatabaseService db;
@@ -137,7 +137,7 @@ public:
             )", {std::to_string(newParentId), std::to_string(dept.id())});
 
             if (!result.empty()) {
-                throw ValidationException("不能将部门设为其子部门的下级，会导致循环引用");
+                throw ConflictException("不能将部门设为其子部门的下级，会导致循环引用");
             }
         };
     }
@@ -153,7 +153,7 @@ public:
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
-            throw ValidationException("该部门下存在子部门，无法删除");
+            throw ConflictException("该部门下存在子部门，无法删除");
         }
         co_return;
     }
@@ -169,7 +169,7 @@ public:
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
-            throw ValidationException("该部门下存在用户，无法删除");
+            throw ConflictException("该部门下存在用户，无法删除");
         }
         co_return;
     }

@@ -81,7 +81,7 @@ public:
         validateStatus(data, "status");
 
         if (!data.isMember("deviceIds")) {
-            throw ValidationException("必须配置可访问的设备 deviceIds");
+            throw ConflictException("必须配置可访问的设备 deviceIds");
         }
 
         auto deviceIds = OpenAccess::normalizeDeviceIds(data["deviceIds"]);
@@ -92,7 +92,7 @@ public:
         bool allowCommand = data.get("allowCommand", false).asBool();
         bool allowAlert = data.get("allowAlert", false).asBool();
         if (!allowRealtime && !allowHistory && !allowCommand && !allowAlert) {
-            throw ValidationException("实时、历史、控制、告警权限不能同时关闭");
+            throw ConflictException("实时、历史、控制、告警权限不能同时关闭");
         }
 
         std::string status = data.get("status", "enabled").asString();
@@ -174,7 +174,7 @@ public:
             ? data["allowAlert"].asBool()
             : current["allowAlert"].asBool();
         if (!allowRealtime && !allowHistory && !allowCommand && !allowAlert) {
-            throw ValidationException("实时、历史、控制、告警权限不能同时关闭");
+            throw ConflictException("实时、历史、控制、告警权限不能同时关闭");
         }
 
         std::string expiresAt;
@@ -363,30 +363,18 @@ public:
         ValidatorHelper::requireNonEmptyString(data, "url", "Webhook 地址").throwIfInvalid();
         validateStatus(data, "status");
 
-        int accessKeyId = data.isMember("accessKeyId") ? data["accessKeyId"].asInt() : 0;
-        if (accessKeyId <= 0) {
-            throw ValidationException("请选择调用配置");
-        }
+        int accessKeyId = resolveWebhookAccessKeyId(data);
         auto accessKey = co_await getAccessKeyById(accessKeyId);
-        Json::Value deviceIds = accessKey["deviceIds"];
-        if (!deviceIds.isArray() || deviceIds.empty()) {
-            throw ValidationException("AccessKey 未配置可访问设备，无法创建 webhook");
-        }
+        requireWebhookDeviceIds(accessKey, "创建");
 
         std::string url = data["url"].asString();
         OpenAccess::parseWebhookUrl(url);
 
-        Json::Value headers = data.isMember("headers") ? data["headers"] : Json::Value(Json::objectValue);
-        if (!headers.isObject()) {
-            throw ValidationException("headers 必须是对象");
-        }
+        Json::Value headers = requireWebhookHeaders(data, Json::Value(Json::objectValue));
 
         Json::Value eventTypes = normalizeEventTypes(data);
 
-        int timeoutSeconds = data.get("timeoutSeconds", 5).asInt();
-        if (timeoutSeconds < 1 || timeoutSeconds > 30) {
-            throw ValidationException("timeoutSeconds 必须在 1-30 秒之间");
-        }
+        int timeoutSeconds = requireWebhookTimeoutSeconds(data, 5);
 
         std::string status = data.get("status", "enabled").asString();
         std::string secret = data.get("secret", "").asString();
@@ -430,16 +418,9 @@ public:
 
         validateStatus(data, "status");
 
-        int accessKeyId = data.isMember("accessKeyId")
-            ? data["accessKeyId"].asInt()
-            : current["accessKeyId"].asInt();
-        if (accessKeyId <= 0) {
-            throw ValidationException("请选择调用配置");
-        }
+        int accessKeyId = resolveWebhookAccessKeyId(data, current["accessKeyId"].asInt());
         auto accessKey = co_await getAccessKeyById(accessKeyId);
-        if (!accessKey["deviceIds"].isArray() || accessKey["deviceIds"].empty()) {
-            throw ValidationException("AccessKey 未配置可访问设备，无法绑定 webhook");
-        }
+        requireWebhookDeviceIds(accessKey, "绑定");
 
         std::string name = data.isMember("name")
             ? data["name"].asString()
@@ -460,20 +441,13 @@ public:
         Json::Value headers = data.isMember("headers")
             ? data["headers"]
             : current["headers"];
-        if (!headers.isObject()) {
-            throw ValidationException("headers 必须是对象");
-        }
+        headers = requireWebhookHeaders(data, headers);
 
         Json::Value eventTypes = data.isMember("eventTypes")
             ? normalizeEventTypes(data)
             : current["eventTypes"];
 
-        int timeoutSeconds = data.isMember("timeoutSeconds")
-            ? data["timeoutSeconds"].asInt()
-            : current["timeoutSeconds"].asInt();
-        if (timeoutSeconds < 1 || timeoutSeconds > 30) {
-            throw ValidationException("timeoutSeconds 必须在 1-30 秒之间");
-        }
+        int timeoutSeconds = requireWebhookTimeoutSeconds(data, current["timeoutSeconds"].asInt());
 
         std::string secret;
         if (data.isMember("secret")) {
@@ -855,7 +829,7 @@ public:
 
     Task<OpenAccess::AccessKeySession> authenticate(const std::string& accessKey, const std::string& clientIp) {
         if (accessKey.empty()) {
-            throw AppException(2004, "缺少 AccessKey", drogon::k401Unauthorized);
+            throw AppException(ErrorCodes::UNAUTHORIZED, "缺少 AccessKey", drogon::k401Unauthorized);
         }
 
         auto result = co_await dbService_.execSqlCoro(R"(
@@ -878,7 +852,7 @@ public:
         )", {OpenAccess::sha256Hex(accessKey)});
 
         if (result.empty()) {
-            throw AppException(2004, "AccessKey 无效", drogon::k401Unauthorized);
+            throw AppException(ErrorCodes::UNAUTHORIZED, "AccessKey 无效", drogon::k401Unauthorized);
         }
 
         const auto& row = result[0];
@@ -886,7 +860,7 @@ public:
             throw ForbiddenException("AccessKey 已被禁用");
         }
         if (FieldHelper::getBool(row["expired"], false)) {
-            throw AppException(2004, "AccessKey 已过期", drogon::k401Unauthorized);
+            throw AppException(ErrorCodes::UNAUTHORIZED, "AccessKey 已过期", drogon::k401Unauthorized);
         }
 
         OpenAccess::AccessKeySession session;
@@ -915,7 +889,7 @@ public:
             );
             int resolvedId = result.empty() ? 0 : FieldHelper::getInt(result[0]["id"]);
             if (deviceId > 0 && resolvedId > 0 && resolvedId != deviceId) {
-                throw ValidationException("deviceId 与 code 不匹配");
+                throw ConflictException("deviceId 与 code 不匹配");
             }
             if (resolvedId > 0) {
                 co_return resolvedId;
@@ -1059,6 +1033,44 @@ private:
         }
     }
 
+    static int resolveWebhookAccessKeyId(const Json::Value& data, int defaultValue = 0) {
+        int accessKeyId = data.isMember("accessKeyId")
+            ? data["accessKeyId"].asInt()
+            : defaultValue;
+        if (accessKeyId <= 0) {
+            throw ValidationException("请选择调用配置");
+        }
+        return accessKeyId;
+    }
+
+    static void requireWebhookDeviceIds(const Json::Value& accessKey, const std::string& action) {
+        const auto& deviceIds = ValidatorHelper::requireArrayValue(
+            accessKey["deviceIds"],
+            "AccessKey 未配置可访问设备"
+        );
+        if (deviceIds.empty()) {
+            throw ConflictException("AccessKey 未配置可访问设备，无法" + action + " webhook");
+        }
+    }
+
+    static Json::Value requireWebhookHeaders(const Json::Value& data, const Json::Value& fallback) {
+        if (!data.isMember("headers")) {
+            return fallback;
+        }
+        return ValidatorHelper::requireObjectValue(data["headers"], "headers 必须是对象");
+    }
+
+    static int requireWebhookTimeoutSeconds(const Json::Value& data, int defaultValue) {
+        return ValidatorHelper::optionalIntRangeField(
+            data,
+            "timeoutSeconds",
+            defaultValue,
+            1,
+            30,
+            "timeoutSeconds 必须在 1-30 秒之间"
+        );
+    }
+
     static Json::Value normalizeEventTypes(const Json::Value& data) {
         Json::Value eventTypes = data.isMember("eventTypes")
             ? data["eventTypes"]
@@ -1088,7 +1100,7 @@ private:
 
     Task<void> ensureDevicesExist(const std::vector<int>& deviceIds) {
         if (deviceIds.empty()) {
-            throw ValidationException("至少配置一个可访问设备");
+            throw ConflictException("至少配置一个可访问设备");
         }
 
         std::vector<std::string> params;
@@ -1104,7 +1116,7 @@ private:
         );
 
         if (result.empty() || FieldHelper::getInt(result[0]["cnt"]) != static_cast<int>(deviceIds.size())) {
-            throw ValidationException("deviceIds 中存在无效设备");
+            throw NotFoundException("deviceIds 中存在无效设备");
         }
     }
 

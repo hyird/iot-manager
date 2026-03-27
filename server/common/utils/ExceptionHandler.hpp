@@ -1,7 +1,6 @@
 #pragma once
 
-#include "AppException.hpp"
-#include "ErrorCodes.hpp"
+#include "Response.hpp"
 
 /**
  * @brief 全局异常处理器
@@ -21,23 +20,13 @@ public:
         drogon::app().setExceptionHandler([](const std::exception& e,
                                        const HttpRequestPtr& /*req*/,
                                        std::function<void (const HttpResponsePtr &)> &&callback) {
-            Json::Value json;
-            HttpStatusCode status = k500InternalServerError;
-
             if (const auto* appEx = dynamic_cast<const AppException*>(&e)) {
-                json["code"] = appEx->getCode();
-                json["message"] = appEx->getMessage();
-                status = appEx->getStatus();
-            } else {
-                LOG_ERROR << "Unhandled exception: " << e.what();
-                json["code"] = ErrorCodes::INTERNAL_ERROR;
-                json["message"] = "服务器内部错误";
+                callback(Response::fromException(*appEx));
+                return;
             }
 
-            json["status"] = static_cast<int>(status);
-            auto resp = HttpResponse::newHttpJsonResponse(json);
-            resp->setStatusCode(status);
-            callback(resp);
+            LOG_ERROR << "Unhandled exception: " << e.what();
+            callback(Response::internalError("服务器内部错误"));
         });
     }
 };

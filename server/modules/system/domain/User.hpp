@@ -149,7 +149,7 @@ public:
 
         auto result = co_await db.execSqlCoro(sql, params);
         if (!result.empty()) {
-            throw ValidationException("用户名已存在");
+            throw ConflictException("用户名已存在");
         }
     }
 
@@ -159,7 +159,7 @@ public:
     static Constraint<User> notSelf(int currentUserId) {
         return [currentUserId](const User& user) -> Task<void> {
             if (user.id() == currentUserId) {
-                throw ValidationException("不能删除当前登录用户");
+                throw ForbiddenException("不能删除当前登录用户");
             }
             co_return;
         };
