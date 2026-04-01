@@ -196,6 +196,11 @@ public:
             }
             element["name"] = el.get("name", "").asString();
 
+            std::string group = el.get("group", "").asString();
+            if (!group.empty()) {
+                element["group"] = group;
+            }
+
             std::string unit = el.get("unit", "").asString();
             if (!unit.empty()) element["unit"] = unit;
 
@@ -294,6 +299,11 @@ public:
             }
             element["name"] = reg.get("name", "").asString();
 
+            std::string group = reg.get("group", "").asString();
+            if (!group.empty()) {
+                element["group"] = group;
+            }
+
             std::string unit = reg.get("unit", "").asString();
             if (!unit.empty()) element["unit"] = unit;
 
@@ -345,6 +355,11 @@ public:
                 element["elementId"] = areaId;
             }
             element["name"] = area.get("name", areaId).asString();
+
+            std::string group = area.get("group", "").asString();
+            if (!group.empty()) {
+                element["group"] = group;
+            }
 
             std::string unit = area.get("unit", "").asString();
             if (!unit.empty()) element["unit"] = unit;

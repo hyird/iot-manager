@@ -1119,6 +1119,37 @@ private:
         return summarizeS7Response(stage, frame);
     }
 
+    static std::string explainPlcErrorRc(int rc) {
+        switch (static_cast<std::uint16_t>(rc)) {
+            case 0x0005:
+                return "PLC/S7 error 0x0005 (Address out of range)";
+            case 0x0006:
+                return "PLC/S7 error 0x0006 (Invalid transport size)";
+            case 0x0007:
+                return "PLC/S7 error 0x0007 (Write data size mismatch)";
+            case 0x000A:
+                return "PLC/S7 error 0x000A (Item not available)";
+            case 0x8104:
+                return "PLC/S7 error 0x8104 (Function not available)";
+            case 0x8500:
+                return "PLC/S7 error 0x8500 (Data over PDU)";
+            case 0xD209:
+                return "PLC/S7 error 0xD209 (Item not available)";
+            case 0xD241:
+                return "PLC/S7 error 0xD241 (Need password)";
+            case 0xD602:
+                return "PLC/S7 error 0xD602 (Invalid password)";
+            case 0xD604:
+                return "PLC/S7 error 0xD604 (No password to clear)";
+            case 0xD605:
+                return "PLC/S7 error 0xD605 (No password to set)";
+            case 0xDC01:
+                return "PLC/S7 error 0xDC01 (Invalid value)";
+            default:
+                return "PLC/S7 error " + hexWord(static_cast<std::uint16_t>(rc));
+        }
+    }
+
     static std::string explainClientRc(int rc) {
         switch (rc) {
             case kS7Ok:
@@ -1148,7 +1179,7 @@ private:
             case kS7ErrResponseTooShort:
                 return "Response too short";
             default:
-                return rc < 0 ? "Unknown client error" : "PLC/S7 error";
+                return rc < 0 ? "Unknown client error" : explainPlcErrorRc(rc);
         }
     }
 

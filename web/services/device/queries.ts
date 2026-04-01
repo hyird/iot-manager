@@ -35,6 +35,7 @@ const areElementsEqual = (
       previousElement.name === currentElement.name &&
       previousElement.value === currentElement.value &&
       previousElement.unit === currentElement.unit &&
+      previousElement.group === currentElement.group &&
       previousElement.encode === currentElement.encode &&
       (previousElement.dictConfig === currentElement.dictConfig ||
         deepEqual(previousElement.dictConfig, currentElement.dictConfig))

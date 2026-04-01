@@ -210,6 +210,7 @@ interface DeviceCardDisplayItem {
   label: string;
   children: ReactNode;
   span?: number;
+  group?: string;
 }
 
 const buildDeviceCardItems = (elements?: Device.Element[]): DeviceCardDisplayItem[] => {
@@ -217,6 +218,8 @@ const buildDeviceCardItems = (elements?: Device.Element[]): DeviceCardDisplayIte
 
   return elements
     .map((el, idx) => {
+      const group = el.group?.trim() || undefined;
+
       if (el.dictConfig && el.value !== null && el.value !== undefined && el.value !== "") {
         if (el.dictConfig.mapType === "VALUE") {
           const rawValue = String(el.value);
@@ -224,7 +227,7 @@ const buildDeviceCardItems = (elements?: Device.Element[]): DeviceCardDisplayIte
             (item) => item && typeof item === "object" && item.key === rawValue
           );
           if (matchedItem) {
-            return { key: idx, label: el.name, children: matchedItem.label };
+            return { key: idx, label: el.name, children: matchedItem.label, group };
           }
           return null;
         }
@@ -252,7 +255,7 @@ const buildDeviceCardItems = (elements?: Device.Element[]): DeviceCardDisplayIte
             </Space>
           );
 
-          return { key: idx, label: el.name, children, span: needFullRow ? 2 : undefined };
+          return { key: idx, label: el.name, children, span: needFullRow ? 2 : undefined, group };
         }
       }
 
@@ -260,7 +263,7 @@ const buildDeviceCardItems = (elements?: Device.Element[]): DeviceCardDisplayIte
         el.value === null || el.value === undefined || el.value === "" ? "--" : el.value;
       const children =
         displayValue === "--" || !el.unit ? String(displayValue) : `${displayValue} ${el.unit}`;
-      return { key: idx, label: el.name, children };
+      return { key: idx, label: el.name, children, group };
     })
     .filter((item): item is NonNullable<typeof item> => item !== null);
 };

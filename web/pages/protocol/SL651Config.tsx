@@ -25,8 +25,16 @@ import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { SL651 } from "@/types";
-import { buildGroupSections, reorderItemsByGroupOrder } from "./grouping";
-import { SortableGroupSectionFrame, SortableGroupSectionList } from "./SortableGroup";
+import {
+  buildGroupSections,
+  reorderItemsByGroupOrder,
+  reorderItemsWithinGroupOrder,
+} from "./grouping";
+import {
+  SortableGroupSectionFrame,
+  SortableGroupSectionList,
+  SortableGroupTableList,
+} from "./SortableGroup";
 import {
   DeviceTypeModal,
   type DeviceTypeModalRef,
@@ -157,20 +165,19 @@ const SL651ConfigPage = () => {
     });
   };
 
-  const handleReorderElements = useCallback(
+  const persistElements = useCallback(
     async (
       funcId: string,
       listKind: "elements" | "responseElements",
-      nextOrder: string[],
+      nextItems: SL651.Element[],
       currentItems: SL651.Element[]
     ) => {
       if (!activeTypeId) return;
       const type = types.find((t) => t.id === activeTypeId);
       if (!type) return;
 
-      const reordered = reorderItemsByGroupOrder(currentItems, nextOrder);
-      if (reordered.length === currentItems.length) {
-        const isSameOrder = reordered.every((item, index) => item.id === currentItems[index]?.id);
+      if (nextItems.length === currentItems.length) {
+        const isSameOrder = nextItems.every((item, index) => item.id === currentItems[index]?.id);
         if (isSameOrder) return;
       }
 
@@ -180,12 +187,12 @@ const SL651ConfigPage = () => {
         if (listKind === "responseElements") {
           return {
             ...func,
-            responseElements: reordered.length > 0 ? reordered : undefined,
+            responseElements: nextItems.length > 0 ? nextItems : undefined,
           };
         }
         return {
           ...func,
-          elements: reordered,
+          elements: nextItems,
         };
       });
 
@@ -197,6 +204,36 @@ const SL651ConfigPage = () => {
       await refetchTypes();
     },
     [activeTypeId, refetchTypes, saveMutation, types]
+  );
+
+  const handleReorderElements = useCallback(
+    async (
+      funcId: string,
+      listKind: "elements" | "responseElements",
+      nextOrder: string[],
+      currentItems: SL651.Element[]
+    ) => {
+      await persistElements(funcId, listKind, reorderItemsByGroupOrder(currentItems, nextOrder), currentItems);
+    },
+    [persistElements]
+  );
+
+  const handleReorderElementItems = useCallback(
+    async (
+      funcId: string,
+      listKind: "elements" | "responseElements",
+      groupKey: string,
+      nextOrder: string[],
+      currentItems: SL651.Element[]
+    ) => {
+      await persistElements(
+        funcId,
+        listKind,
+        reorderItemsWithinGroupOrder(currentItems, groupKey, nextOrder),
+        currentItems
+      );
+    },
+    [persistElements]
   );
 
   // ========== 功能码表格列 ==========
@@ -393,17 +430,21 @@ const SL651ConfigPage = () => {
             bodyClassName="mt-4"
             disabled={saveMutation.isPending}
             title={group.label}
-            description="同组要素会一起展示和维护"
             meta={<Tag color="blue">{group.count} 个</Tag>}
           >
             <div style={{ "--ant-table-header-border-radius": 0 } as React.CSSProperties}>
-              <Table
-                dataSource={group.items}
+              <SortableGroupTableList
+                items={group.items}
                 columns={elementColumns(funcId, funcDir, { advancedActions })}
-                rowKey="id"
-                pagination={false}
-                size="small"
-                scroll={{ x: "max-content" }}
+                disabled={saveMutation.isPending}
+                empty={<Empty description={emptyDescription} />}
+                onOrderChange={(nextOrder) =>
+                  handleReorderElementItems(funcId, listKind, group.key, nextOrder, elements || [])
+                }
+                tableProps={{
+                  size: "small",
+                  scroll: { x: "max-content" },
+                }}
               />
             </div>
           </SortableGroupSectionFrame>

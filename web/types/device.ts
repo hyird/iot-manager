@@ -196,6 +196,8 @@ export interface DeviceElement {
   name: string;
   value: string | number | null;
   unit?: string;
+  /** 分组名称（由协议配置映射，用于设备管理页聚合展示） */
+  group?: string;
   /** 编码类型 */
   encode?: string;
   /** 字典配置（用于映射值显示） */

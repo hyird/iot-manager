@@ -955,16 +955,22 @@ inline std::vector<std::uint8_t> Client::buildWriteRequest(int area, int dbNumbe
     return payload;
 }
 
+inline std::optional<int> readS7PayloadErrorCode(const std::vector<std::uint8_t>& response) {
+    if (response.size() < 12 || response[0] != kS7ProtocolId) {
+        return std::nullopt;
+    }
+    return static_cast<int>(readBe16(response.data() + 10));
+}
+
 inline int Client::parseReadResponse(const std::vector<std::uint8_t>& response, std::uint8_t* target,
                                      std::size_t capacity, std::size_t& copied) {
     copied = 0;
+    // PLC rejections can arrive as short S7 error frames with no data section.
+    if (const auto error = readS7PayloadErrorCode(response); error && *error != 0) {
+        return *error;
+    }
     if (response.size() < 18) {
         return kS7ErrResponseTooShort;
-    }
-
-    const std::uint16_t error = readBe16(response.data() + 10);
-    if (error != 0) {
-        return static_cast<int>(error);
     }
 
     const std::uint16_t parLen = readBe16(response.data() + 6);
@@ -991,13 +997,11 @@ inline int Client::parseReadResponse(const std::vector<std::uint8_t>& response, 
 }
 
 inline int Client::parseWriteResponse(const std::vector<std::uint8_t>& response) const {
+    if (const auto error = readS7PayloadErrorCode(response); error && *error != 0) {
+        return *error;
+    }
     if (response.size() < 15) {
         return kS7ErrResponseTooShort;
-    }
-
-    const std::uint16_t error = readBe16(response.data() + 10);
-    if (error != 0) {
-        return static_cast<int>(error);
     }
 
     const std::uint16_t parLen = readBe16(response.data() + 6);

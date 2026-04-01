@@ -22,7 +22,6 @@ import {
   Space,
   Col,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Tree,
@@ -33,8 +32,17 @@ import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { S7 } from "@/types";
-import { buildGroupSections, normalizeGroupName, reorderItemsByGroupOrder } from "./grouping";
-import { SortableGroupSectionFrame, SortableGroupSectionList } from "./SortableGroup";
+import {
+  buildGroupSections,
+  normalizeGroupName,
+  reorderItemsByGroupOrder,
+  reorderItemsWithinGroupOrder,
+} from "./grouping";
+import {
+  SortableGroupSectionFrame,
+  SortableGroupSectionList,
+  SortableGroupTableList,
+} from "./SortableGroup";
 
 type DeviceTypeFormValues = {
   deviceType: string;
@@ -867,11 +875,10 @@ const S7ConfigPage = () => {
     ? getConnectionFormValues(activeConfig.plcModel, activeConfig.connection)
     : null;
 
-  const handleAreaGroupOrderChange = useCallback(
-    async (nextOrder: string[]) => {
+  const persistAreas = useCallback(
+    async (nextAreas: S7.Area[]) => {
       if (!activeTypeId || !activeConfig) return;
 
-      const nextAreas = reorderItemsByGroupOrder(activeAreas, nextOrder);
       if (nextAreas.length === activeAreas.length) {
         const isSameOrder = nextAreas.every((area, index) => area.id === activeAreas[index]?.id);
         if (isSameOrder) return;
@@ -888,6 +895,20 @@ const S7ConfigPage = () => {
       await refetch();
     },
     [activeAreas, activeConfig, activeTypeId, refetch, saveMutation]
+  );
+
+  const handleAreaGroupOrderChange = useCallback(
+    async (nextOrder: string[]) => {
+      await persistAreas(reorderItemsByGroupOrder(activeAreas, nextOrder));
+    },
+    [activeAreas, persistAreas]
+  );
+
+  const handleAreaItemOrderChange = useCallback(
+    async (groupKey: string, nextOrder: string[]) => {
+      await persistAreas(reorderItemsWithinGroupOrder(activeAreas, groupKey, nextOrder));
+    },
+    [activeAreas, persistAreas]
   );
 
   const areaColumns: ColumnsType<S7.Area> = [
@@ -1297,7 +1318,6 @@ const S7ConfigPage = () => {
                       bodyClassName="mt-4"
                       disabled={saveMutation.isPending}
                       title={group.label}
-                      description="按分组拆分展示，方便批量查看和编辑"
                       meta={
                         <Space size={6} wrap>
                           <Tag color="blue">{group.count} 个</Tag>
@@ -1306,15 +1326,19 @@ const S7ConfigPage = () => {
                       }
                     >
                       <div style={{ "--ant-table-header-border-radius": 0 } as CSSProperties}>
-                        <Table
-                          size="small"
-                          rowKey="id"
-                          pagination={false}
-                          dataSource={group.items}
+                        <SortableGroupTableList
+                          items={group.items}
                           columns={areaColumns}
-                          locale={{ emptyText: <Empty description="暂无寄存器" /> }}
-                          sticky
-                          scroll={{ x: "max-content" }}
+                          disabled={saveMutation.isPending}
+                          empty={<Empty description="暂无寄存器" />}
+                          onOrderChange={(nextOrder) =>
+                            handleAreaItemOrderChange(group.key, nextOrder)
+                          }
+                          tableProps={{
+                            size: "small",
+                            sticky: true,
+                            scroll: { x: "max-content" },
+                          }}
                         />
                       </div>
                     </SortableGroupSectionFrame>

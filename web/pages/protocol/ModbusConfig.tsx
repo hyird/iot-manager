@@ -24,13 +24,21 @@ import {
   Tooltip,
   Tree,
 } from "antd";
-import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, type ReactNode, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { Modbus, ModbusDictConfig, Protocol } from "@/types";
-import { reorderItemsByGroupOrder } from "./grouping";
-import { SortableGroupSectionFrame, SortableGroupSectionList } from "./SortableGroup";
+import {
+  buildGroupSections,
+  reorderItemsByGroupOrder,
+  reorderItemsWithinGroupOrder,
+} from "./grouping";
+import {
+  SortableGroupItemList,
+  SortableGroupSectionFrame,
+  SortableGroupSectionList,
+} from "./SortableGroup";
 
 /** 寄存器类型选项 */
 const RegisterTypeOptions: { value: Modbus.RegisterType; label: string }[] = [
@@ -103,57 +111,31 @@ interface RegisterGroupSection {
   key: string;
   label: string;
   count: number;
-  minAddress: number;
   registers: Modbus.Register[];
   typeCounts: Record<Modbus.RegisterType, number>;
 }
 
 const buildRegisterGroupSections = (registers: Modbus.Register[]): RegisterGroupSection[] => {
-  const sectionMap = new Map<string, RegisterGroupSection>();
+  return buildGroupSections(registers).map((section) => {
+    const typeCounts: Record<Modbus.RegisterType, number> = {
+      COIL: 0,
+      DISCRETE_INPUT: 0,
+      HOLDING_REGISTER: 0,
+      INPUT_REGISTER: 0,
+    };
 
-  for (const register of registers) {
-    const key = normalizeGroupName(register.group) || "__ungrouped__";
-    const label = normalizeGroupName(register.group) || "未分组";
-    const current = sectionMap.get(key);
-    if (current) {
-      current.registers.push(register);
-      current.count++;
-      current.minAddress = Math.min(current.minAddress, register.address);
-      current.typeCounts[register.registerType]++;
-      continue;
+    for (const register of section.items) {
+      typeCounts[register.registerType]++;
     }
 
-    sectionMap.set(key, {
-      key,
-      label,
-      count: 1,
-      minAddress: register.address,
-      registers: [register],
-      typeCounts: {
-        COIL: 0,
-        DISCRETE_INPUT: 0,
-        HOLDING_REGISTER: 0,
-        INPUT_REGISTER: 0,
-      },
-    });
-    sectionMap.get(key)!.typeCounts[register.registerType] = 1;
-  }
-
-  return Array.from(sectionMap.values())
-    .map((section) => ({
-      ...section,
-      registers: [...section.registers].sort((a, b) => {
-        const typeDiff =
-          REGISTER_TYPE_ORDER.indexOf(a.registerType) - REGISTER_TYPE_ORDER.indexOf(b.registerType);
-        if (typeDiff !== 0) return typeDiff;
-        if (a.address !== b.address) return a.address - b.address;
-        return a.name.localeCompare(b.name, "zh-Hans-CN");
-      }),
-    }))
-    .sort((a, b) => {
-      if (a.minAddress !== b.minAddress) return a.minAddress - b.minAddress;
-      return a.label.localeCompare(b.label, "zh-Hans-CN");
-    });
+    return {
+      key: section.key,
+      label: section.label,
+      count: section.count,
+      registers: section.items,
+      typeCounts,
+    };
+  });
 };
 
 /** 生成唯一 ID（兼容非安全上下文） */
@@ -264,12 +246,11 @@ const ModbusConfigPage = () => {
     [registers]
   );
 
-  const handleRegisterGroupOrderChange = useCallback(
-    async (nextOrder: string[]) => {
+  const saveRegisterConfig = useCallback(
+    async (nextRegisters: Modbus.Register[]) => {
       if (!activeTypeId || !activeType) return;
 
       const config = activeType.config as Modbus.Config;
-      const nextRegisters = reorderItemsByGroupOrder(registers, nextOrder);
       if (nextRegisters.length === registers.length) {
         const isSameOrder = nextRegisters.every(
           (register, index) => register.id === registers[index]?.id
@@ -289,6 +270,20 @@ const ModbusConfigPage = () => {
       await refetchTypes();
     },
     [activeType, activeTypeId, refetchTypes, registers, saveMutation]
+  );
+
+  const handleRegisterGroupOrderChange = useCallback(
+    async (nextOrder: string[]) => {
+      await saveRegisterConfig(reorderItemsByGroupOrder(registers, nextOrder));
+    },
+    [registers, saveRegisterConfig]
+  );
+
+  const handleRegisterItemOrderChange = useCallback(
+    async (groupKey: string, nextOrder: string[]) => {
+      await saveRegisterConfig(reorderItemsWithinGroupOrder(registers, groupKey, nextOrder));
+    },
+    [registers, saveRegisterConfig]
   );
 
   // 加载状态（与数据加载状态同步）
@@ -324,7 +319,7 @@ const ModbusConfigPage = () => {
     });
   };
 
-  const renderRegisterCard = (register: Modbus.Register) => {
+  const renderRegisterCard = (register: Modbus.Register, dragHandle?: ReactNode) => {
     const meta = REGISTER_TYPE_META[register.registerType];
     const typeLabel = RegisterTypeOptions.find((opt) => opt.value === register.registerType)?.label;
     const dataTypeLabel = DataTypeOptions.find((opt) => opt.value === register.dataType)?.label;
@@ -345,7 +340,8 @@ const ModbusConfigPage = () => {
             <div className="truncate text-sm font-semibold text-slate-800">{register.name}</div>
             <div className="mt-0.5 text-[12px] text-slate-400">地址 {addressLabel}</div>
           </div>
-          <Space size={0} className="shrink-0">
+          <Space size={4} className="shrink-0">
+            {dragHandle}
             {canEdit && (
               <Button
                 size="small"
@@ -561,7 +557,6 @@ const ModbusConfigPage = () => {
                     bodyClassName="mt-4"
                     disabled={saveMutation.isPending}
                     title={group.label}
-                    description="按分组聚合显示，便于统一维护和快速定位"
                     meta={
                       <Space size={6} wrap>
                         <Tag color="blue">{group.count} 个</Tag>
@@ -575,9 +570,17 @@ const ModbusConfigPage = () => {
                       </Space>
                     }
                   >
-                    <div className="grid gap-3" style={REGISTER_CARD_GRID_STYLE}>
-                      {group.registers.map((register) => renderRegisterCard(register))}
-                    </div>
+                    <SortableGroupItemList
+                      items={group.registers}
+                      className="grid gap-3"
+                      style={REGISTER_CARD_GRID_STYLE}
+                      disabled={saveMutation.isPending}
+                      onOrderChange={(nextOrder) =>
+                        handleRegisterItemOrderChange(group.key, nextOrder)
+                      }
+                    >
+                      {(register, dragHandle) => renderRegisterCard(register, dragHandle)}
+                    </SortableGroupItemList>
                   </SortableGroupSectionFrame>
                 )}
               </SortableGroupSectionList>

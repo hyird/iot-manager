@@ -92,3 +92,36 @@ export const reorderItemsByGroupOrder = <T extends { group?: string }>(
 
   return nextOrder.flatMap((key) => groupMap.get(key) ?? []);
 };
+
+export const reorderItemsWithinGroupOrder = <T extends { id: string; group?: string }>(
+  items: T[],
+  groupKey: string,
+  orderedIds: string[]
+): T[] => {
+  const sections = buildGroupSections(items);
+  const orderedIdSet = new Set(orderedIds);
+
+  return sections.flatMap((section) => {
+    if (section.key !== groupKey) {
+      return section.items;
+    }
+
+    const itemMap = new Map(section.items.map((item) => [item.id, item]));
+    const nextItems: T[] = [];
+
+    for (const id of orderedIds) {
+      const item = itemMap.get(id);
+      if (item) {
+        nextItems.push(item);
+      }
+    }
+
+    for (const item of section.items) {
+      if (!orderedIdSet.has(item.id)) {
+        nextItems.push(item);
+      }
+    }
+
+    return nextItems;
+  });
+};
