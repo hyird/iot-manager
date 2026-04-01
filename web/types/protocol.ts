@@ -62,6 +62,8 @@ export interface SL651DictConfig {
 export interface SL651Element {
   id: string;
   name: string;
+  /** 分组名称（用于配置页按卡片分组展示） */
+  group?: string;
   guideHex: string;
   encode: SL651EncodeType;
   length: number;
@@ -138,6 +140,8 @@ export interface ModbusRegister {
   id: string;
   /** 寄存器名称 */
   name: string;
+  /** 分组名称（用于配置页按卡片分组展示） */
+  group?: string;
   /** 寄存器类型 */
   registerType: ModbusRegisterType;
   /** 寄存器地址（十进制） */
@@ -197,6 +201,8 @@ export type S7AreaDataType =
 export interface S7Area {
   id: string;
   name: string;
+  /** 分组名称（用于配置页按卡片分组展示） */
+  group?: string;
   area: S7AreaType;
   dataType?: S7AreaDataType;
   dbNumber?: number;

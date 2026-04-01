@@ -5,6 +5,7 @@
 
 import { DownloadOutlined, UploadOutlined } from "@ant-design/icons";
 import {
+  AutoComplete,
   Button,
   Card,
   Empty,
@@ -27,11 +28,13 @@ import {
   Tree,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { S7 } from "@/types";
+import { buildGroupSections, normalizeGroupName, reorderItemsByGroupOrder } from "./grouping";
+import { SortableGroupSectionFrame, SortableGroupSectionList } from "./SortableGroup";
 
 type DeviceTypeFormValues = {
   deviceType: string;
@@ -239,10 +242,10 @@ const connectionModeOptions: { value: S7.ConnectionMode; label: string }[] = [
   { value: "TSAP", label: "TSAP" },
 ];
 
-const getConnectionModeOptions = (plcModel?: S7.PlcModel): { value: S7.ConnectionMode; label: string }[] =>
-  plcModel === "S7-200"
-    ? [{ value: "TSAP", label: "TSAP" }]
-    : connectionModeOptions;
+const getConnectionModeOptions = (
+  plcModel?: S7.PlcModel
+): { value: S7.ConnectionMode; label: string }[] =>
+  plcModel === "S7-200" ? [{ value: "TSAP", label: "TSAP" }] : connectionModeOptions;
 
 const connectionTypeTips: Record<S7.ConnectionType, string> = {
   PG: "PG（编程）模式，常用于本地接线连接与离线调试",
@@ -493,11 +496,20 @@ interface AreaModalProps {
   mode: "create" | "edit";
   initialValue?: S7.Area;
   plcModel?: S7.PlcModel;
+  groupOptions?: string[];
   onCancel: () => void;
   onSubmit: (value: S7.Area) => void;
 }
 
-function AreaModal({ open, mode, initialValue, plcModel, onCancel, onSubmit }: AreaModalProps) {
+function AreaModal({
+  open,
+  mode,
+  initialValue,
+  plcModel,
+  groupOptions = [],
+  onCancel,
+  onSubmit,
+}: AreaModalProps) {
   const [form] = Form.useForm<S7.Area>();
   const areaType = Form.useWatch("area", form);
   const dataType = normalizeS7DataType(Form.useWatch("dataType", form) as string | undefined);
@@ -513,7 +525,7 @@ function AreaModal({ open, mode, initialValue, plcModel, onCancel, onSubmit }: A
   const initialDbNumber =
     normalizedInitialArea === "V"
       ? undefined
-      : initialValue?.dbNumber ?? (normalizedInitialArea === "DB" ? 1 : undefined);
+      : (initialValue?.dbNumber ?? (normalizedInitialArea === "DB" ? 1 : undefined));
   const initialFormValues = useMemo<Partial<S7.Area>>(
     () =>
       initialValue
@@ -521,9 +533,11 @@ function AreaModal({ open, mode, initialValue, plcModel, onCancel, onSubmit }: A
             ...initialValue,
             area: normalizedInitialArea,
             dbNumber: initialDbNumber,
+            group: initialValue.group,
           }
         : {
             name: "",
+            group: undefined,
             area: defaultAreaType,
             dbNumber: initialDbNumber,
             dataType: "INT16" as S7.AreaDataType,
@@ -595,6 +609,7 @@ function AreaModal({ open, mode, initialValue, plcModel, onCancel, onSubmit }: A
     const nextStartBit = isBoolDataType && canUseBoolAddress ? values.startBit : undefined;
     const nextValues = {
       ...values,
+      group: normalizeGroupName(values.group) || undefined,
       dbNumber: nextDbNumber,
       startBit: nextStartBit,
       dataType: resolvedDataType,
@@ -613,11 +628,7 @@ function AreaModal({ open, mode, initialValue, plcModel, onCancel, onSubmit }: A
       onOk={handleOk}
       destroyOnHidden
     >
-      <Form
-        form={form}
-        layout="vertical"
-        initialValues={initialFormValues}
-      >
+      <Form form={form} layout="vertical" initialValues={initialFormValues}>
         <Form.Item
           name="name"
           label="寄存器名称"
@@ -625,13 +636,29 @@ function AreaModal({ open, mode, initialValue, plcModel, onCancel, onSubmit }: A
         >
           <Input placeholder="例如: 温度寄存器" />
         </Form.Item>
+        <Form.Item
+          name="group"
+          label="分组"
+          extra="同一分组的寄存器会在配置页聚合为同一组卡片，留空则显示在未分组中"
+        >
+          <AutoComplete
+            allowClear
+            options={groupOptions.map((value) => ({ value }))}
+            placeholder="例如: 基础信息、告警、控制"
+            filterOption
+          />
+        </Form.Item>
         <Row gutter={12}>
           <Col xs={24} sm={12}>
             <Form.Item
               name="area"
               label="寄存器类型"
               rules={[{ required: true }]}
-              extra={plcModel === "S7-200" ? "S7-200 使用 V/M/I/Q/C/T 区域" : "不同区域类型映射不同读取方式"}
+              extra={
+                plcModel === "S7-200"
+                  ? "S7-200 使用 V/M/I/Q/C/T 区域"
+                  : "不同区域类型映射不同读取方式"
+              }
             >
               <Select
                 options={areaTypeOptions}
@@ -825,12 +852,43 @@ const S7ConfigPage = () => {
 
   const activeConfig = (activeType?.config as S7.Config) ?? null;
   const activeAreas = activeConfig?.areas ?? [];
+  const areaGroups = useMemo(() => buildGroupSections(activeAreas), [activeAreas]);
+  const areaGroupOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(activeAreas.map((area) => normalizeGroupName(area.group)).filter(Boolean))
+      ).sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
+    [activeAreas]
+  );
   const activeConnectionMode = activeConfig
     ? inferConnectionMode(activeConfig.plcModel, activeConfig.connection)
     : undefined;
   const activeConnectionPreset = activeConfig
     ? getConnectionFormValues(activeConfig.plcModel, activeConfig.connection)
     : null;
+
+  const handleAreaGroupOrderChange = useCallback(
+    async (nextOrder: string[]) => {
+      if (!activeTypeId || !activeConfig) return;
+
+      const nextAreas = reorderItemsByGroupOrder(activeAreas, nextOrder);
+      if (nextAreas.length === activeAreas.length) {
+        const isSameOrder = nextAreas.every((area, index) => area.id === activeAreas[index]?.id);
+        if (isSameOrder) return;
+      }
+
+      await saveMutation.mutateAsync({
+        id: activeTypeId,
+        protocol: "S7",
+        config: {
+          ...activeConfig,
+          areas: nextAreas,
+        },
+      });
+      await refetch();
+    },
+    [activeAreas, activeConfig, activeTypeId, refetch, saveMutation]
+  );
 
   const areaColumns: ColumnsType<S7.Area> = [
     { title: "寄存器名称", dataIndex: "name", ellipsis: true },
@@ -852,7 +910,8 @@ const S7ConfigPage = () => {
       title: "DB 编号",
       dataIndex: "dbNumber",
       render: (value: number | undefined, record: S7.Area) => {
-        const displayArea = normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
+        const displayArea =
+          normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
         if (displayArea === "V") {
           return "-";
         }
@@ -862,14 +921,16 @@ const S7ConfigPage = () => {
     {
       title: "起始地址",
       render: (_, record: S7.Area) => {
-        const displayArea = normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
+        const displayArea =
+          normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
         return getAreaAddressRangeText({ ...record, area: displayArea }).start;
       },
     },
     {
       title: "结束地址",
       render: (_, record: S7.Area) => {
-        const displayArea = normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
+        const displayArea =
+          normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
         return getAreaAddressRangeText({ ...record, area: displayArea }).end;
       },
     },
@@ -1165,6 +1226,8 @@ const S7ConfigPage = () => {
                   <Tag color={activeConnectionMode === "TSAP" ? "cyan" : "blue"}>
                     {getConnectionModeLabel(activeConnectionMode)}
                   </Tag>
+                  <Tag color="geekblue">{activeAreas.length} 个寄存器</Tag>
+                  <Tag color="purple">{areaGroups.length} 个分组</Tag>
                   {activeConnectionMode === "TSAP" ? (
                     <Tag>
                       TSAP {activeConnectionPreset?.localTSAP ?? "0100"} /{" "}
@@ -1211,22 +1274,53 @@ const S7ConfigPage = () => {
           >
             {!activeType ? (
               <Empty description={emptyTypeDesc} />
+            ) : loadingAreas ? (
+              <Skeleton active paragraph={{ rows: 6 }} />
+            ) : activeAreas.length === 0 ? (
+              <Empty description="暂无寄存器，点击右上角新增寄存器" />
             ) : (
-              <Space direction="vertical" className="w-full p-4" size="large">
-                <div style={{ "--ant-table-header-border-radius": 0 } as CSSProperties}>
-                  <Table
-                    size="small"
-                    rowKey="id"
-                    pagination={false}
-                    loading={loadingAreas}
-                    dataSource={activeAreas}
-                    columns={areaColumns}
-                    locale={{ emptyText: <Empty description="暂无寄存器" /> }}
-                    sticky
-                    scroll={{ x: "max-content" }}
-                  />
-                </div>
-              </Space>
+              <SortableGroupSectionList
+                sections={areaGroups}
+                className="w-full p-4"
+                disabled={saveMutation.isPending}
+                onOrderChange={handleAreaGroupOrderChange}
+                empty={<Empty description="暂无寄存器，点击右上角新增寄存器" />}
+              >
+                {(group) => {
+                  const writableCount = group.items.filter((area) => area.writable).length;
+
+                  return (
+                    <SortableGroupSectionFrame
+                      id={group.key}
+                      key={group.key}
+                      className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4"
+                      bodyClassName="mt-4"
+                      disabled={saveMutation.isPending}
+                      title={group.label}
+                      description="按分组拆分展示，方便批量查看和编辑"
+                      meta={
+                        <Space size={6} wrap>
+                          <Tag color="blue">{group.count} 个</Tag>
+                          {writableCount > 0 && <Tag color="orange">{writableCount} 个可写</Tag>}
+                        </Space>
+                      }
+                    >
+                      <div style={{ "--ant-table-header-border-radius": 0 } as CSSProperties}>
+                        <Table
+                          size="small"
+                          rowKey="id"
+                          pagination={false}
+                          dataSource={group.items}
+                          columns={areaColumns}
+                          locale={{ emptyText: <Empty description="暂无寄存器" /> }}
+                          sticky
+                          scroll={{ x: "max-content" }}
+                        />
+                      </div>
+                    </SortableGroupSectionFrame>
+                  );
+                }}
+              </SortableGroupSectionList>
             )}
           </Card>
         </div>
@@ -1400,6 +1494,7 @@ const S7ConfigPage = () => {
             : undefined
         }
         plcModel={activeConfig?.plcModel}
+        groupOptions={areaGroupOptions}
         onCancel={() => setAreaModalOpen(false)}
         onSubmit={async (value) => {
           if (!activeTypeId || !activeConfig) return;

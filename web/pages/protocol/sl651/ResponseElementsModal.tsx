@@ -2,9 +2,10 @@
  * SL651 应答要素 Modal
  */
 
-import { Button, Form, Input, InputNumber, Modal, Select, Table, Tag } from "antd";
-import { forwardRef, useImperativeHandle, useState } from "react";
+import { AutoComplete, Button, Form, Input, InputNumber, Modal, Select, Table, Tag } from "antd";
+import { forwardRef, useImperativeHandle, useMemo, useState } from "react";
 import type { Protocol, SL651 } from "@/types";
+import { normalizeGroupName } from "../grouping";
 import { EncodeList, generateId, type SaveMutation } from "./shared";
 
 export interface ResponseElementsModalRef {
@@ -23,6 +24,16 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
     const [typeId, setTypeId] = useState<number>();
     const [func, setFunc] = useState<SL651.Func>();
     const [form] = Form.useForm();
+    const groupOptions = useMemo(() => {
+      const groups = new Set<string>();
+      for (const element of [...(func?.elements || []), ...(func?.responseElements || [])]) {
+        const group = normalizeGroupName(element.group);
+        if (group) groups.add(group);
+      }
+      return Array.from(groups)
+        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
+        .map((value) => ({ value }));
+    }, [func]);
 
     useImperativeHandle(ref, () => ({
       open(t, f) {
@@ -52,6 +63,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
         .map((ele: Partial<SL651.Element>) => ({
           id: ele.id || generateId(),
           name: ele.name?.trim(),
+          group: normalizeGroupName(ele.group) || undefined,
           guideHex: ele.guideHex?.trim(),
           encode: ele.encode,
           length: ele.length,
@@ -117,6 +129,20 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                           className="!mb-0"
                         >
                           <Input placeholder="要素名称" />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      title: "分组",
+                      width: 150,
+                      render: (_, field) => (
+                        <Form.Item name={[field.name, "group"]} className="!mb-0">
+                          <AutoComplete
+                            allowClear
+                            options={groupOptions}
+                            placeholder="分组"
+                            filterOption
+                          />
                         </Form.Item>
                       ),
                     },
@@ -208,6 +234,7 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                     add({
                       id: generateId(),
                       name: "",
+                      group: undefined,
                       guideHex: "",
                       encode: "BCD",
                       length: 1,

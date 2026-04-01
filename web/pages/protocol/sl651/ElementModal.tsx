@@ -2,9 +2,10 @@
  * SL651 要素 Modal
  */
 
-import { Form, Input, InputNumber, Modal, Select } from "antd";
-import { forwardRef, useImperativeHandle, useState } from "react";
+import { AutoComplete, Form, Input, InputNumber, Modal, Select } from "antd";
+import { forwardRef, useImperativeHandle, useMemo, useState } from "react";
 import type { Protocol, SL651 } from "@/types";
+import { normalizeGroupName } from "../grouping";
 import { EncodeList, generateId, type SaveMutation } from "./shared";
 
 export interface ElementModalRef {
@@ -25,6 +26,29 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
     const [funcId, setFuncId] = useState<string>();
     const [current, setCurrent] = useState<SL651.Element>();
     const [form] = Form.useForm();
+    const groupOptions = useMemo(() => {
+      const type = types.find((t) => t.id === typeId);
+      const config = type?.config as SL651.Config | undefined;
+      const groups = new Set<string>();
+
+      for (const func of config?.funcs || []) {
+        for (const element of func.elements || []) {
+          const group = normalizeGroupName(element.group);
+          if (group) groups.add(group);
+        }
+        for (const element of func.responseElements || []) {
+          const group = normalizeGroupName(element.group);
+          if (group) groups.add(group);
+        }
+      }
+
+      const currentGroup = normalizeGroupName(current?.group);
+      if (currentGroup) groups.add(currentGroup);
+
+      return Array.from(groups)
+        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
+        .map((value) => ({ value }));
+    }, [current?.group, typeId, types]);
 
     useImperativeHandle(ref, () => ({
       open(m, t, fId, element) {
@@ -46,6 +70,16 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
       if (!type) return;
 
       const config = type.config as SL651.Config;
+      const elementFields = {
+        name: values.name,
+        group: normalizeGroupName(values.group) || undefined,
+        guideHex: values.guideHex,
+        encode: values.encode,
+        length: values.length,
+        digits: values.digits,
+        unit: values.unit,
+        remark: values.remark,
+      };
       const newFuncs = config.funcs.map((f) => {
         if (f.id !== funcId) return f;
 
@@ -53,17 +87,13 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
         if (mode === "create") {
           const newElement: SL651.Element = {
             id: generateId(),
-            name: values.name,
-            guideHex: values.guideHex,
-            encode: values.encode,
-            length: values.length,
-            digits: values.digits,
-            unit: values.unit,
-            remark: values.remark,
+            ...elementFields,
           };
           newElements = [...(f.elements || []), newElement];
         } else {
-          newElements = f.elements.map((e) => (e.id === current?.id ? { ...e, ...values } : e));
+          newElements = f.elements.map((e) =>
+            e.id === current?.id ? { ...e, ...elementFields } : e
+          );
         }
 
         return { ...f, elements: newElements };
@@ -96,6 +126,18 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
             rules={[{ required: true, message: "请输入名称" }]}
           >
             <Input />
+          </Form.Item>
+          <Form.Item
+            label="分组"
+            name="group"
+            extra="同一分组的要素会在配置页聚合为同一组卡片，留空则显示在未分组中"
+          >
+            <AutoComplete
+              allowClear
+              options={groupOptions}
+              placeholder="例如：基础信息、告警、控制"
+              filterOption
+            />
           </Form.Item>
           <Form.Item
             label="引导符（HEX）"

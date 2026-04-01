@@ -20,11 +20,13 @@ import {
   Tree,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { SL651 } from "@/types";
+import { buildGroupSections, reorderItemsByGroupOrder } from "./grouping";
+import { SortableGroupSectionFrame, SortableGroupSectionList } from "./SortableGroup";
 import {
   DeviceTypeModal,
   type DeviceTypeModalRef,
@@ -155,6 +157,48 @@ const SL651ConfigPage = () => {
     });
   };
 
+  const handleReorderElements = useCallback(
+    async (
+      funcId: string,
+      listKind: "elements" | "responseElements",
+      nextOrder: string[],
+      currentItems: SL651.Element[]
+    ) => {
+      if (!activeTypeId) return;
+      const type = types.find((t) => t.id === activeTypeId);
+      if (!type) return;
+
+      const reordered = reorderItemsByGroupOrder(currentItems, nextOrder);
+      if (reordered.length === currentItems.length) {
+        const isSameOrder = reordered.every((item, index) => item.id === currentItems[index]?.id);
+        if (isSameOrder) return;
+      }
+
+      const config = type.config as SL651.Config;
+      const newFuncs = config.funcs.map((func) => {
+        if (func.id !== funcId) return func;
+        if (listKind === "responseElements") {
+          return {
+            ...func,
+            responseElements: reordered.length > 0 ? reordered : undefined,
+          };
+        }
+        return {
+          ...func,
+          elements: reordered,
+        };
+      });
+
+      await saveMutation.mutateAsync({
+        id: activeTypeId,
+        protocol: "SL651",
+        config: { funcs: newFuncs },
+      });
+      await refetchTypes();
+    },
+    [activeTypeId, refetchTypes, saveMutation, types]
+  );
+
   // ========== 功能码表格列 ==========
 
   const funcColumns: ColumnsType<FuncWithElements> = [
@@ -233,77 +277,140 @@ const SL651ConfigPage = () => {
 
   // ========== 要素表格列 ==========
 
-  const elementColumns = (funcId: string, funcDir: SL651.Direction): ColumnsType<SL651.Element> => [
-    { title: "要素名称", dataIndex: "name", ellipsis: true },
-    { title: "引导符", dataIndex: "guideHex" },
-    { title: "编码", dataIndex: "encode" },
-    { title: "长度", dataIndex: "length" },
-    { title: "小数位", dataIndex: "digits" },
-    { title: "单位", dataIndex: "unit" },
-    ...(funcDir === "DOWN"
-      ? [
-          {
-            title: "预设值",
-            dataIndex: "options",
-            render: (options: SL651.Element["options"]) =>
-              options?.length ? `${options.length}个` : "-",
-          },
-        ]
-      : []),
-    {
-      title: "字典配置",
-      dataIndex: "dictConfig",
-      render: (dictConfig: SL651.Element["dictConfig"]) => {
-        if (!dictConfig?.items?.length) return "-";
-        const typeLabel = dictConfig.mapType === "VALUE" ? "值" : "位";
-        return `${typeLabel}映射(${dictConfig.items.length}个)`;
-      },
-    },
-    { title: "备注", dataIndex: "remark", ellipsis: true },
-    {
-      title: "操作",
-      width: funcDir === "DOWN" ? 300 : 240,
-      fixed: "right" as const,
-      render: (_, r) => (
-        <Space>
-          {canEdit && (
-            <Button
-              size="small"
-              type="link"
-              onClick={() => elementModalRef.current?.open("edit", activeTypeId!, funcId, r)}
-            >
-              编辑
-            </Button>
-          )}
-          {funcDir === "DOWN" && canEdit && (
-            <Button
-              size="small"
-              type="link"
-              onClick={() => presetValueModalRef.current?.open(activeTypeId!, funcId, r)}
-            >
-              预设值
-            </Button>
-          )}
-          {r.encode === "DICT" && canEdit && (
-            <Button
-              size="small"
-              type="link"
-              onClick={() => dictConfigModalRef.current?.open(activeTypeId!, funcId, r)}
-            >
-              字典
-            </Button>
-          )}
-          {canDelete && (
-            <Popconfirm title="确认删除？" onConfirm={() => handleDeleteElement(funcId, r.id)}>
-              <Button size="small" danger type="link">
-                删除
+  const elementColumns = (
+    funcId: string,
+    funcDir: SL651.Direction,
+    options?: { advancedActions?: boolean }
+  ): ColumnsType<SL651.Element> => {
+    const advancedActions = options?.advancedActions !== false;
+
+    return [
+      { title: "要素名称", dataIndex: "name", ellipsis: true },
+      { title: "引导符", dataIndex: "guideHex" },
+      { title: "编码", dataIndex: "encode" },
+      { title: "长度", dataIndex: "length" },
+      { title: "小数位", dataIndex: "digits" },
+      { title: "单位", dataIndex: "unit" },
+      ...(funcDir === "DOWN" && advancedActions
+        ? [
+            {
+              title: "预设值",
+              dataIndex: "options",
+              render: (value: SL651.Element["options"]) =>
+                value?.length ? `${value.length}个` : "-",
+            },
+          ]
+        : []),
+      ...(advancedActions
+        ? [
+            {
+              title: "字典配置",
+              dataIndex: "dictConfig",
+              render: (dictConfig: SL651.Element["dictConfig"]) => {
+                if (!dictConfig?.items?.length) return "-";
+                const typeLabel = dictConfig.mapType === "VALUE" ? "值" : "位";
+                return `${typeLabel}映射(${dictConfig.items.length}个)`;
+              },
+            },
+          ]
+        : []),
+      { title: "备注", dataIndex: "remark", ellipsis: true },
+      {
+        title: "操作",
+        width: funcDir === "DOWN" && advancedActions ? 300 : 240,
+        fixed: "right" as const,
+        render: (_, r) => (
+          <Space>
+            {canEdit && (
+              <Button
+                size="small"
+                type="link"
+                onClick={() => elementModalRef.current?.open("edit", activeTypeId!, funcId, r)}
+              >
+                编辑
               </Button>
-            </Popconfirm>
-          )}
-        </Space>
-      ),
-    },
-  ];
+            )}
+            {funcDir === "DOWN" && advancedActions && canEdit && (
+              <Button
+                size="small"
+                type="link"
+                onClick={() => presetValueModalRef.current?.open(activeTypeId!, funcId, r)}
+              >
+                预设值
+              </Button>
+            )}
+            {advancedActions && r.encode === "DICT" && canEdit && (
+              <Button
+                size="small"
+                type="link"
+                onClick={() => dictConfigModalRef.current?.open(activeTypeId!, funcId, r)}
+              >
+                字典
+              </Button>
+            )}
+            {canDelete && (
+              <Popconfirm title="确认删除？" onConfirm={() => handleDeleteElement(funcId, r.id)}>
+                <Button size="small" danger type="link">
+                  删除
+                </Button>
+              </Popconfirm>
+            )}
+          </Space>
+        ),
+      },
+    ];
+  };
+
+  const renderGroupedElements = (
+    elements: SL651.Element[] | undefined,
+    funcId: string,
+    funcDir: SL651.Direction,
+    emptyDescription: string,
+    options?: { advancedActions?: boolean; listKind?: "elements" | "responseElements" }
+  ) => {
+    const advancedActions = options?.advancedActions !== false;
+    const listKind = options?.listKind ?? "elements";
+    const groups = buildGroupSections(elements || []);
+    if (!groups.length) {
+      return <Empty description={emptyDescription} />;
+    }
+
+    return (
+      <SortableGroupSectionList
+        sections={groups}
+        className="w-full"
+        disabled={saveMutation.isPending}
+        onOrderChange={(nextOrder) =>
+          handleReorderElements(funcId, listKind, nextOrder, elements || [])
+        }
+        empty={<Empty description={emptyDescription} />}
+      >
+        {(group) => (
+          <SortableGroupSectionFrame
+            id={group.key}
+            key={group.key}
+            className="rounded-xl border border-slate-200 bg-white p-3"
+            bodyClassName="mt-4"
+            disabled={saveMutation.isPending}
+            title={group.label}
+            description="同组要素会一起展示和维护"
+            meta={<Tag color="blue">{group.count} 个</Tag>}
+          >
+            <div style={{ "--ant-table-header-border-radius": 0 } as React.CSSProperties}>
+              <Table
+                dataSource={group.items}
+                columns={elementColumns(funcId, funcDir, { advancedActions })}
+                rowKey="id"
+                pagination={false}
+                size="small"
+                scroll={{ x: "max-content" }}
+              />
+            </div>
+          </SortableGroupSectionFrame>
+        )}
+      </SortableGroupSectionList>
+    );
+  };
 
   // 权限检查
   if (!canQuery) {
@@ -452,14 +559,32 @@ const SL651ConfigPage = () => {
                   scroll={{ x: "max-content" }}
                   expandable={{
                     expandedRowRender: (record) => (
-                      <Table
-                        dataSource={record.elements}
-                        columns={elementColumns(record.id, record.dir)}
-                        rowKey="id"
-                        pagination={false}
-                        size="small"
-                        scroll={{ x: "max-content" }}
-                      />
+                      <Space direction="vertical" className="w-full p-4" size="large">
+                        <div>
+                          <div className="mb-2 text-sm font-semibold text-slate-700">要素配置</div>
+                          {renderGroupedElements(
+                            record.elements,
+                            record.id,
+                            record.dir,
+                            "暂无要素",
+                            { listKind: "elements" }
+                          )}
+                        </div>
+                        {record.dir === "DOWN" && (
+                          <div>
+                            <div className="mb-2 text-sm font-semibold text-slate-700">
+                              应答要素
+                            </div>
+                            {renderGroupedElements(
+                              record.responseElements,
+                              record.id,
+                              record.dir,
+                              "暂无应答要素",
+                              { advancedActions: false, listKind: "responseElements" }
+                            )}
+                          </div>
+                        )}
+                      </Space>
                     ),
                   }}
                   columns={funcColumns}

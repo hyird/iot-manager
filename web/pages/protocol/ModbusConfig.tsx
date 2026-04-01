@@ -5,6 +5,7 @@
 
 import { DownloadOutlined, UploadOutlined } from "@ant-design/icons";
 import {
+  AutoComplete,
   Button,
   Card,
   Empty,
@@ -19,17 +20,17 @@ import {
   Skeleton,
   Space,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Tree,
 } from "antd";
-import type { ColumnsType } from "antd/es/table";
-import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
 import type { Modbus, ModbusDictConfig, Protocol } from "@/types";
+import { reorderItemsByGroupOrder } from "./grouping";
+import { SortableGroupSectionFrame, SortableGroupSectionList } from "./SortableGroup";
 
 /** 寄存器类型选项 */
 const RegisterTypeOptions: { value: Modbus.RegisterType; label: string }[] = [
@@ -59,6 +60,101 @@ const ByteOrderOptions: { value: Modbus.ByteOrder; label: string }[] = [
   { value: "BIG_ENDIAN_BYTE_SWAP", label: "Big-endian byte swap" },
   { value: "LITTLE_ENDIAN_BYTE_SWAP", label: "Little-endian byte swap" },
 ];
+
+const REGISTER_TYPE_ORDER: Modbus.RegisterType[] = [
+  "COIL",
+  "DISCRETE_INPUT",
+  "INPUT_REGISTER",
+  "HOLDING_REGISTER",
+];
+
+const REGISTER_TYPE_META: Record<
+  Modbus.RegisterType,
+  { label: string; color: string; prefix: string; short: string }
+> = {
+  COIL: { label: "0X - 线圈 (Coil)", color: "green", prefix: "0X", short: "0X" },
+  DISCRETE_INPUT: {
+    label: "1X - 离散输入 (Discrete Input)",
+    color: "blue",
+    prefix: "1X",
+    short: "1X",
+  },
+  INPUT_REGISTER: {
+    label: "3X - 输入寄存器 (Input Register)",
+    color: "cyan",
+    prefix: "3X",
+    short: "3X",
+  },
+  HOLDING_REGISTER: {
+    label: "4X - 保持寄存器 (Holding Register)",
+    color: "orange",
+    prefix: "4X",
+    short: "4X",
+  },
+};
+
+const REGISTER_CARD_GRID_STYLE = {
+  gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+};
+
+const normalizeGroupName = (group?: string) => group?.trim() || "";
+
+interface RegisterGroupSection {
+  key: string;
+  label: string;
+  count: number;
+  minAddress: number;
+  registers: Modbus.Register[];
+  typeCounts: Record<Modbus.RegisterType, number>;
+}
+
+const buildRegisterGroupSections = (registers: Modbus.Register[]): RegisterGroupSection[] => {
+  const sectionMap = new Map<string, RegisterGroupSection>();
+
+  for (const register of registers) {
+    const key = normalizeGroupName(register.group) || "__ungrouped__";
+    const label = normalizeGroupName(register.group) || "未分组";
+    const current = sectionMap.get(key);
+    if (current) {
+      current.registers.push(register);
+      current.count++;
+      current.minAddress = Math.min(current.minAddress, register.address);
+      current.typeCounts[register.registerType]++;
+      continue;
+    }
+
+    sectionMap.set(key, {
+      key,
+      label,
+      count: 1,
+      minAddress: register.address,
+      registers: [register],
+      typeCounts: {
+        COIL: 0,
+        DISCRETE_INPUT: 0,
+        HOLDING_REGISTER: 0,
+        INPUT_REGISTER: 0,
+      },
+    });
+    sectionMap.get(key)!.typeCounts[register.registerType] = 1;
+  }
+
+  return Array.from(sectionMap.values())
+    .map((section) => ({
+      ...section,
+      registers: [...section.registers].sort((a, b) => {
+        const typeDiff =
+          REGISTER_TYPE_ORDER.indexOf(a.registerType) - REGISTER_TYPE_ORDER.indexOf(b.registerType);
+        if (typeDiff !== 0) return typeDiff;
+        if (a.address !== b.address) return a.address - b.address;
+        return a.name.localeCompare(b.name, "zh-Hans-CN");
+      }),
+    }))
+    .sort((a, b) => {
+      if (a.minAddress !== b.minAddress) return a.minAddress - b.minAddress;
+      return a.label.localeCompare(b.label, "zh-Hans-CN");
+    });
+};
 
 /** 生成唯一 ID（兼容非安全上下文） */
 const generateId = (): string =>
@@ -162,6 +258,38 @@ const ModbusConfigPage = () => {
     const config = activeType.config as Modbus.Config;
     return config?.registers || [];
   }, [activeType]);
+  const registerGroups = useMemo(() => buildRegisterGroupSections(registers), [registers]);
+  const writableRegisterCount = useMemo(
+    () => registers.filter((register) => register.writable).length,
+    [registers]
+  );
+
+  const handleRegisterGroupOrderChange = useCallback(
+    async (nextOrder: string[]) => {
+      if (!activeTypeId || !activeType) return;
+
+      const config = activeType.config as Modbus.Config;
+      const nextRegisters = reorderItemsByGroupOrder(registers, nextOrder);
+      if (nextRegisters.length === registers.length) {
+        const isSameOrder = nextRegisters.every(
+          (register, index) => register.id === registers[index]?.id
+        );
+        if (isSameOrder) return;
+      }
+
+      await saveMutation.mutateAsync({
+        id: activeTypeId,
+        protocol: "Modbus",
+        config: {
+          byteOrder: config.byteOrder,
+          readInterval: config.readInterval,
+          registers: nextRegisters,
+        },
+      });
+      await refetchTypes();
+    },
+    [activeType, activeTypeId, refetchTypes, registers, saveMutation]
+  );
 
   // 加载状态（与数据加载状态同步）
   const loadingRegisters = loadingTypes;
@@ -196,83 +324,72 @@ const ModbusConfigPage = () => {
     });
   };
 
-  // ========== 寄存器表格列 ==========
+  const renderRegisterCard = (register: Modbus.Register) => {
+    const meta = REGISTER_TYPE_META[register.registerType];
+    const typeLabel = RegisterTypeOptions.find((opt) => opt.value === register.registerType)?.label;
+    const dataTypeLabel = DataTypeOptions.find((opt) => opt.value === register.dataType)?.label;
+    const isWritableType =
+      register.registerType === "COIL" || register.registerType === "HOLDING_REGISTER";
+    const addressLabel = `${meta.prefix}${register.address}`;
 
-  const registerColumns: ColumnsType<Modbus.Register> = [
-    { title: "名称", dataIndex: "name" },
-    {
-      title: "寄存器类型",
-      dataIndex: "registerType",
-      render: (val: Modbus.RegisterType) => {
-        const opt = RegisterTypeOptions.find((o) => o.value === val);
-        const colorMap: Record<Modbus.RegisterType, string> = {
-          COIL: "green",
-          DISCRETE_INPUT: "blue",
-          HOLDING_REGISTER: "orange",
-          INPUT_REGISTER: "cyan",
-        };
-        return <Tag color={colorMap[val]}>{opt?.label || val}</Tag>;
-      },
-    },
-    {
-      title: "地址",
-      dataIndex: "address",
-      render: (val: number, r: Modbus.Register) => {
-        const prefixMap: Record<Modbus.RegisterType, string> = {
-          COIL: "0X",
-          DISCRETE_INPUT: "1X",
-          INPUT_REGISTER: "3X",
-          HOLDING_REGISTER: "4X",
-        };
-        return prefixMap[r.registerType] + val;
-      },
-    },
-    {
-      title: "数据类型",
-      dataIndex: "dataType",
-      render: (val: Modbus.DataType) => {
-        const opt = DataTypeOptions.find((o) => o.value === val);
-        return opt?.label || val;
-      },
-    },
-    { title: "单位", dataIndex: "unit" },
-    {
-      title: "读写",
-      dataIndex: "writable",
-      width: 80,
-      render: (val: boolean | undefined, r: Modbus.Register) => {
-        const isWritableType = r.registerType === "COIL" || r.registerType === "HOLDING_REGISTER";
-        if (!isWritableType) return <Tag>只读</Tag>;
-        return val ? <Tag color="orange">读写</Tag> : <Tag>只读</Tag>;
-      },
-    },
-    { title: "备注", dataIndex: "remark", ellipsis: true },
-    {
-      title: "操作",
-      width: 120,
-      fixed: "end" as const,
-      render: (_, r) => (
-        <Space>
-          {canEdit && (
-            <Button
-              size="small"
-              type="link"
-              onClick={() => registerModalRef.current?.open("edit", activeTypeId!, r)}
-            >
-              编辑
-            </Button>
-          )}
-          {canDelete && (
-            <Popconfirm title="确认删除？" onConfirm={() => handleDeleteRegister(r.id)}>
-              <Button size="small" danger type="link">
-                删除
+    return (
+      <Card
+        key={register.id}
+        size="small"
+        hoverable
+        className="h-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+        styles={{ body: { padding: 12 } }}
+      >
+        <Flex justify="space-between" gap={12} align="start" className="mb-2">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold text-slate-800">{register.name}</div>
+            <div className="mt-0.5 text-[12px] text-slate-400">地址 {addressLabel}</div>
+          </div>
+          <Space size={0} className="shrink-0">
+            {canEdit && (
+              <Button
+                size="small"
+                type="link"
+                onClick={() => registerModalRef.current?.open("edit", activeTypeId!, register)}
+              >
+                编辑
               </Button>
-            </Popconfirm>
+            )}
+            {canDelete && (
+              <Popconfirm title="确认删除？" onConfirm={() => handleDeleteRegister(register.id)}>
+                <Button size="small" danger type="link">
+                  删除
+                </Button>
+              </Popconfirm>
+            )}
+          </Space>
+        </Flex>
+
+        <Space size={6} wrap className="mb-2">
+          <Tag color={meta.color}>{typeLabel || meta.label}</Tag>
+          <Tag>{addressLabel}</Tag>
+          <Tag color="geekblue">{dataTypeLabel || register.dataType}</Tag>
+          {isWritableType ? (
+            register.writable ? (
+              <Tag color="orange">读写</Tag>
+            ) : (
+              <Tag>只读</Tag>
+            )
+          ) : (
+            <Tag>只读</Tag>
           )}
+          {register.unit ? <Tag>{register.unit}</Tag> : null}
+          {typeof register.decimals === "number" ? <Tag>小数 {register.decimals}</Tag> : null}
         </Space>
-      ),
-    },
-  ];
+
+        {register.remark ? (
+          <div className="text-xs leading-5 text-slate-500">{register.remark}</div>
+        ) : (
+          <div className="text-xs leading-5 text-slate-400">暂无备注</div>
+        )}
+      </Card>
+    );
+  };
 
   // 权限检查
   if (!canQuery) {
@@ -388,7 +505,7 @@ const ModbusConfigPage = () => {
           <Card
             title={
               activeType ? (
-                <Space>
+                <Space wrap>
                   <span>寄存器配置</span>
                   <Tag>
                     {ByteOrderOptions.find(
@@ -396,13 +513,20 @@ const ModbusConfigPage = () => {
                     )?.label || "Big-endian"}
                   </Tag>
                   <Tag>间隔 {(activeType.config as Modbus.Config)?.readInterval ?? 1}s</Tag>
+                  <Tag color="blue">{registers.length} 个寄存器</Tag>
+                  <Tag color="geekblue">{registerGroups.length} 个分组</Tag>
+                  {writableRegisterCount > 0 && (
+                    <Tag color="orange">{writableRegisterCount} 个可写</Tag>
+                  )}
                 </Space>
+              ) : types.length > 0 ? (
+                "请选择设备类型"
               ) : (
-                types.length > 0 ? "请选择设备类型" : "暂无设备类型"
+                "暂无设备类型"
               )
             }
             className="h-full flex flex-col"
-            styles={{ body: { flex: 1, overflow: "auto", padding: 0 } }}
+            styles={{ body: { flex: 1, overflow: "auto", padding: 16 } }}
             extra={
               activeTypeId &&
               canAdd && (
@@ -417,18 +541,46 @@ const ModbusConfigPage = () => {
           >
             {!activeTypeId ? (
               <Empty description={emptyTypeDesc} />
+            ) : loadingRegisters ? (
+              <Skeleton active paragraph={{ rows: 5 }} />
+            ) : registers.length === 0 ? (
+              <Empty description="暂无寄存器，点击右上角新增寄存器" />
             ) : (
-              <div style={{ "--ant-table-header-border-radius": 0 } as React.CSSProperties}>
-                <Table
-                  dataSource={registers}
-                  rowKey="id"
-                  pagination={false}
-                  loading={loadingRegisters}
-                  sticky
-                  columns={registerColumns}
-                  scroll={{ x: "max-content" }}
-                />
-              </div>
+              <SortableGroupSectionList
+                sections={registerGroups}
+                className="w-full"
+                disabled={saveMutation.isPending}
+                onOrderChange={handleRegisterGroupOrderChange}
+                empty={<Empty description="暂无寄存器，点击右上角新增寄存器" />}
+              >
+                {(group) => (
+                  <SortableGroupSectionFrame
+                    id={group.key}
+                    key={group.key}
+                    className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4"
+                    bodyClassName="mt-4"
+                    disabled={saveMutation.isPending}
+                    title={group.label}
+                    description="按分组聚合显示，便于统一维护和快速定位"
+                    meta={
+                      <Space size={6} wrap>
+                        <Tag color="blue">{group.count} 个</Tag>
+                        {REGISTER_TYPE_ORDER.map((type) =>
+                          group.typeCounts[type] > 0 ? (
+                            <Tag key={type} color={REGISTER_TYPE_META[type].color}>
+                              {REGISTER_TYPE_META[type].short} {group.typeCounts[type]}
+                            </Tag>
+                          ) : null
+                        )}
+                      </Space>
+                    }
+                  >
+                    <div className="grid gap-3" style={REGISTER_CARD_GRID_STYLE}>
+                      {group.registers.map((register) => renderRegisterCard(register))}
+                    </div>
+                  </SortableGroupSectionFrame>
+                )}
+              </SortableGroupSectionList>
             )}
           </Card>
         </div>
@@ -571,6 +723,23 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
     // 监听寄存器类型和数据类型变化
     const registerType = Form.useWatch("registerType", form);
     const dataType = Form.useWatch("dataType", form);
+    const groupOptions = useMemo(() => {
+      const currentType = types.find((t) => t.id === typeId);
+      const config = currentType?.config as Modbus.Config | undefined;
+      const groups = new Set<string>();
+
+      for (const register of config?.registers || []) {
+        const group = normalizeGroupName(register.group);
+        if (group) groups.add(group);
+      }
+
+      const currentGroup = normalizeGroupName(current?.group);
+      if (currentGroup) groups.add(currentGroup);
+
+      return Array.from(groups)
+        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
+        .map((value) => ({ value }));
+    }, [current?.group, typeId, types]);
 
     useImperativeHandle(ref, () => ({
       open(m, t, register) {
@@ -581,6 +750,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
         if (register) {
           form.setFieldsValue({
             ...register,
+            group: normalizeGroupName(register.group) || undefined,
             boolLabel0: register.dictConfig?.items?.find((i) => i.key === "0")?.label,
             boolLabel1: register.dictConfig?.items?.find((i) => i.key === "1")?.label,
           });
@@ -651,9 +821,11 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
       const isWritableType =
         values.registerType === "COIL" || values.registerType === "HOLDING_REGISTER";
       const writable = isWritableType ? !!values.writable : false;
+      const group = normalizeGroupName(values.group);
 
       const registerFields = {
         name: values.name,
+        group: group || undefined,
         registerType: values.registerType,
         address: values.address,
         dataType: values.dataType,
@@ -706,6 +878,19 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
         <Form form={form} layout="vertical">
           <Form.Item label="名称" name="name" rules={[{ required: true, message: "请输入名称" }]}>
             <Input placeholder="如：温度、湿度、电压" />
+          </Form.Item>
+
+          <Form.Item
+            label="分组"
+            name="group"
+            extra="同一分组的寄存器会在配置页聚合为同一组卡片，留空则显示在未分组中"
+          >
+            <AutoComplete
+              allowClear
+              options={groupOptions}
+              placeholder="例如：基础信息、告警、控制"
+              filterOption
+            />
           </Form.Item>
 
           <Flex gap={16}>

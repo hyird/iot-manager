@@ -43,8 +43,14 @@ import ImagePreviewModal, { type ImagePreviewModalRef } from "@/components/Image
 import { PageContainer } from "@/components/PageContainer";
 import { useDebounceFn, usePermissions } from "@/hooks";
 import { useWsStatus } from "@/providers";
-import { useDeviceDelete, useDeviceList, useDeviceSave, useLinkOptions } from "@/services";
-import type { Device } from "@/types";
+import {
+  useDeviceDelete,
+  useDeviceGroupTreeWithCount,
+  useDeviceList,
+  useDeviceSave,
+  useLinkOptions,
+} from "@/services";
+import type { Device, DeviceGroup } from "@/types";
 import CommandPopover from "./CommandPopover";
 import DeviceFormModal, { type DeviceFormValues } from "./DeviceFormModal";
 import DeviceGroupPanel from "./DeviceGroupPanel";
@@ -62,9 +68,8 @@ const { Search } = Input;
 const EMPTY_DEVICE_LIST: Device.RealTimeData[] = [];
 const EMPTY_COMMAND_OPS: Device.CommandOperation[] = [];
 const EMPTY_IMAGE_OPS: Device.ImageOperation[] = [];
-const DEVICE_GRID_COLUMNS = 3;
-const DEVICE_GRID_STYLE: CSSProperties = {
-  gridTemplateColumns: `repeat(${DEVICE_GRID_COLUMNS}, 1fr)`,
+const DEVICE_CARD_GRID_STYLE: CSSProperties = {
+  gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
 };
 
 interface DeviceProtocolStats {
@@ -89,6 +94,116 @@ const createEmptyDeviceStats = (): DeviceStats => ({
   enabled: 0,
   byProtocol: {},
 });
+
+interface DeviceGroupStats {
+  total: number;
+  online: number;
+  offline: number;
+  enabled: number;
+}
+
+const createEmptyDeviceGroupStats = (): DeviceGroupStats => ({
+  total: 0,
+  online: 0,
+  offline: 0,
+  enabled: 0,
+});
+
+const accumulateDeviceStats = <
+  T extends { total: number; online: number; offline: number; enabled: number },
+>(
+  stats: T,
+  device: Device.RealTimeData
+) => {
+  const online = isOnline(device.connected, device.reportTime, device.online_timeout);
+  stats.total++;
+  if (online) {
+    stats.online++;
+  } else {
+    stats.offline++;
+  }
+  if (device.status === "enabled") {
+    stats.enabled++;
+  }
+};
+
+const buildDeviceStats = (devices: Device.RealTimeData[]): DeviceStats => {
+  const stats = createEmptyDeviceStats();
+
+  for (const device of devices) {
+    accumulateDeviceStats(stats, device);
+    const protocolName = device.protocol_type || device.protocol_name || "未知";
+    if (!stats.byProtocol[protocolName]) {
+      stats.byProtocol[protocolName] = { total: 0, online: 0, offline: 0, enabled: 0 };
+    }
+    accumulateDeviceStats(stats.byProtocol[protocolName], device);
+  }
+
+  return stats;
+};
+
+const buildDeviceGroupIndex = (groups: DeviceGroup.TreeItem[]) => {
+  const index = new Map<number, DeviceGroup.TreeItem>();
+
+  const walk = (nodes: DeviceGroup.TreeItem[]) => {
+    for (const node of nodes) {
+      index.set(node.id, node);
+      if (node.children?.length) {
+        walk(node.children);
+      }
+    }
+  };
+
+  walk(groups);
+  return index;
+};
+
+const buildGroupScopeIds = (group?: DeviceGroup.TreeItem) => {
+  if (!group) return null;
+
+  const scope = new Set<number>();
+  const walk = (node: DeviceGroup.TreeItem) => {
+    if (scope.has(node.id)) return;
+    scope.add(node.id);
+    node.children?.forEach(walk);
+  };
+
+  walk(group);
+  return scope;
+};
+
+const buildDeviceGroupStatsMap = (
+  groups: DeviceGroup.TreeItem[],
+  visibleDeviceMap: Map<number, Device.RealTimeData[]>
+) => {
+  const statsMap = new Map<number, DeviceGroupStats>();
+
+  const walk = (node: DeviceGroup.TreeItem): DeviceGroupStats => {
+    const stats = createEmptyDeviceGroupStats();
+    const directDevices = visibleDeviceMap.get(node.id) ?? [];
+
+    for (const device of directDevices) {
+      accumulateDeviceStats(stats, device);
+    }
+
+    for (const child of node.children ?? []) {
+      const childStats = walk(child);
+      stats.total += childStats.total;
+      stats.online += childStats.online;
+      stats.offline += childStats.offline;
+      stats.enabled += childStats.enabled;
+    }
+
+    statsMap.set(node.id, stats);
+    return stats;
+  };
+
+  for (const group of groups) {
+    walk(group);
+  }
+
+  return statsMap;
+};
 
 interface DeviceCardDisplayItem {
   key: number;
@@ -186,10 +301,7 @@ const DeviceGridItem = memo(
     const canRemoteControl = device.remote_control !== false;
     const commandOps = device.commandOperations ?? EMPTY_COMMAND_OPS;
     const imageOps = device.imageOperations ?? EMPTY_IMAGE_OPS;
-    const hasImageData = useMemo(
-      () => imageOps.some((op) => op.latestImage?.data),
-      [imageOps]
-    );
+    const hasImageData = useMemo(() => imageOps.some((op) => op.latestImage?.data), [imageOps]);
     const downMenuItems = useMemo<MenuProps["items"]>(
       () =>
         commandOps.map((op, idx) => ({
@@ -405,83 +517,87 @@ const DevicePage = () => {
   const deleteMutation = useDeviceDelete();
 
   const deviceList = data?.list ?? EMPTY_DEVICE_LIST;
-  const { groupedDeviceList, stats, ungroupedCount } = useMemo(() => {
-    const nextGroupedDeviceList: Device.RealTimeData[] = [];
-    const nextStats = createEmptyDeviceStats();
-    let nextUngroupedCount = 0;
-
-    for (const device of deviceList) {
-      if (!device.group_id) {
-        nextUngroupedCount++;
-      }
-
-      const matchesGroup =
-        selectedGroupId === null
-          ? true
-          : selectedGroupId === 0
-            ? !device.group_id
-            : device.group_id === selectedGroupId;
-
-      if (!matchesGroup) {
-        continue;
-      }
-
-      const isDeviceOnline = isOnline(
-        device.connected,
-        device.reportTime,
-        device.online_timeout
-      );
-      if (isDeviceOnline) {
-        nextStats.online++;
-      } else {
-        nextStats.offline++;
-      }
-      if (device.status === "enabled") {
-        nextStats.enabled++;
-      }
-
-      nextStats.total++;
-      const protocolName = device.protocol_type || device.protocol_name || "未知";
-      if (!nextStats.byProtocol[protocolName]) {
-        nextStats.byProtocol[protocolName] = { total: 0, online: 0, offline: 0, enabled: 0 };
-      }
-      nextStats.byProtocol[protocolName].total++;
-      if (isDeviceOnline) {
-        nextStats.byProtocol[protocolName].online++;
-      } else {
-        nextStats.byProtocol[protocolName].offline++;
-      }
-      if (device.status === "enabled") {
-        nextStats.byProtocol[protocolName].enabled++;
-      }
-
-      nextGroupedDeviceList.push(device);
+  const { data: deviceGroupTree = [] } = useDeviceGroupTreeWithCount({ enabled: canQuery });
+  const groupIndex = useMemo(() => buildDeviceGroupIndex(deviceGroupTree), [deviceGroupTree]);
+  const selectedGroupNode = useMemo(
+    () => (selectedGroupId && selectedGroupId > 0 ? groupIndex.get(selectedGroupId) : undefined),
+    [groupIndex, selectedGroupId]
+  );
+  const selectedGroupScopeIds = useMemo(() => {
+    if (selectedGroupId === null) return null;
+    if (selectedGroupId === 0) return new Set<number>();
+    return buildGroupScopeIds(selectedGroupNode) ?? new Set<number>([selectedGroupId]);
+  }, [selectedGroupId, selectedGroupNode]);
+  const ungroupedCount = useMemo(
+    () => deviceList.filter((device) => !device.group_id).length,
+    [deviceList]
+  );
+  const scopedDeviceList = useMemo(() => {
+    if (selectedGroupId === null) {
+      return deviceList;
     }
 
-    return {
-      groupedDeviceList: nextGroupedDeviceList,
-      stats: nextStats,
-      ungroupedCount: nextUngroupedCount,
-    };
-  }, [deviceList, selectedGroupId]);
+    if (selectedGroupId === 0) {
+      return deviceList.filter((device) => !device.group_id);
+    }
+
+    return deviceList.filter((device) => {
+      if (!device.group_id) return false;
+      return selectedGroupScopeIds?.has(device.group_id) ?? device.group_id === selectedGroupId;
+    });
+  }, [deviceList, selectedGroupId, selectedGroupScopeIds]);
 
   const normalizedKeyword = keyword.trim().toLowerCase();
   const filteredDeviceList = useMemo(() => {
     if (!normalizedKeyword) {
-      return groupedDeviceList;
+      return scopedDeviceList;
     }
 
-    return groupedDeviceList.filter((device) => {
+    return scopedDeviceList.filter((device) => {
       return (
         device.name?.toLowerCase().includes(normalizedKeyword) ||
         device.device_code?.toLowerCase().includes(normalizedKeyword) ||
         device.protocol_name?.toLowerCase().includes(normalizedKeyword)
       );
     });
-  }, [groupedDeviceList, normalizedKeyword]);
+  }, [normalizedKeyword, scopedDeviceList]);
+  const stats = useMemo(() => buildDeviceStats(scopedDeviceList), [scopedDeviceList]);
+  const displayStats = useMemo(() => buildDeviceStats(filteredDeviceList), [filteredDeviceList]);
+  const visibleUngroupedDevices = useMemo(
+    () => filteredDeviceList.filter((device) => !device.group_id),
+    [filteredDeviceList]
+  );
+  const visibleUngroupedStats = useMemo(
+    () => buildDeviceStats(visibleUngroupedDevices),
+    [visibleUngroupedDevices]
+  );
   const protocolStatsEntries = useMemo(() => Object.entries(stats.byProtocol), [stats.byProtocol]);
+  const visibleDeviceMap = useMemo(() => {
+    const map = new Map<number, Device.RealTimeData[]>();
 
-  const columns = DEVICE_GRID_COLUMNS;
+    for (const device of filteredDeviceList) {
+      if (!device.group_id) continue;
+      const list = map.get(device.group_id);
+      if (list) {
+        list.push(device);
+      } else {
+        map.set(device.group_id, [device]);
+      }
+    }
+
+    return map;
+  }, [filteredDeviceList]);
+  const visibleGroupStatsMap = useMemo(
+    () => buildDeviceGroupStatsMap(deviceGroupTree, visibleDeviceMap),
+    [deviceGroupTree, visibleDeviceMap]
+  );
+  const groupRoots = useMemo(() => {
+    if (selectedGroupId === 0) return [];
+    if (selectedGroupId !== null) {
+      return selectedGroupNode ? [selectedGroupNode] : [];
+    }
+    return deviceGroupTree;
+  }, [deviceGroupTree, selectedGroupId, selectedGroupNode]);
 
   // ========== 搜索 ==========
 
@@ -560,11 +676,14 @@ const DevicePage = () => {
 
   // ========== 指令下发 ==========
 
-  const openCommandPopover = useCallback((device: Device.RealTimeData, func: Device.CommandOperation) => {
-    setCommandDevice(device);
-    setCommandFunc(func);
-    setCommandPopoverOpen(true);
-  }, []);
+  const openCommandPopover = useCallback(
+    (device: Device.RealTimeData, func: Device.CommandOperation) => {
+      setCommandDevice(device);
+      setCommandFunc(func);
+      setCommandPopoverOpen(true);
+    },
+    []
+  );
 
   // ========== 历史数据 ==========
 
@@ -577,13 +696,130 @@ const DevicePage = () => {
     setHistoryModalVisible(true);
   }, []);
 
-  const renderSkeletons = () => {
-    return Array.from({ length: columns }).map((_, idx) => (
-      <div key={idx} className="bg-white rounded-lg px-3.5 py-3">
+  const renderDeviceCards = (devices: Device.RealTimeData[]) => (
+    <div className="mt-4 grid gap-3" style={DEVICE_CARD_GRID_STYLE}>
+      {devices.map((device) => (
+        <DeviceGridItem
+          key={device.id}
+          device={device}
+          canEdit={canEdit}
+          canDelete={canDelete}
+          isCommandPopoverOpen={commandPopoverOpen && commandDevice?.id === device.id}
+          activeCommandFunc={commandDevice?.id === device.id ? commandFunc : null}
+          onImageClick={handleImageClick}
+          onOpenCommandPopover={openCommandPopover}
+          onCloseCommandPopover={closeCommandPopover}
+          onOpenHistoryModal={openHistoryModal}
+          onOpenEditModal={openEditModal}
+          onDeleteDevice={onDeleteDevice}
+        />
+      ))}
+    </div>
+  );
+
+  const renderSectionStats = (sectionStats: DeviceGroupStats) => (
+    <Space size={6} wrap>
+      <Tag color="blue">{sectionStats.total} 个</Tag>
+      {sectionStats.online > 0 && <Tag color="green">{sectionStats.online} 在线</Tag>}
+      {sectionStats.offline > 0 && <Tag color="red">{sectionStats.offline} 离线</Tag>}
+      {sectionStats.enabled > 0 && <Tag color="purple">{sectionStats.enabled} 已启用</Tag>}
+    </Space>
+  );
+
+  const renderGroupSection = (group: DeviceGroup.TreeItem, depth = 0): ReactNode => {
+    const sectionStats = visibleGroupStatsMap.get(group.id);
+    if (!sectionStats || sectionStats.total === 0) {
+      return null;
+    }
+
+    const directDevices = visibleDeviceMap.get(group.id) ?? [];
+    const childSections = (group.children ?? [])
+      .map((child) => renderGroupSection(child, depth + 1))
+      .filter((item): item is ReactNode => item !== null && item !== undefined && item !== false);
+
+    return (
+      <section
+        key={group.id}
+        className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4"
+        style={depth > 0 ? { marginLeft: depth * 16 } : undefined}
+      >
+        <Flex justify="space-between" align="center" gap={12} wrap>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-800">{group.name}</div>
+            <div className="mt-1 text-xs text-slate-500">
+              同一分组内的设备会集中展示，便于批量维护
+            </div>
+          </div>
+          {renderSectionStats(sectionStats)}
+        </Flex>
+
+        {directDevices.length > 0 ? renderDeviceCards(directDevices) : null}
+
+        {childSections.length > 0 ? (
+          <Space direction="vertical" className="mt-4 w-full" size="middle">
+            {childSections}
+          </Space>
+        ) : null}
+      </section>
+    );
+  };
+
+  const renderUngroupedSection = (devices: Device.RealTimeData[]) => {
+    if (devices.length === 0) return null;
+
+    return (
+      <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+        <Flex justify="space-between" align="center" gap={12} wrap>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-800">未分组</div>
+            <div className="mt-1 text-xs text-slate-500">
+              没有绑定设备分组的卡片会统一在这里展示
+            </div>
+          </div>
+          {renderSectionStats(visibleUngroupedStats)}
+        </Flex>
+
+        {renderDeviceCards(devices)}
+      </section>
+    );
+  };
+
+  const renderFallbackSection = (devices: Device.RealTimeData[]) => {
+    if (devices.length === 0) return null;
+
+    const fallbackTitle =
+      selectedGroupId === null
+        ? "全部设备"
+        : selectedGroupId === 0
+          ? "未分组"
+          : (groupIndex.get(selectedGroupId)?.name ?? `分组 #${selectedGroupId}`);
+
+    const fallbackDescription =
+      selectedGroupId === null
+        ? "设备分组树尚未加载完成，先按当前条件展示全部设备"
+        : "当前分组暂未展开，先展示匹配到的设备卡片";
+
+    return (
+      <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+        <Flex justify="space-between" align="center" gap={12} wrap>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-800">{fallbackTitle}</div>
+            <div className="mt-1 text-xs text-slate-500">{fallbackDescription}</div>
+          </div>
+          {renderSectionStats(displayStats)}
+        </Flex>
+
+        {renderDeviceCards(devices)}
+      </section>
+    );
+  };
+
+  const renderSkeletons = (count = 4) =>
+    Array.from({ length: count }).map((_, idx) => (
+      <div key={idx} className="rounded-lg bg-white px-3.5 py-3">
         <Skeleton active title paragraph={{ rows: 4 }} />
       </div>
     ));
-  };
 
   if (!canQuery) {
     return (
@@ -707,35 +943,35 @@ const DevicePage = () => {
         </Card>
       </Flex>
 
-      {/* 设备卡片网格 */}
-      <div className="grid gap-3" style={DEVICE_GRID_STYLE}>
-        {isLoading && filteredDeviceList.length === 0 ? (
-          renderSkeletons()
-        ) : filteredDeviceList.length === 0 ? (
-          <div className="col-span-full py-12">
-            <Empty description={keyword ? "搜索无结果，请尝试调整关键词" : "暂无设备数据"} />
-          </div>
-        ) : (
-          filteredDeviceList.map((device) => {
-            return (
-              <DeviceGridItem
-                key={device.id}
-                device={device}
-                canEdit={canEdit}
-                canDelete={canDelete}
-                isCommandPopoverOpen={commandPopoverOpen && commandDevice?.id === device.id}
-                activeCommandFunc={commandDevice?.id === device.id ? commandFunc : null}
-                onImageClick={handleImageClick}
-                onOpenCommandPopover={openCommandPopover}
-                onCloseCommandPopover={closeCommandPopover}
-                onOpenHistoryModal={openHistoryModal}
-                onOpenEditModal={openEditModal}
-                onDeleteDevice={onDeleteDevice}
-              />
-            );
-          })
-        )}
-      </div>
+      {/* 设备卡片分组展示 */}
+      {isLoading && filteredDeviceList.length === 0 ? (
+        <div className="grid gap-3" style={DEVICE_CARD_GRID_STYLE}>
+          {renderSkeletons()}
+        </div>
+      ) : filteredDeviceList.length === 0 ? (
+        <div className="py-12">
+          <Empty description={keyword ? "搜索无结果，请尝试调整关键词" : "暂无设备数据"} />
+        </div>
+      ) : (
+        <Space direction="vertical" className="w-full" size="large">
+          {groupRoots.length > 0 ? (
+            <>
+              {groupRoots.map((group) => renderGroupSection(group))}
+              {selectedGroupId === null && visibleUngroupedDevices.length > 0
+                ? renderUngroupedSection(visibleUngroupedDevices)
+                : null}
+            </>
+          ) : selectedGroupId === 0 ? (
+            (renderUngroupedSection(visibleUngroupedDevices) ?? (
+              <div className="py-12">
+                <Empty description="暂无未分组设备" />
+              </div>
+            ))
+          ) : (
+            renderFallbackSection(filteredDeviceList)
+          )}
+        </Space>
+      )}
 
       {/* 图片预览 */}
       <ImagePreviewModal ref={imageModalRef} />
