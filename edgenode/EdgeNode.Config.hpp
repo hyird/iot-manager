@@ -76,15 +76,33 @@ public:
         std::string envPlatformUrl = envPlatform ? std::string(envPlatform) : "";
         trim(envPlatformUrl);
 
-        const auto& agent = root.isObject() ? root["agent"] : emptyAgent;
-        if (!agent.isObject() && !root.isNull()) {
-            setError(error, "EdgeNode 配置的 agent 节点格式错误");
+        Json::Value agent = emptyAgent;
+        if (root.isObject()) {
+            if (root.isMember("agent") && root["agent"].isObject()) {
+                agent = root["agent"];
+            } else {
+                // 支持 node.json 扁平结构：{ "sn": "...", "model": "...", "platform_url": "..." }
+                agent = root;
+            }
+        } else if (!root.isNull()) {
+            setError(error, "EdgeNode 配置格式错误");
             return std::nullopt;
         }
 
         EdgeNodeConfig config;
-        config.sn = readDeviceTreeSerial().value_or(toUpperCode(agent.get("code", "").asString()));
-        config.model = readDeviceTreeModel().value_or(agent.get("model", "").asString());
+        // sn/model 参数统一使用小写键名，兼容历史 code 字段
+        auto snFromConfig = agent.get("sn", agent.get("code", "")).asString();
+        auto modelFromConfig = agent.get("model", "").asString();
+        trim(snFromConfig);
+        trim(modelFromConfig);
+
+        // 有 node.json 配置时优先读取；没有时回退到 /proc/device-tree/*
+        config.sn = snFromConfig.empty()
+            ? readDeviceTreeSerial().value_or("")
+            : toUpperCode(snFromConfig);
+        config.model = modelFromConfig.empty()
+            ? readDeviceTreeModel().value_or("")
+            : modelFromConfig;
         std::string platformUrl = platformOverride;
         trim(platformUrl);
         if (platformUrl.empty()) platformUrl = envPlatformUrl;
@@ -146,6 +164,12 @@ private:
 
     static std::optional<std::string> findConfigPath() {
         static const std::vector<std::string> paths = {
+            "./node.local.json",
+            "../node.local.json",
+            "../../node.local.json",
+            "./node.json",
+            "../node.json",
+            "../../node.json",
             "./config/agent.local.json",
             "../config/agent.local.json",
             "../../config/agent.local.json",
