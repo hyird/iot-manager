@@ -345,16 +345,6 @@ int main() {
     // 4. 应用配置
     LoggerManager::setLogLevel(ConfigManager::getLogLevel());
 
-    // 初始化 EdgeNode 共享密钥（从配置文件读取，禁止硬编码）
-    {
-        auto config = app().getCustomConfig();
-        std::string agentSecret = config.get("agent", Json::objectValue).get("shared_secret", "").asString();
-        if (agentSecret.empty()) {
-            LOG_WARN << "[Config] agent.shared_secret not configured, Agent authentication will be disabled";
-        }
-        agent::setAgentSharedSecret(agentSecret);
-    }
-
     // 5. 设置全局异常处理
     AppExceptionHandler::setup();
 

@@ -24,14 +24,19 @@ public:
         Json::Value items{Json::arrayValue};
     };
 
+    struct ApproveResult {
+        bool found = false;
+        std::string message;
+    };
+
     /**
      * @brief 创建 Agent 节点（UI 预配置）
      */
     Task<Json::Value> create(const Json::Value& data) {
-        auto code = data.get("code", "").asString();
+        auto code = data.get("code", data.get("sn", "")).asString();
         std::transform(code.begin(), code.end(), code.begin(), [](unsigned char c) { return std::toupper(c); });
-        const auto name = data.get("name", "").asString();
-        const auto secret = data.get("secret", "").asString();
+        const auto model = data.get("model", "").asString();
+        const auto name = data.get("name", model.empty() ? ("Edge-" + code) : (model + "-" + code)).asString();
 
         if (code.empty()) throw ValidationException("code 不能为空");
         if (name.empty()) throw ValidationException("name 不能为空");
@@ -47,10 +52,10 @@ public:
         }
 
         auto result = co_await db.execSqlCoro(R"(
-            INSERT INTO agent_node (code, name, secret, is_online, config_status, created_at, updated_at)
-            VALUES (?, ?, ?, FALSE, 'idle', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            INSERT INTO agent_node (code, sn, model, name, is_online, config_status, auth_status, approved_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, FALSE, 'idle', 'approved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING id
-        )", {code, name, secret});
+        )", {code, code, model, name});
 
         ResourceVersion::instance().incrementVersion("link");
 
@@ -109,7 +114,8 @@ public:
         const auto expectedEndpointsByAgent = co_await loadExpectedEndpointsByAgent();
         const auto recentEventsByAgent = co_await loadRecentEventsByAgent();
         auto result = co_await db.execSqlCoro(R"(
-            SELECT id, code, name, version, is_online, last_seen, connected_at, capabilities, runtime,
+            SELECT id, code, sn, model, name, version, is_online, last_seen, connected_at, capabilities, runtime,
+                   auth_status, approved_at,
                    expected_config_version, applied_config_version, config_status,
                    config_error, last_config_sync_at, last_config_applied_at, network_config
             FROM agent_node
@@ -135,7 +141,8 @@ public:
         DatabaseService db;
         const auto expectedEndpointsByAgent = co_await loadExpectedEndpointsByAgent();
         auto result = co_await db.execSqlCoro(R"(
-            SELECT id, code, name, version, is_online, last_seen, connected_at, capabilities, runtime,
+            SELECT id, code, sn, model, name, version, is_online, last_seen, connected_at, capabilities, runtime,
+                   auth_status, approved_at,
                    expected_config_version, applied_config_version, config_status,
                    config_error, last_config_sync_at, last_config_applied_at, network_config
             FROM agent_node
@@ -159,6 +166,46 @@ public:
             items.append(item);
         }
         co_return items;
+    }
+
+    Task<ApproveResult> approve(int id, int userId) {
+        ApproveResult response;
+        DatabaseService db;
+
+        auto result = co_await db.execSqlCoro(R"(
+            SELECT id, auth_status FROM agent_node
+            WHERE id = ? AND deleted_at IS NULL
+            LIMIT 1
+        )", {std::to_string(id)});
+
+        if (result.empty()) {
+            co_return response;
+        }
+
+        response.found = true;
+        const auto authStatus = FieldHelper::getString(result[0]["auth_status"], "pending");
+        if (authStatus == "approved") {
+            response.message = "该节点已同意接入";
+            co_return response;
+        }
+
+        co_await db.execSqlCoro(R"(
+            UPDATE agent_node
+            SET auth_status = 'approved',
+                approved_at = CURRENT_TIMESTAMP,
+                approved_by = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND deleted_at IS NULL
+        )", {
+            std::to_string(userId),
+            std::to_string(id)
+        });
+
+        ResourceVersion::instance().incrementVersion("agent");
+        (void)AgentBridgeManager::instance().requestConfigSync(id);
+
+        response.message = "已同意接入，节点下次连接后生效";
+        co_return response;
     }
 
     Task<ConfigSyncRequestResult> requestConfigSync(int id) {
@@ -587,9 +634,13 @@ private:
         Json::Value item(Json::objectValue);
         item["id"] = FieldHelper::getInt(row["id"]);
         item["code"] = FieldHelper::getString(row["code"]);
+        item["sn"] = FieldHelper::getString(row["sn"], item["code"].asString());
+        item["model"] = FieldHelper::getString(row["model"]);
         item["name"] = FieldHelper::getString(row["name"]);
         item["version"] = FieldHelper::getString(row["version"]);
         item["is_online"] = FieldHelper::getBool(row["is_online"]);
+        item["auth_status"] = FieldHelper::getString(row["auth_status"], "pending");
+        item["approved_at"] = FieldHelper::getString(row["approved_at"]);
         item["last_seen"] = FieldHelper::getString(row["last_seen"]);
         item["connected_at"] = FieldHelper::getString(row["connected_at"]);
         item["expected_config_version"] = static_cast<Json::Int64>(

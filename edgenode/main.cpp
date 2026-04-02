@@ -51,7 +51,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "[EdgeNode] starting, code=" << configOpt->code
+    std::cout << "[EdgeNode] starting, sn=" << configOpt->sn
+              << ", model=" << configOpt->model
               << ", platform=" << configOpt->platformHost << "/agent/ws" << std::endl;
 
     try {

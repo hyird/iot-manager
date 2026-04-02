@@ -22,6 +22,7 @@ public:
     ADD_METHOD_TO(EdgeNodeController::options, "/api/agent/options", Get, "AuthFilter");
     ADD_METHOD_TO(EdgeNodeController::events, "/api/agent/{id}/events", Get, "AuthFilter");
     ADD_METHOD_TO(EdgeNodeController::update, "/api/agent/{id}", Put, "AuthFilter");
+    ADD_METHOD_TO(EdgeNodeController::approve, "/api/agent/{id}/approve", Post, "AuthFilter");
     ADD_METHOD_TO(EdgeNodeController::resync, "/api/agent/{id}/resync", Post, "AuthFilter");
     ADD_METHOD_TO(EdgeNodeController::updateNetworkConfig, "/api/agent/{id}/network-config", Put, "AuthFilter");
     ADD_METHOD_TO(EdgeNodeController::remove, "/api/agent/{id}", Delete, "AuthFilter");
@@ -80,6 +81,19 @@ public:
 
         co_await service_.update(id, *json);
         co_return Response::ok(Json::Value::null, "更新成功");
+    }
+
+    Task<HttpResponsePtr> approve(HttpRequestPtr req, int id) {
+        ControllerUtils::requirePositiveId(id);
+        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:link:edit"});
+
+        const auto userId = ControllerUtils::getUserId(req);
+        const auto result = co_await service_.approve(id, userId);
+        if (!result.found) {
+            co_return Response::notFound("采集 Agent 不存在");
+        }
+
+        co_return Response::ok(Json::Value::null, result.message);
     }
 
     Task<HttpResponsePtr> resync(HttpRequestPtr req, int id) {

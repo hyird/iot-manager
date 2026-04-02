@@ -166,9 +166,8 @@ private:
 
         auto req = drogon::HttpRequest::newHttpRequest();
         req->setPath("/agent/ws");
-        req->addHeader("X-Agent-Code", config_.code);
-        req->addHeader("X-Agent-Secret", agent::getAgentSharedSecret());
-        req->addHeader("X-Agent-Name", config_.name);
+        req->addHeader("X-Agent-SN", config_.sn);
+        req->addHeader("X-Agent-Model", config_.model);
 
         wsClient_->connectToServer(
             req,
@@ -343,7 +342,8 @@ private:
 
     void sendHello() {
         Json::Value data(Json::objectValue);
-        data["name"] = config_.name;
+        data["sn"] = config_.sn;
+        data["model"] = config_.model;
         data["version"] = IOT_AGENT_VERSION;
         data["capabilities"] = AgentCapabilitiesCollector::collectCapabilities();
         data["runtime"] = buildRuntimePayload();
@@ -1014,8 +1014,8 @@ private:
         l2Bridge_.setDiscoverHandler([this](const l2config::MacAddr& localMac) -> std::string {
             Json::Value info(Json::objectValue);
             info["mac"] = l2config::macToString(localMac);
-            info["code"] = config_.code;
-            info["name"] = config_.name;
+            info["sn"] = config_.sn;
+            info["model"] = config_.model;
             info["version"] = IOT_AGENT_VERSION;
             info["interfaces"] = AgentCapabilitiesCollector::collectCapabilities()["interfaces"];
             Json::StreamWriterBuilder writer;

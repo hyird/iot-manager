@@ -24,6 +24,14 @@ export function useAgentUpdate() {
   });
 }
 
+export function useAgentApprove() {
+  return useMutationWithFeedback<void, number>({
+    mutationFn: api.approve,
+    successMessage: "已同意边缘节点接入",
+    invalidateKeys: [agentQueryKeys.all],
+  });
+}
+
 export function useAgentResync() {
   return useMutationWithFeedback<void, number>({
     mutationFn: api.resync,

@@ -7,6 +7,7 @@
 #include "migration/MigrationRegistry.hpp"
 #include "migration/migrations/V001_Baseline.hpp"
 #include "migration/migrations/V002_TimescaleDB.hpp"
+#include "migration/migrations/V003_AgentSelfRegistration.hpp"
 #include <cstdlib>
 
 /**
@@ -37,6 +38,7 @@ private:
         MigrationRegistry registry;
         registry.add<V001_Baseline>();
         registry.add<V002_TimescaleDB>();
+        registry.add<V003_AgentSelfRegistration>();
         // 新增迁移在此处注册，例如：
         // registry.add<V003_AddDeviceTags>();
         return registry;

@@ -2,10 +2,12 @@
 
 #include "common/edgenode/AgentBridgeManager.hpp"
 #include "common/edgenode/AgentProtocol.hpp"
+#include <algorithm>
+#include <cctype>
 
 struct AgentWsSession {
-    std::string agentCode;
-    std::string agentName;
+    std::string agentSn;
+    std::string agentModel;
     std::atomic<int> agentId{0};
     std::atomic<bool> activated{false};
 };
@@ -18,26 +20,25 @@ public:
     WS_PATH_ADD("/agent/ws");
     WS_PATH_LIST_END
 
-    static std::string toUpperCode(std::string s) {
+    static std::string toUpper(std::string s) {
         std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::toupper(c); });
         return s;
     }
 
     void handleNewConnection(const drogon::HttpRequestPtr& req,
                              const drogon::WebSocketConnectionPtr& conn) override {
-        const auto agentCode = toUpperCode(req->getHeader("X-Agent-Code"));
-        const auto agentSecret = req->getHeader("X-Agent-Secret");
-        const auto agentName = req->getHeader("X-Agent-Name");
+        const auto agentSn = toUpper(req->getHeader("X-Agent-SN"));
+        const auto agentModel = req->getHeader("X-Agent-Model");
 
-        if (!AgentBridgeManager::instance().authorize(agentCode, agentSecret)) {
-            conn->send(buildError("auth_failed", "Agent认证失败"));
+        if (!AgentBridgeManager::instance().authorize(agentSn, agentModel)) {
+            conn->send(buildError("auth_failed", "Agent认证失败，SN/model 缺失"));
             conn->shutdown(drogon::CloseCode::kViolation, "Auth failed");
             return;
         }
 
         auto session = std::make_shared<AgentWsSession>();
-        session->agentCode = agentCode;
-        session->agentName = agentName.empty() ? agentCode : agentName;
+        session->agentSn = agentSn;
+        session->agentModel = agentModel;
         conn->setContext(session);
     }
 
@@ -100,21 +101,34 @@ public:
         const auto& data = payload["data"];
 
         if (typeName == agent::MESSAGE_HELLO) {
-            const auto agentName = data.get("name", session->agentName).asString();
+            const auto agentSn = toUpper(data.get("sn", session->agentSn).asString());
+            const auto agentModel = data.get("model", session->agentModel).asString();
             const auto version = data.get("version", "").asString();
             const auto capabilities = data.get("capabilities", Json::Value(Json::objectValue));
             const auto runtime = data.get("runtime", Json::Value(Json::objectValue));
-            drogon::async_run([conn, session, agentCode = session->agentCode, agentName, version, capabilities, runtime]() mutable -> Task<> {
+            drogon::async_run([conn, session, agentSn, agentModel, version, capabilities, runtime]() mutable -> Task<> {
                 try {
-                    const auto agentId = co_await AgentBridgeManager::instance().activateSession(
-                        agentCode,
-                        agentName,
+                    auto activation = co_await AgentBridgeManager::instance().activateSession(
+                        agentSn,
+                        agentModel,
                         version,
                         capabilities,
                         runtime,
                         conn);
-                    session->agentId.store(agentId, std::memory_order_relaxed);
-                    session->activated.store(agentId > 0, std::memory_order_release);
+                    session->agentSn = activation.sn;
+                    session->agentModel = activation.model;
+                    session->agentId.store(activation.agentId, std::memory_order_relaxed);
+                    session->activated.store(activation.approved, std::memory_order_release);
+
+                    if (!activation.approved && conn->connected()) {
+                        const auto code = activation.authStatus == AgentBridgeManager::AUTH_STATUS_REJECTED
+                            ? "auth_rejected" : "auth_pending";
+                        const auto message = activation.authStatus == AgentBridgeManager::AUTH_STATUS_REJECTED
+                            ? "该节点已被平台拒绝接入"
+                            : "该节点待平台同意接入";
+                        conn->send(AgentWsController::buildError(code, message));
+                        conn->shutdown(drogon::CloseCode::kViolation, "not_approved");
+                    }
                 } catch (const std::exception& e) {
                     LOG_ERROR << "[AgentWS] hello failed: " << e.what();
                     session->agentId.store(0, std::memory_order_relaxed);
@@ -137,7 +151,7 @@ public:
             const auto version = data.get("version", "").asString();
             const auto capabilities = data.get("capabilities", Json::nullValue);
             const auto runtime = data.get("runtime", Json::Value(Json::objectValue));
-            drogon::async_run([agentCode = session->agentCode, version, capabilities, runtime]() -> Task<> {
+            drogon::async_run([agentCode = session->agentSn, version, capabilities, runtime]() -> Task<> {
                 co_await AgentBridgeManager::instance().refreshHeartbeat(
                     agentCode,
                     version,
@@ -150,7 +164,7 @@ public:
         if (typeName == agent::MESSAGE_CONFIG_APPLIED) {
             const auto configVersion = agent::parseConfigVersion(data);
             const auto runtime = data.get("runtime", Json::Value(Json::objectValue));
-            drogon::async_run([agentCode = session->agentCode, configVersion, runtime]() -> Task<> {
+            drogon::async_run([agentCode = session->agentSn, configVersion, runtime]() -> Task<> {
                 co_await AgentBridgeManager::instance().markConfigApplied(
                     agentCode,
                     configVersion,
@@ -164,7 +178,7 @@ public:
             const auto configVersion = agent::parseConfigVersion(data);
             const auto error = data.get("error", "").asString();
             const auto runtime = data.get("runtime", Json::Value(Json::objectValue));
-            drogon::async_run([agentCode = session->agentCode, configVersion, error, runtime]() -> Task<> {
+            drogon::async_run([agentCode = session->agentSn, configVersion, error, runtime]() -> Task<> {
                 co_await AgentBridgeManager::instance().markConfigApplyFailed(
                     agentCode,
                     configVersion,
@@ -211,7 +225,7 @@ public:
         }
 
         if (typeName == agent::MESSAGE_DEVICE_COMMAND_RESULT) {
-            AgentBridgeManager::instance().handleDeviceCommandResult(session->agentCode, data);
+            AgentBridgeManager::instance().handleDeviceCommandResult(session->agentSn, data);
             return;
         }
 
@@ -233,14 +247,14 @@ public:
         }
 
         if (typeName == agent::MESSAGE_NETWORK_CONFIG_APPLIED) {
-            drogon::async_run([agentCode = session->agentCode, data]() -> Task<> {
+            drogon::async_run([agentCode = session->agentSn, data]() -> Task<> {
                 co_await AgentBridgeManager::instance().handleNetworkConfigApplied(agentCode, data);
             });
             return;
         }
 
         if (typeName == agent::MESSAGE_NETWORK_CONFIG_FAILED) {
-            AgentBridgeManager::instance().handleNetworkConfigFailed(session->agentCode, data);
+            AgentBridgeManager::instance().handleNetworkConfigFailed(session->agentSn, data);
             return;
         }
 
@@ -259,7 +273,7 @@ public:
         if (!session) {
             return;
         }
-        drogon::async_run([agentCode = session->agentCode, conn]() -> Task<> {
+        drogon::async_run([agentCode = session->agentSn, conn]() -> Task<> {
             co_await AgentBridgeManager::instance().markOffline(agentCode, conn);
         });
     }

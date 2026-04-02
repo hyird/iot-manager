@@ -10,6 +10,7 @@ const ENDPOINTS = {
   OPTIONS: "/api/agent/options",
   EVENTS: (id: number) => `/api/agent/${id}/events`,
   DETAIL: (id: number) => `/api/agent/${id}`,
+  APPROVE: (id: number) => `/api/agent/${id}/approve`,
   RESYNC: (id: number) => `/api/agent/${id}/resync`,
   NETWORK_CONFIG: (id: number) => `/api/agent/${id}/network-config`,
   ENDPOINTS_LIST: (agentId: number) => `/api/agent/${agentId}/endpoints`,
@@ -34,6 +35,10 @@ export function create(data: Agent.CreateInput) {
 
 export function update(id: number, data: Agent.UpdateInput) {
   return request.put<void>(ENDPOINTS.DETAIL(id), data);
+}
+
+export function approve(id: number) {
+  return request.post<void>(ENDPOINTS.APPROVE(id));
 }
 
 export function resync(id: number) {

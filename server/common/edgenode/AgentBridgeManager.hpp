@@ -11,6 +11,7 @@
 #include "common/utils/TimestampHelper.hpp"
 
 #include <deque>
+#include <cctype>
 
 class EdgeNodeBridgeManager {
 public:
@@ -26,10 +27,15 @@ public:
     static constexpr const char* CONFIG_STATUS_PENDING = "pending";
     static constexpr const char* CONFIG_STATUS_APPLIED = "applied";
     static constexpr const char* CONFIG_STATUS_FAILED = "failed";
+    static constexpr const char* AUTH_STATUS_PENDING = "pending";
+    static constexpr const char* AUTH_STATUS_APPROVED = "approved";
+    static constexpr const char* AUTH_STATUS_REJECTED = "rejected";
 
     struct Session {
         int agentId = 0;
         std::string code;
+        std::string sn;
+        std::string model;
         std::string name;
         std::string version;
         agent::ConfigVersion expectedConfigVersion = 0;
@@ -39,6 +45,16 @@ public:
         Json::Value capabilities = Json::objectValue;
         WebSocketConnectionPtr conn;
         std::chrono::steady_clock::time_point lastSeen = std::chrono::steady_clock::now();
+    };
+
+    struct ActivationResult {
+        int agentId = 0;
+        bool approved = false;
+        std::string authStatus = AUTH_STATUS_PENDING;
+        std::string code;
+        std::string sn;
+        std::string model;
+        std::string name;
     };
 
     static EdgeNodeBridgeManager& instance() {
@@ -78,21 +94,10 @@ public:
                  << eventRetentionDays << " days";
     }
 
-    /**
-     * @brief Agent 认证：从配置读取 secret，需 code 非空且 secret 匹配
-     */
-    bool authorize(const std::string& agentCode, const std::string& secret) const {
-        if (agentCode.empty() || secret.empty()) return false;
-        const auto& expectedSecret = agent::getAgentSharedSecret();
-        if (expectedSecret.empty()) {
-            LOG_ERROR << "[EdgeNodeBridge] Agent shared secret not configured";
-            return false;
-        }
-        if (secret != expectedSecret) {
-            LOG_WARN << "[EdgeNodeBridge] Reject agent auth for code=" << agentCode
-                     << ", reason=invalid_secret";
-            return false;
-        }
+    bool authorize(const std::string& agentSn, const std::string& model) const {
+        const auto normalizedSn = normalizeSn(agentSn);
+        if (normalizedSn.empty()) return false;
+        if (model.empty()) return false;
         return true;
     }
 
@@ -151,19 +156,50 @@ public:
                  << "s, retention=" << eventRetentionDays << "d)";
     }
 
-    Task<int> activateSession(const std::string& agentCode,
-                              const std::string& agentName,
-                              const std::string& version,
-                              const Json::Value& capabilities,
-                              const Json::Value& runtime,
-                              const WebSocketConnectionPtr& conn) {
-        auto agentId = co_await upsertAgentNode(agentCode, agentName, version, capabilities, runtime, true);
+    Task<ActivationResult> activateSession(const std::string& agentSn,
+                                           const std::string& agentModel,
+                                           const std::string& version,
+                                           const Json::Value& capabilities,
+                                           const Json::Value& runtime,
+                                           const WebSocketConnectionPtr& conn) {
+        ActivationResult result;
+        result.sn = normalizeSn(agentSn);
+        result.model = agentModel;
+        result.code = result.sn;
+
+        const auto upsertResult = co_await upsertAgentNode(
+            result.sn,
+            result.model,
+            version,
+            capabilities,
+            runtime,
+            true);
+        result.agentId = upsertResult.agentId;
+        result.name = upsertResult.name;
+        result.authStatus = upsertResult.authStatus;
+        result.approved = (result.authStatus == AUTH_STATUS_APPROVED);
+
+        if (!result.approved) {
+            Json::Value eventDetail(Json::objectValue);
+            eventDetail["sn"] = result.sn;
+            eventDetail["model"] = result.model;
+            appendRecentEvent(
+                result.agentId,
+                "auth_pending",
+                "warning",
+                "节点待平台同意接入",
+                eventDetail
+            );
+            co_return result;
+        }
 
         std::shared_ptr<Session> oldSession;
         auto session = std::make_shared<Session>();
-        session->agentId = agentId;
-        session->code = agentCode;
-        session->name = agentName.empty() ? agentCode : agentName;
+        session->agentId = result.agentId;
+        session->code = result.code;
+        session->sn = result.sn;
+        session->model = result.model;
+        session->name = result.name;
         session->version = version;
         session->capabilities = capabilities;
         session->conn = conn;
@@ -171,7 +207,7 @@ public:
 
         {
             std::unique_lock lock(mutex_);
-            auto it = sessionsByCode_.find(agentCode);
+            auto it = sessionsByCode_.find(result.code);
             if (it != sessionsByCode_.end()) {
                 oldSession = it->second;
             }
@@ -181,13 +217,13 @@ public:
                 session->configStatus = oldSession->configStatus;
                 session->configError = oldSession->configError;
             }
-            auto& currentVersion = configVersions_[agentId];
+            auto& currentVersion = configVersions_[result.agentId];
             currentVersion = std::max({
                 currentVersion,
                 session->expectedConfigVersion,
                 session->appliedConfigVersion
             });
-            sessionsByCode_[agentCode] = session;
+            sessionsByCode_[result.code] = session;
         }
 
         if (oldSession && oldSession->conn && oldSession->conn != conn) {
@@ -196,9 +232,10 @@ public:
 
         Json::Value eventDetail(Json::objectValue);
         eventDetail["version"] = version;
-        eventDetail["code"] = agentCode;
+        eventDetail["sn"] = result.sn;
+        eventDetail["model"] = result.model;
         appendRecentEvent(
-            agentId,
+            result.agentId,
             "session_online",
             "info",
             oldSession ? "Agent 已重新上线并替换旧会话" : "Agent 已上线",
@@ -206,9 +243,9 @@ public:
         );
 
         sendHelloAck(session);
-        notifyNetworkConfigOnConnect(agentId);
-        notifyConfigSync(agentId);
-        co_return agentId;
+        notifyNetworkConfigOnConnect(result.agentId);
+        notifyConfigSync(result.agentId);
+        co_return result;
     }
 
     Task<void> refreshHeartbeat(const std::string& agentCode,
@@ -229,7 +266,7 @@ public:
         }
 
         co_await upsertAgentNode(
-            session->code, session->name, session->version,
+            session->sn, session->model, session->version,
             session->capabilities, runtime, true);
     }
 
@@ -796,44 +833,79 @@ public:
 private:
     EdgeNodeBridgeManager() = default;
 
-    Task<int> upsertAgentNode(const std::string& agentCode,
-                              const std::string& agentName,
-                              const std::string& version,
-                              const Json::Value& capabilities,
-                              const Json::Value& runtime,
-                              bool online) {
+    struct UpsertAgentResult {
+        int agentId = 0;
+        std::string name;
+        std::string authStatus = AUTH_STATUS_PENDING;
+    };
+
+    static std::string normalizeSn(std::string sn) {
+        std::transform(sn.begin(), sn.end(), sn.begin(), [](unsigned char c) {
+            return static_cast<char>(std::toupper(c));
+        });
+        return sn;
+    }
+
+    static std::string buildDefaultName(const std::string& sn, const std::string& model) {
+        auto suffix = sn;
+        if (suffix.size() > 6) {
+            suffix = suffix.substr(suffix.size() - 6);
+        }
+        return model.empty() ? ("Edge-" + suffix) : (model + "-" + suffix);
+    }
+
+    Task<UpsertAgentResult> upsertAgentNode(const std::string& agentSn,
+                                            const std::string& agentModel,
+                                            const std::string& version,
+                                            const Json::Value& capabilities,
+                                            const Json::Value& runtime,
+                                            bool online) {
+        const auto normalizedSn = normalizeSn(agentSn);
+        const auto generatedName = buildDefaultName(normalizedSn, agentModel);
+
         DatabaseService db;
         auto result = co_await db.execSqlCoro(R"(
             INSERT INTO agent_node (
-                code, name, version, capabilities, runtime, is_online,
-                last_seen, connected_at, created_at, updated_at
+                code, sn, model, name, version, capabilities, runtime, is_online,
+                auth_status, approved_at, last_seen, connected_at, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?::jsonb, ?::jsonb, ?::boolean,
-                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?::boolean,
+                    ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT (code) WHERE deleted_at IS NULL DO UPDATE
-            SET name = EXCLUDED.name,
-                version = EXCLUDED.version,
+            SET sn = EXCLUDED.sn,
+                model = CASE WHEN EXCLUDED.model <> '' THEN EXCLUDED.model ELSE agent_node.model END,
+                version = CASE WHEN EXCLUDED.version <> '' THEN EXCLUDED.version ELSE agent_node.version END,
                 capabilities = EXCLUDED.capabilities,
                 runtime = EXCLUDED.runtime,
-                is_online = EXCLUDED.is_online,
-                last_seen = CURRENT_TIMESTAMP,
+                is_online = CASE WHEN agent_node.auth_status = 'approved' THEN EXCLUDED.is_online ELSE FALSE END,
+                last_seen = CASE WHEN agent_node.auth_status = 'approved' THEN CURRENT_TIMESTAMP ELSE agent_node.last_seen END,
                 connected_at = CASE
+                    WHEN agent_node.auth_status <> 'approved' THEN agent_node.connected_at
                     WHEN agent_node.is_online THEN agent_node.connected_at
                     ELSE CURRENT_TIMESTAMP
                 END,
                 updated_at = CURRENT_TIMESTAMP
-            RETURNING id
+            RETURNING id, name, auth_status
         )", {
-            agentCode,
-            agentName.empty() ? agentCode : agentName,
+            normalizedSn,
+            normalizedSn,
+            agentModel,
+            generatedName,
             version,
             JsonHelper::serialize(capabilities.isObject() ? capabilities : Json::Value(Json::objectValue)),
             JsonHelper::serialize(runtime.isObject() ? runtime : Json::Value(Json::objectValue)),
-            online ? "true" : "false"
+            online ? "true" : "false",
+            AUTH_STATUS_PENDING
         });
 
         ResourceVersion::instance().incrementVersion("agent");
-        co_return result.empty() ? 0 : FieldHelper::getInt(result[0]["id"]);
+        UpsertAgentResult upsert;
+        if (!result.empty()) {
+            upsert.agentId = FieldHelper::getInt(result[0]["id"]);
+            upsert.name = FieldHelper::getString(result[0]["name"], generatedName);
+            upsert.authStatus = FieldHelper::getString(result[0]["auth_status"], AUTH_STATUS_PENDING);
+        }
+        co_return upsert;
     }
 
     void sendHelloAck(const std::shared_ptr<Session>& session) {
@@ -842,6 +914,8 @@ private:
         Json::Value data(Json::objectValue);
         data["agentId"] = session->agentId;
         data["agentCode"] = session->code;
+        data["sn"] = session->sn;
+        data["model"] = session->model;
         data["name"] = session->name;
         data["version"] = session->version;
         auto frame = agent::buildBinaryMessage(agent::MESSAGE_HELLO_ACK, data);

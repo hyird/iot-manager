@@ -2,14 +2,21 @@
 
 #include "common/edgenode/AgentProtocol.hpp"
 #include "common/utils/JsonHelper.hpp"
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <optional>
+#include <vector>
 
 namespace agent_app {
 
 namespace fs = std::filesystem;
 
 struct EdgeNodeConfig {
-    std::string code;
-    std::string name;
+    std::string sn;
+    std::string model;
     std::string platformHost;
     std::string logLevel = "INFO";
     int ioThreads = 2;
@@ -65,17 +72,20 @@ public:
         }
 
         EdgeNodeConfig config;
-        config.code = toUpperCode(readDeviceTreeSerial().value_or(
-            agent.get("code", "").asString()));
-        config.name = agent.get("name", config.code).asString();
+        config.sn = readDeviceTreeSerial().value_or(toUpperCode(agent.get("code", "").asString()));
+        config.model = readDeviceTreeModel().value_or(agent.get("model", "").asString());
         config.platformHost = normalizeToWsHost(agent.get("platform_url", "").asString());
 
-        if (config.code.empty() || config.platformHost.empty()) {
-            setError(error, "EdgeNode 配置缺少 code/platform_url");
+        if (config.sn.empty() || config.platformHost.empty()) {
+            setError(error, "EdgeNode 配置缺少 sn/platform_url");
             return std::nullopt;
         }
+        if (config.model.empty()) {
+            config.model = "unknown-model";
+        }
 
-        std::cout << "[EdgeNode] code=" << config.code
+        std::cout << "[EdgeNode] sn=" << config.sn
+                  << ", model=" << config.model
                   << ", platform=" << config.platformHost << "/agent/ws" << std::endl;
 
         return config;
@@ -90,12 +100,28 @@ private:
         if (!ifs) return std::nullopt;
         std::string serial;
         std::getline(ifs, serial, '\0');
-        // 去除首尾空白
-        serial.erase(0, serial.find_first_not_of(" \t\r\n"));
-        serial.erase(serial.find_last_not_of(" \t\r\n") + 1);
+        trim(serial);
         if (serial.empty()) return std::nullopt;
-            std::cout << "[EdgeNode] code from /proc/device-tree/serial-number: " << serial << std::endl;
+        serial = toUpperCode(serial);
+        std::cout << "[EdgeNode] sn from /proc/device-tree/serial-number: " << serial << std::endl;
         return serial;
+#else
+        return std::nullopt;
+#endif
+    }
+
+    static std::optional<std::string> readDeviceTreeModel() {
+#ifdef __linux__
+        constexpr auto path = "/proc/device-tree/model";
+        if (!fs::exists(path)) return std::nullopt;
+        std::ifstream ifs(path, std::ios::binary);
+        if (!ifs) return std::nullopt;
+        std::string model;
+        std::getline(ifs, model, '\0');
+        trim(model);
+        if (model.empty()) return std::nullopt;
+        std::cout << "[EdgeNode] model from /proc/device-tree/model: " << model << std::endl;
+        return model;
 #else
         return std::nullopt;
 #endif
@@ -120,6 +146,16 @@ private:
             }
         }
         return std::nullopt;
+    }
+
+    static void trim(std::string& value) {
+        const auto first = value.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) {
+            value.clear();
+            return;
+        }
+        const auto last = value.find_last_not_of(" \t\r\n");
+        value = value.substr(first, last - first + 1);
     }
 
     /**

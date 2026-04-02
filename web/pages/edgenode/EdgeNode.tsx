@@ -26,7 +26,7 @@ import { lazy, Suspense, useMemo, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission } from "@/hooks";
 import {
-  useAgentCreate,
+  useAgentApprove,
   useAgentDelete,
   useAgentEndpointCreate,
   useAgentEndpointDelete,
@@ -47,6 +47,12 @@ const configStatusConfig: Record<string, { label: string; color: string }> = {
   pending: { label: "待应用", color: "processing" },
   applied: { label: "已应用", color: "success" },
   failed: { label: "失败", color: "error" },
+};
+
+const authStatusConfig: Record<string, { label: string; color: string }> = {
+  pending: { label: "待同意", color: "warning" },
+  approved: { label: "已同意", color: "success" },
+  rejected: { label: "已拒绝", color: "error" },
 };
 
 const eventLevelConfig: Record<string, { label: string; color: string }> = {
@@ -232,6 +238,7 @@ function NetworkInterfaceList({
 function AgentCard({
   agent,
   canEdit,
+  onApprove,
   onResync,
   onDelete,
   onEdit,
@@ -242,11 +249,13 @@ function AgentCard({
   onEditEndpoint,
   onDeleteEndpoint,
   onOpenTerminal,
+  approveLoading,
   resyncLoading,
   deleteLoading,
 }: {
   agent: Agent.Item;
   canEdit: boolean;
+  onApprove: () => void;
   onResync: () => void;
   onDelete: () => void;
   onEdit: () => void;
@@ -257,10 +266,13 @@ function AgentCard({
   onEditEndpoint: (ep: Agent.Endpoint) => void;
   onDeleteEndpoint: (ep: Agent.Endpoint) => void;
   onOpenTerminal: () => void;
+  approveLoading: boolean;
   resyncLoading: boolean;
   deleteLoading: boolean;
 }) {
   const configStatus = configStatusConfig[agent.config_status || "idle"] || configStatusConfig.idle;
+  const authStatus = authStatusConfig[agent.auth_status || "pending"] || authStatusConfig.pending;
+  const isApproved = (agent.auth_status || "pending") === "approved";
   const interfaces = getInterfaces(agent);
   const expectedEndpoints = getExpectedEndpoints(agent);
   const recentEvents = getRecentEvents(agent);
@@ -278,11 +290,15 @@ function AgentCard({
             </Tag>
           </div>
           <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
-            <span>{agent.code}</span>
+            <span>SN: {agent.sn || agent.code}</span>
+            {agent.model && <span>{agent.model}</span>}
             {agent.version && <span>v{agent.version}</span>}
           </div>
         </div>
-        <Tag color={configStatus.color}>{configStatus.label}</Tag>
+        <div className="flex items-center gap-2">
+          <Tag color={authStatus.color}>{authStatus.label}</Tag>
+          <Tag color={configStatus.color}>{configStatus.label}</Tag>
+        </div>
       </div>
 
       {/* Network interfaces */}
@@ -393,6 +409,18 @@ function AgentCard({
       {/* Actions */}
       {canEdit && (
         <Flex gap={4} className="mt-4 border-t border-slate-100 pt-3">
+          {!isApproved && (
+            <Tooltip title="同意接入">
+              <Button
+                type="text"
+                size="small"
+                onClick={onApprove}
+                loading={approveLoading}
+              >
+                同意
+              </Button>
+            </Tooltip>
+          )}
           <Tooltip title="编辑">
             <Button type="text" size="small" icon={<EditOutlined />} onClick={onEdit} />
           </Tooltip>
@@ -401,7 +429,7 @@ function AgentCard({
               type="text"
               size="small"
               icon={<SyncOutlined />}
-              disabled={!agent.is_online}
+              disabled={!agent.is_online || !isApproved}
               loading={resyncLoading}
               onClick={onResync}
             />
@@ -411,7 +439,7 @@ function AgentCard({
               type="text"
               size="small"
               icon={<CodeOutlined />}
-              disabled={!agent.is_online}
+              disabled={!agent.is_online || !isApproved}
               onClick={onOpenTerminal}
             />
           </Tooltip>
@@ -870,63 +898,42 @@ function AgentFormModal({
   open,
   editAgent,
   onClose,
-  onCreate,
   onUpdate,
-  createLoading,
   updateLoading,
 }: {
   open: boolean;
   editAgent: Agent.Item | null;
   onClose: () => void;
-  onCreate: (data: Agent.CreateInput) => void;
   onUpdate: (id: number, data: Agent.UpdateInput) => void;
-  createLoading: boolean;
   updateLoading: boolean;
 }) {
   const [form] = Form.useForm();
-  const isEdit = !!editAgent;
 
   const handleOpen = () => {
     if (editAgent) {
       form.setFieldsValue({ name: editAgent.name });
-    } else {
-      form.resetFields();
     }
   };
 
   const handleSubmit = async () => {
+    if (!editAgent) return;
     const values = await form.validateFields();
-    if (isEdit) {
-      onUpdate(editAgent!.id, {
-        name: values.name || undefined,
-      });
-    } else {
-      onCreate({
-        code: values.code,
-        name: values.name,
-      });
-    }
+    onUpdate(editAgent.id, {
+      name: values.name || undefined,
+    });
   };
 
   return (
     <Modal
-      title={isEdit ? "编辑边缘节点" : "新增边缘节点"}
+      title="编辑边缘节点"
       open={open}
       onCancel={onClose}
       onOk={handleSubmit}
-      confirmLoading={createLoading || updateLoading}
+      confirmLoading={updateLoading}
       afterOpenChange={(visible) => visible && handleOpen()}
       destroyOnHidden
     >
       <Form form={form} layout="vertical" className="mt-4">
-        <Form.Item
-          name="code"
-          label="Agent 编码 (SN)"
-          rules={[{ required: !isEdit, message: "请输入 Agent 编码" }]}
-          tooltip="设备硬件唯一标识（SN码），创建后不可修改"
-        >
-          <Input placeholder="例如: agent-arm-001" disabled={isEdit} />
-        </Form.Item>
         <Form.Item name="name" label="名称" rules={[{ required: true, message: "请输入名称" }]}>
           <Input placeholder="例如: ARM采集节点001" />
         </Form.Item>
@@ -969,7 +976,7 @@ export default function EdgeNodePage() {
     { hours: 24, limit: 200 },
     { enabled: !!eventViewerAgent }
   );
-  const createMutation = useAgentCreate();
+  const approveMutation = useAgentApprove();
   const updateMutation = useAgentUpdate();
   const resyncMutation = useAgentResync();
   const deleteMutation = useAgentDelete();
@@ -1004,7 +1011,10 @@ export default function EdgeNodePage() {
     switch (issueFilter) {
       case "attention":
         return (
-          !agent.is_online || agent.config_status === "failed" || agent.config_status === "pending"
+          !agent.is_online ||
+          agent.config_status === "failed" ||
+          agent.config_status === "pending" ||
+          (agent.auth_status || "pending") !== "approved"
         );
       case "failed":
         return agent.config_status === "failed";
@@ -1019,18 +1029,10 @@ export default function EdgeNodePage() {
     total: agents.length,
     online: agents.filter((item) => item.is_online).length,
     pending: agents.filter((item) => item.config_status === "pending").length,
+    pendingAuth: agents.filter((item) => (item.auth_status || "pending") === "pending").length,
     failed: agents.filter((item) => item.config_status === "failed").length,
     endpoints: agents.reduce((sum, item) => sum + (item.expected_endpoints?.length ?? 0), 0),
     managedDevices: agents.reduce((sum, item) => sum + getManagedDeviceCount(item), 0),
-  };
-
-  const handleCreate = (data: Agent.CreateInput) => {
-    createMutation.mutate(data, {
-      onSuccess: () => {
-        setFormOpen(false);
-        setEditAgent(null);
-      },
-    });
   };
 
   const handleUpdate = (id: number, data: Agent.UpdateInput) => {
@@ -1096,17 +1098,6 @@ export default function EdgeNodePage() {
             <Button onClick={() => refetch()} loading={isFetching}>
               刷新
             </Button>
-            {canEdit && (
-              <Button
-                type="primary"
-                onClick={() => {
-                  setEditAgent(null);
-                  setFormOpen(true);
-                }}
-              >
-                + 新增边缘节点
-              </Button>
-            )}
           </Space>
         </div>
       }
@@ -1116,6 +1107,7 @@ export default function EdgeNodePage() {
         <SummaryCard title="边缘节点总数" value={summary.total} tone="neutral" />
         <SummaryCard title="在线节点" value={summary.online} tone="success" />
         <SummaryCard title="托管设备" value={summary.managedDevices} tone="neutral" />
+        <SummaryCard title="待同意接入" value={summary.pendingAuth} tone="warning" />
         <SummaryCard title="待应用配置" value={summary.pending} tone="warning" />
         <SummaryCard title="配置失败" value={summary.failed} tone="danger" />
         <SummaryCard title="接入端点" value={summary.endpoints} tone="neutral" />
@@ -1139,6 +1131,7 @@ export default function EdgeNodePage() {
               agent={agent}
               canEdit={canEdit}
               onResync={() => resyncMutation.mutate(agent.id)}
+              onApprove={() => approveMutation.mutate(agent.id)}
               onDelete={() => deleteMutation.mutate(agent.id)}
               onEdit={() => {
                 setEditAgent(agent);
@@ -1155,6 +1148,7 @@ export default function EdgeNodePage() {
               }
               onDeleteEndpoint={(ep) => endpointDeleteMutation.mutate(ep.id)}
               onOpenTerminal={() => setTerminalAgent(agent)}
+              approveLoading={approveMutation.isPending && approveMutation.variables === agent.id}
               resyncLoading={resyncMutation.isPending && resyncMutation.variables === agent.id}
               deleteLoading={deleteMutation.isPending && deleteMutation.variables === agent.id}
             />
@@ -1170,9 +1164,7 @@ export default function EdgeNodePage() {
           setFormOpen(false);
           setEditAgent(null);
         }}
-        onCreate={handleCreate}
         onUpdate={handleUpdate}
-        createLoading={createMutation.isPending}
         updateLoading={updateMutation.isPending}
       />
 

@@ -121,7 +121,11 @@ export interface AgentNetworkConfigItem {
 export interface AgentItem {
   id: number;
   code: string;
+  sn?: string;
+  model?: string;
   name: string;
+  auth_status?: "pending" | "approved" | "rejected";
+  approved_at?: string;
   version?: string;
   is_online: boolean;
   last_seen?: string;
@@ -144,6 +148,7 @@ export interface AgentItem {
 
 export interface AgentCreateInput {
   code: string;
+  model?: string;
   name: string;
 }
 
