@@ -137,26 +137,26 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
   );
 
   return (
-    <div className="bg-white rounded-lg px-3.5 py-2.5 border border-gray-200 shadow-[0_2px_8px_rgba(0,0,0,0.08)] flex flex-col gap-2 h-full">
+    <div className="bg-white rounded-lg px-3.5 py-2 border border-gray-200 shadow-[0_2px_8px_rgba(0,0,0,0.08)] flex flex-col gap-1.5 h-full">
       {/* 主标题 */}
-      <div className="text-sm font-bold flex items-center gap-2 leading-5">{title}</div>
+      <div className="text-sm font-bold flex items-center gap-1.5 leading-4.5">{title}</div>
 
       {/* 副标题（可选） */}
-      {subtitle && <div className="text-[11px] text-gray-400 -mt-0.5">{subtitle}</div>}
+      {subtitle && <div className="text-[10px] text-gray-400 -mt-1 leading-4">{subtitle}</div>}
 
       {/* 分割线 */}
       <div className="h-px bg-gray-100" />
 
       {/* 内容区 */}
-      <div className="flex flex-col flex-1 gap-2.5">
+      <div className="flex flex-col flex-1 gap-1.5">
         {hasGroupSections
           ? sections.map((section) => (
               <section
                 key={section.key}
-                className="rounded-md border border-slate-100 bg-slate-50/60 px-2.5 py-1.5"
+                className="rounded-md border border-slate-100 bg-slate-50/60 px-2 py-1"
               >
-                <div className="mb-1.5 flex items-center gap-2">
-                  <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500 shadow-sm">
+                <div className="mb-1 flex items-center gap-1.5">
+                  <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 shadow-sm">
                     {section.label}
                   </span>
                   <span className="h-px flex-1 bg-slate-100" />
@@ -169,7 +169,7 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
 
       {/* bottom extra */}
       {extra && (
-        <div className="mt-0.5 pt-1 border-t border-gray-100 text-[12px] text-gray-500">
+        <div className="mt-0.5 pt-0.5 border-t border-gray-100 text-[11px] leading-4 text-gray-500">
           {extra}
         </div>
       )}

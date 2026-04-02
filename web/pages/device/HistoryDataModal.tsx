@@ -162,7 +162,8 @@ const emptyImageState: RecordState<Device.HistoryImage> = {
 
 const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
   const [historyForm] = Form.useForm();
-  const [elementState, setElementState] = useState<RecordState<Device.HistoryElement>>(emptyElementState);
+  const [elementState, setElementState] =
+    useState<RecordState<Device.HistoryElement>>(emptyElementState);
   const [imageState, setImageState] = useState<RecordState<Device.HistoryImage>>(emptyImageState);
   const [activeTab, setActiveTab] = useState<"element" | "image" | "chart">("element");
   const [selectedElements, setSelectedElements] = useState<string[]>([]);
@@ -258,6 +259,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
         setElementState(emptyElementState);
         setImageState(emptyImageState);
         setChartRecords([]);
+        setSelectedElements([]);
         setActiveTab("element");
         historyForm.setFieldsValue({ timeRange: getDefaultTimeRange() });
         fetchRecords("ELEMENT");
@@ -442,14 +444,9 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
   const chartData = useMemo(() => {
     if (!device || chartRecords.length === 0) return null;
 
-    const elementNameSet = new Set<string>();
-    for (const r of chartRecords) {
-      for (const e of r.elements) {
-        elementNameSet.add(e.name);
-      }
-    }
-
-    const elementNames = Array.from(elementNameSet);
+    const elementNames = Array.from(
+      new Set((device.elements || []).map((el) => el.name.trim()).filter(Boolean))
+    );
 
     // 初始化：默认全选所有测点
     if (elementNames.length > 0 && selectedElements.length === 0) {
@@ -460,7 +457,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
       records: chartRecords,
       elementNames,
     };
-  }, [device, chartRecords, selectedElements.length]);
+  }, [chartRecords, device, selectedElements.length]);
 
   // ========== 图表渲染 ==========
 
@@ -584,12 +581,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
         body: { height: "75vh", display: "flex", flexDirection: "column", overflow: "hidden" },
       }}
     >
-      <Form
-        form={historyForm}
-        layout="inline"
-        className="mb-4 shrink-0"
-        onFinish={handleQuery}
-      >
+      <Form form={historyForm} layout="inline" className="mb-4 shrink-0" onFinish={handleQuery}>
         <Form.Item
           label="时间范围"
           name="timeRange"
