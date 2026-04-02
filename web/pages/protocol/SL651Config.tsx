@@ -446,15 +446,6 @@ const SL651ConfigPage = () => {
         )}
 
         <Space size={4} wrap className="mt-3">
-          {canAdd && (
-            <Button
-              size="small"
-              type="primary"
-              onClick={() => elementModalRef.current?.open("create", activeTypeId!, record.id)}
-            >
-              新增要素
-            </Button>
-          )}
           {record.dir === "DOWN" && canEdit && (
             <Button
               size="small"
@@ -467,7 +458,18 @@ const SL651ConfigPage = () => {
 
         <div className="mt-4 space-y-4">
           <div>
-            <div className="mb-2 text-sm font-semibold text-slate-700">要素配置</div>
+            <Flex justify="space-between" align="center" gap={12} className="mb-2">
+              <div className="text-sm font-semibold text-slate-700">要素配置</div>
+              {canAdd && (
+                <Button
+                  size="small"
+                  type="primary"
+                  onClick={() => elementModalRef.current?.open("create", activeTypeId!, record.id)}
+                >
+                  新增要素
+                </Button>
+              )}
+            </Flex>
             {renderGroupedElements(record.elements, record.id, record.dir, "暂无要素", {
               listKind: "elements",
             })}
