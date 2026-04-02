@@ -941,17 +941,6 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
             </Form.Item>
           </Flex>
 
-          {(registerType === "COIL" || registerType === "HOLDING_REGISTER") && (
-            <Form.Item
-              label="可写"
-              name="writable"
-              valuePropName="checked"
-              extra="开启后该寄存器可用于写操作下发"
-            >
-              <Switch />
-            </Form.Item>
-          )}
-
           <Form.Item
             label="数据类型"
             name="dataType"
@@ -976,12 +965,6 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
             />
           </Form.Item>
 
-          {(dataType === "FLOAT32" || dataType === "DOUBLE") && (
-            <Form.Item label="小数位数" name="decimals">
-              <InputNumber min={0} max={8} placeholder="不限制" className="!w-full" />
-            </Form.Item>
-          )}
-
           {dataType === "BOOL" && (
             <Flex gap={16}>
               <Form.Item label="0 值显示" name="boolLabel0" className="flex-1">
@@ -997,10 +980,27 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
             <Form.Item label="单位" name="unit" className="flex-1">
               <Input placeholder="如：V、A、℃、%" />
             </Form.Item>
-            <Form.Item label="备注" name="remark" className="flex-1">
-              <Input placeholder="备注信息" />
-            </Form.Item>
+            {(dataType === "FLOAT32" || dataType === "DOUBLE") && (
+              <Form.Item label="小数位数" name="decimals" className="flex-1">
+                <InputNumber min={0} max={8} placeholder="不限制" className="!w-full" />
+              </Form.Item>
+            )}
           </Flex>
+
+          {(registerType === "COIL" || registerType === "HOLDING_REGISTER") && (
+            <Form.Item
+              label="可写"
+              name="writable"
+              valuePropName="checked"
+              extra="开启后该寄存器可用于写操作下发"
+            >
+              <Switch />
+            </Form.Item>
+          )}
+
+          <Form.Item label="备注" name="remark">
+            <Input placeholder="备注信息" />
+          </Form.Item>
         </Form>
       </Modal>
     );

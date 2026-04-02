@@ -235,7 +235,7 @@ private:
                 updates.append(DeviceDataTransformer::buildRealtimeItem(*it->second, data, latestTime, connectionChecker_));
             }
 
-            Json::Value payload;
+            Json::Value payload(Json::objectValue);
             payload["updates"] = std::move(updates);
             WebSocketManager::instance().broadcast("device:realtime", payload);
         } catch (const std::exception& e) {

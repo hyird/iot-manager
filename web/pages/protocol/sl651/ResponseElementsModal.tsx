@@ -189,20 +189,20 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                       ),
                     },
                     {
-                      title: "小数位",
-                      width: 80,
-                      render: (_, field) => (
-                        <Form.Item name={[field.name, "digits"]} className="!mb-0">
-                          <InputNumber min={0} max={8} className="!w-full" />
-                        </Form.Item>
-                      ),
-                    },
-                    {
                       title: "单位",
                       width: 80,
                       render: (_, field) => (
                         <Form.Item name={[field.name, "unit"]} className="!mb-0">
                           <Input placeholder="单位" />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      title: "小数位数",
+                      width: 100,
+                      render: (_, field) => (
+                        <Form.Item name={[field.name, "digits"]} className="!mb-0">
+                          <InputNumber min={0} max={8} className="!w-full" />
                         </Form.Item>
                       ),
                     },

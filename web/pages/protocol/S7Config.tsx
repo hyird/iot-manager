@@ -418,6 +418,9 @@ const normalizeS7DataType = (value?: string): S7.AreaDataType => {
   return "INT16";
 };
 
+const supportsS7Decimals = (dataType?: S7.AreaDataType) =>
+  dataType === "FLOAT" || dataType === "LREAL";
+
 const getAreaAddressSample = (
   areaType?: S7.AreaType,
   dataType?: S7.AreaDataType,
@@ -531,6 +534,7 @@ function AreaModal({
   const defaultAreaType = areaTypeOptions[0]?.value ?? "DB";
   const normalizedInitialArea =
     normalizeAreaTypeForPlcModel(plcModel, initialValue?.area) ?? defaultAreaType;
+  const initialDataType = normalizeS7DataType(initialValue?.dataType as string | undefined);
   const initialDbNumber =
     normalizedInitialArea === "V"
       ? undefined
@@ -542,6 +546,8 @@ function AreaModal({
             ...initialValue,
             area: normalizedInitialArea,
             dbNumber: initialDbNumber,
+            dataType: initialDataType,
+            decimals: supportsS7Decimals(initialDataType) ? initialValue.decimals : undefined,
             group: initialValue.group,
           }
         : {
@@ -558,10 +564,11 @@ function AreaModal({
             remark: "",
             startBit: undefined,
           },
-    [defaultAreaType, initialDbNumber, initialValue, normalizedInitialArea]
+    [defaultAreaType, initialDataType, initialDbNumber, initialValue, normalizedInitialArea]
   );
   const isStringType = dataType === "STRING";
   const isBoolDataType = dataType === "BOOL";
+  const canUseDecimals = supportsS7Decimals(dataType);
   const isWritableArea = writableAreaTypes.includes(parsedAreaType as S7.AreaType);
   const showBitInput = supportsBitAddress(parsedAreaType, dataType);
   const addressExample = getAddressSuffixExample(parsedAreaType, dataType);
@@ -618,11 +625,16 @@ function AreaModal({
     const size = resolvedDataType === "STRING" ? values.size : getDataTypeSize(resolvedDataType);
     const nextDbNumber = parsedAreaType === "DB" ? values.dbNumber : undefined;
     const nextStartBit = isBoolDataType && canUseBoolAddress ? values.startBit : undefined;
+    const nextDecimals =
+      supportsS7Decimals(resolvedDataType) && typeof values.decimals === "number"
+        ? values.decimals
+        : undefined;
     const nextValues = {
       ...values,
       group: normalizeGroupName(values.group) || undefined,
       dbNumber: nextDbNumber,
       startBit: nextStartBit,
+      decimals: nextDecimals,
       dataType: resolvedDataType,
       id: mode === "create" ? generateId() : initialValue?.id || values.id,
       size,
@@ -660,27 +672,6 @@ function AreaModal({
           />
         </Form.Item>
         <Row gutter={12}>
-          <Col xs={24} sm={8}>
-            <Form.Item name="unit" label="单位">
-              <Input placeholder="如：V、A、℃、%" />
-            </Form.Item>
-          </Col>
-          <Col xs={24} sm={8}>
-            <Form.Item
-              name="decimals"
-              label="小数位数"
-              extra="仅对数值类型生效，-1或不填表示原始值"
-            >
-              <InputNumber
-                min={-1}
-                max={8}
-                placeholder="不限制"
-                className="!w-full"
-              />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Row gutter={12}>
           <Col xs={24} sm={12}>
             <Form.Item
               name="area"
@@ -699,17 +690,21 @@ function AreaModal({
                     form.getFieldValue("dataType") as string | undefined
                   );
                   const updates: Partial<S7.Area> = {};
-                  const normalizedDataType =
-                    value === "CT" || value === "TM" ? "UINT16" : currentDataType;
+                  const nextDataType =
+                    value === "CT" || value === "TM"
+                      ? "UINT16"
+                      : bitOnlyAreaTypes.includes(value)
+                        ? "BOOL"
+                        : currentDataType;
 
                   if (value === "CT" || value === "TM") {
-                    updates.dataType = normalizedDataType;
-                    updates.size = getDataTypeSize(normalizedDataType);
+                    updates.dataType = nextDataType;
+                    updates.size = getDataTypeSize(nextDataType);
                   } else if (bitOnlyAreaTypes.includes(value)) {
-                    updates.dataType = "BOOL";
+                    updates.dataType = nextDataType;
                     updates.size = getDataTypeSize("BOOL");
-                  } else if (normalizedDataType !== "STRING") {
-                    updates.size = getDataTypeSize(normalizedDataType);
+                  } else if (nextDataType !== "STRING") {
+                    updates.size = getDataTypeSize(nextDataType);
                   }
 
                   if (value !== "DB") {
@@ -719,6 +714,9 @@ function AreaModal({
                     updates.dbNumber = 1;
                   }
                   updates.startBit = undefined;
+                  if (!supportsS7Decimals(nextDataType)) {
+                    updates.decimals = undefined;
+                  }
 
                   if (Object.keys(updates).length > 0) {
                     form.setFieldsValue(updates);
@@ -748,6 +746,9 @@ function AreaModal({
                     }
                   } else {
                     updates.size = getDataTypeSize(value);
+                  }
+                  if (!supportsS7Decimals(value)) {
+                    updates.decimals = undefined;
                   }
                   if (Object.keys(updates).length > 0) {
                     form.setFieldsValue(updates);
@@ -823,6 +824,20 @@ function AreaModal({
           <div className="text-xs text-gray-500">当前起始地址：{addressSample || "暂无"}</div>
           <div className="text-xs text-gray-500">当前结束地址：{endAddressSample || "暂无"}</div>
         </Form.Item>
+        <Row gutter={12}>
+          <Col xs={24} sm={canUseDecimals ? 12 : 24}>
+            <Form.Item name="unit" label="单位">
+              <Input placeholder="如：V、A、℃、%" />
+            </Form.Item>
+          </Col>
+          {canUseDecimals && (
+            <Col xs={24} sm={12}>
+              <Form.Item name="decimals" label="小数位数">
+                <InputNumber min={0} max={8} placeholder="例如 2" className="!w-full" />
+              </Form.Item>
+            </Col>
+          )}
+        </Row>
         {isWritableArea && (
           <Form.Item name="writable" label="可写" valuePropName="checked">
             <Switch />

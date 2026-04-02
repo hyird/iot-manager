@@ -97,13 +97,13 @@ public:
      * @brief 解析下行功能
      */
     static Json::Value parseDownFunc(const Json::Value& func) {
-        Json::Value downFunc;
+        Json::Value downFunc(Json::objectValue);
         downFunc["operationId"] = func.get("funcCode", "").asString();
         downFunc["name"] = func.get("name", "").asString();
 
         Json::Value funcElements(Json::arrayValue);
         for (const auto& el : func["elements"]) {
-            Json::Value funcEl;
+            Json::Value funcEl(Json::objectValue);
             funcEl["elementId"] = el.get("id", "").asString();
             funcEl["name"] = el.get("name", "").asString();
             funcEl["value"] = "";
@@ -134,13 +134,13 @@ public:
      * @brief 解析图片功能（不含图片数据）
      */
     static Json::Value parseImageFuncBase(const Json::Value& func) {
-        Json::Value imageFunc;
+        Json::Value imageFunc(Json::objectValue);
         imageFunc["operationId"] = func.get("funcCode", "").asString();
         imageFunc["name"] = func.get("name", "").asString();
 
         Json::Value funcElements(Json::arrayValue);
         for (const auto& el : func["elements"]) {
-            Json::Value funcEl;
+            Json::Value funcEl(Json::objectValue);
             funcEl["elementId"] = el.get("id", "").asString();
             funcEl["name"] = el.get("name", "").asString();
             funcEl["encode"] = el.get("encode", "").asString();
@@ -190,7 +190,7 @@ public:
             if (addedGuideHex.count(guideHex) > 0) continue;
             addedGuideHex.insert(guideHex);
 
-            Json::Value element;
+            Json::Value element(Json::objectValue);
             if (includeElementId) {
                 element["elementId"] = el.get("id", "").asString();
             }
@@ -222,7 +222,7 @@ public:
      * @brief 构建设备基本信息 JSON
      */
     static Json::Value buildDeviceBaseInfo(const DeviceCache::CachedDevice& device) {
-        Json::Value item;
+        Json::Value item(Json::objectValue);
 
         // 通用字段
         item["id"] = device.id;
@@ -232,7 +232,9 @@ public:
         item["group_id"] = device.groupId > 0 ? Json::Value(device.groupId) : Json::Value::null;
         item["status"] = device.status;
         // Modbus 设备：在线超时 = 2 × 采集间隔；其他协议使用配置值
-        if (device.protocolType == "Modbus" && device.protocolConfig.isMember("readInterval")) {
+        if (device.protocolType == "Modbus"
+            && device.protocolConfig.isObject()
+            && device.protocolConfig.isMember("readInterval")) {
             int readInterval = device.protocolConfig.get("readInterval", 1).asInt();
             int timeout = readInterval * 2;
             item["online_timeout"] = timeout < 10 ? 10 : timeout;  // 最小 10 秒
@@ -249,13 +251,13 @@ public:
 
         // 心跳包/注册包（通用）
         if (!device.heartbeatMode.empty() && device.heartbeatMode != "OFF") {
-            Json::Value hb;
+            Json::Value hb(Json::objectValue);
             hb["mode"] = device.heartbeatMode;
             hb["content"] = device.heartbeatContent;
             item["heartbeat"] = hb;
         }
         if (!device.registrationMode.empty() && device.registrationMode != "OFF") {
-            Json::Value reg;
+            Json::Value reg(Json::objectValue);
             reg["mode"] = device.registrationMode;
             reg["content"] = device.registrationContent;
             item["registration"] = reg;
@@ -290,10 +292,10 @@ public:
         bool includeElementId = false
     ) {
         const auto& config = device.protocolConfig;
-        if (!config.isMember("registers") || !config["registers"].isArray()) return;
+        if (!config.isObject() || !config.isMember("registers") || !config["registers"].isArray()) return;
 
         for (const auto& reg : config["registers"]) {
-            Json::Value element;
+            Json::Value element(Json::objectValue);
             if (includeElementId) {
                 element["elementId"] = reg.get("id", "").asString();
             }
@@ -337,9 +339,9 @@ public:
         const auto& config = device.protocolConfig;
         const Json::Value* areas = nullptr;
 
-        if (config.isMember("areas") && config["areas"].isArray()) {
+        if (config.isObject() && config.isMember("areas") && config["areas"].isArray()) {
             areas = &config["areas"];
-        } else if (config.isMember("poll") && config["poll"].isObject()
+        } else if (config.isObject() && config.isMember("poll") && config["poll"].isObject()
             && config["poll"].isMember("areas") && config["poll"]["areas"].isArray()) {
             areas = &config["poll"]["areas"];
         }
@@ -350,7 +352,7 @@ public:
             std::string areaId = area.get("id", "").asString();
             if (areaId.empty()) continue;
 
-            Json::Value element;
+            Json::Value element(Json::objectValue);
             if (includeElementId) {
                 element["elementId"] = areaId;
             }
@@ -363,6 +365,14 @@ public:
 
             std::string unit = area.get("unit", "").asString();
             if (!unit.empty()) element["unit"] = unit;
+
+            const std::string dataType = area.get("dataType", "INT16").asString();
+            if (dataType == "FLOAT" || dataType == "LREAL" || dataType == "DOUBLE") {
+                const int decimals = std::clamp(area.get("decimals", -1).asInt(), -1, 8);
+                if (decimals >= 0) {
+                    element["decimals"] = decimals;
+                }
+            }
 
             auto it = realtimeValues.find(areaId);
             element["value"] = (it != realtimeValues.end()) ? it->second.value : Json::nullValue;
@@ -381,9 +391,9 @@ public:
         const auto& config = device.protocolConfig;
         const Json::Value* areas = nullptr;
 
-        if (config.isMember("areas") && config["areas"].isArray()) {
+        if (config.isObject() && config.isMember("areas") && config["areas"].isArray()) {
             areas = &config["areas"];
-        } else if (config.isMember("poll") && config["poll"].isObject()
+        } else if (config.isObject() && config["poll"].isObject()
             && config["poll"].isMember("areas") && config["poll"]["areas"].isArray()) {
             areas = &config["poll"]["areas"];
         }
@@ -397,7 +407,7 @@ public:
             std::string areaId = area.get("id", "").asString();
             if (areaId.empty()) continue;
 
-            Json::Value funcEl;
+            Json::Value funcEl(Json::objectValue);
             funcEl["elementId"] = areaId;
             funcEl["name"] = area.get("name", areaId).asString();
             funcEl["value"] = "";
@@ -415,11 +425,11 @@ public:
             });
             if (dataType == "BOOL") {
                 Json::Value options(Json::arrayValue);
-                Json::Value optOn;
+                Json::Value optOn(Json::objectValue);
                 optOn["label"] = "1";
                 optOn["value"] = "1";
                 options.append(optOn);
-                Json::Value optOff;
+                Json::Value optOff(Json::objectValue);
                 optOff["label"] = "0";
                 optOff["value"] = "0";
                 options.append(optOff);
@@ -430,7 +440,7 @@ public:
         }
 
         if (!funcElements.empty()) {
-            Json::Value downFunc;
+            Json::Value downFunc(Json::objectValue);
             downFunc["operationId"] = "S7_WRITE";
             downFunc["name"] = "写寄存器";
             downFunc["elements"] = funcElements;
@@ -459,7 +469,7 @@ public:
         outDownFuncs = Json::Value(Json::arrayValue);
         outImageFuncs = Json::Value(Json::arrayValue);
 
-        if (device.protocolConfig.isNull()) return;
+        if (!device.protocolConfig.isObject()) return;
 
         if (device.protocolType == Constants::PROTOCOL_SL651) {
             const auto& config = device.protocolConfig;
@@ -475,13 +485,13 @@ public:
 
                 if (dir == "UP") {
                     if (hasJpegElement(func)) {
-                        Json::Value imageFunc = parseImageFuncBase(func);
-                        auto imageData = findImageData(funcCode, funcDataMap);
-                        if (imageData) {
-                            Json::Value latestImage;
-                            latestImage["data"] = *imageData;
-                            imageFunc["latestImage"] = latestImage;
-                        }
+                Json::Value imageFunc = parseImageFuncBase(func);
+                auto imageData = findImageData(funcCode, funcDataMap);
+                if (imageData) {
+                    Json::Value latestImage(Json::objectValue);
+                    latestImage["data"] = *imageData;
+                    imageFunc["latestImage"] = latestImage;
+                }
                         outImageFuncs.append(imageFunc);
                     } else {
                         parseUpElements(func, realtimeValues, addedGuideHex, outElements);
@@ -510,7 +520,7 @@ public:
         outDownFuncs = Json::Value(Json::arrayValue);
         outImageFuncs = Json::Value(Json::arrayValue);
 
-        if (device.protocolConfig.isNull()) return;
+        if (!device.protocolConfig.isObject()) return;
 
         if (device.protocolType == Constants::PROTOCOL_MODBUS) {
             parseModbusDownFuncs(device, outDownFuncs);
@@ -552,7 +562,7 @@ public:
         Json::Value& outDownFuncs
     ) {
         const auto& config = device.protocolConfig;
-        if (!config.isMember("registers") || !config["registers"].isArray()) return;
+        if (!config.isObject() || !config.isMember("registers") || !config["registers"].isArray()) return;
 
         Json::Value funcElements(Json::arrayValue);
 
@@ -561,7 +571,7 @@ public:
             if (!reg.get("writable", false).asBool()) continue;
             std::string regType = reg.get("registerType", "").asString();
 
-            Json::Value funcEl;
+            Json::Value funcEl(Json::objectValue);
             funcEl["elementId"] = reg.get("id", "").asString();
             funcEl["name"] = reg.get("name", "").asString();
             funcEl["value"] = "";
@@ -587,11 +597,11 @@ public:
                     }
                 }
                 Json::Value options(Json::arrayValue);
-                Json::Value optOn;
+                Json::Value optOn(Json::objectValue);
                 optOn["label"] = label1;
                 optOn["value"] = "1";
                 options.append(optOn);
-                Json::Value optOff;
+                Json::Value optOff(Json::objectValue);
                 optOff["label"] = label0;
                 optOff["value"] = "0";
                 options.append(optOff);
@@ -602,7 +612,7 @@ public:
         }
 
         if (!funcElements.empty()) {
-            Json::Value downFunc;
+            Json::Value downFunc(Json::objectValue);
             downFunc["operationId"] = "MODBUS_WRITE";
             downFunc["name"] = "写寄存器";
             downFunc["elements"] = funcElements;
@@ -624,7 +634,7 @@ public:
         const std::string& latestTime,
         const ConnectionChecker& isConnected = nullptr
     ) {
-        Json::Value item;
+        Json::Value item(Json::objectValue);
         item["id"] = device.id;
         item["reportTime"] = latestTime.empty() ? Json::nullValue : Json::Value(latestTime);
         item["connected"] = isConnected ? isConnected(device.id) : false;
@@ -642,7 +652,7 @@ public:
         Json::Value elements(Json::arrayValue);
         Json::Value image = Json::nullValue;
 
-        if (!device.protocolConfig.isNull()) {
+        if (device.protocolConfig.isObject()) {
             if (device.protocolType == Constants::PROTOCOL_SL651) {
                 const auto& config = device.protocolConfig;
                 if (config.isMember("funcs") && config["funcs"].isArray()) {
@@ -655,7 +665,7 @@ public:
                         if (hasJpegElement(func)) {
                             auto imageData = findImageData(funcCode, funcDataMap);
                             if (imageData) {
-                                Json::Value latestImage;
+                                Json::Value latestImage(Json::objectValue);
                                 latestImage["operationId"] = funcCode;
                                 latestImage["data"] = *imageData;
                                 image = latestImage;
@@ -691,10 +701,10 @@ public:
         const std::string& latestTime,
         const ConnectionChecker& isConnected = nullptr
     ) {
-        Json::Value item;
+        Json::Value item(Json::objectValue);
 
         // 设备元数据
-        Json::Value deviceObj;
+        Json::Value deviceObj(Json::objectValue);
         deviceObj["id"] = device.id;
         deviceObj["name"] = device.name;
         deviceObj["deviceCode"] = device.deviceCode;
@@ -720,7 +730,7 @@ public:
         Json::Value elements(Json::arrayValue);
         Json::Value image = Json::nullValue;
 
-        if (!device.protocolConfig.isNull()) {
+        if (device.protocolConfig.isObject()) {
             if (device.protocolType == Constants::PROTOCOL_SL651) {
                 const auto& config = device.protocolConfig;
                 if (config.isMember("funcs") && config["funcs"].isArray()) {
@@ -733,7 +743,7 @@ public:
                         if (hasJpegElement(func)) {
                             auto imageData = findImageData(funcCode, funcDataMap);
                             if (imageData) {
-                                Json::Value latestImage;
+                                Json::Value latestImage(Json::objectValue);
                                 latestImage["operationId"] = funcCode;
                                 latestImage["data"] = *imageData;
                                 image = latestImage;

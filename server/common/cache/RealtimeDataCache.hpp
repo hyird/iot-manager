@@ -385,8 +385,9 @@ private:
         }
 
         static const std::string luaScript =
-            "redis.call('HSET', KEYS[1], ARGV[2], ARGV[3]) "
-            "if ARGV[4] ~= '' then redis.call('SETEX', KEYS[2], ARGV[5], ARGV[4]) end "
+            "redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]) "
+            "redis.call('EXPIRE', KEYS[1], ARGV[4]) "
+            "if ARGV[3] ~= '' then redis.call('SETEX', KEYS[2], ARGV[4], ARGV[3]) end "
             "return 1";
 
         for (const auto& [deviceId, deviceData] : dataMap) {

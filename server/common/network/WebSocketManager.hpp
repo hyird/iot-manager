@@ -123,7 +123,7 @@ public:
             b["indentation"] = "";
             return b;
         }();
-        Json::Value msg;
+        Json::Value msg(Json::objectValue);
         msg["type"] = type;
         msg["data"] = data;
         msg["ts"] = static_cast<Json::Int64>(

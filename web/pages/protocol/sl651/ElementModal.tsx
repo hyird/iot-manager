@@ -152,15 +152,15 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
           <Form.Item label="长度" name="length" rules={[{ required: true, message: "请输入长度" }]}>
             <InputNumber min={1} className="!w-full" />
           </Form.Item>
-          <Form.Item
-            label="小数位"
-            name="digits"
-            rules={[{ required: true, message: "请输入小数位" }]}
-          >
-            <InputNumber min={0} max={8} className="!w-full" />
-          </Form.Item>
           <Form.Item label="单位" name="unit">
             <Input placeholder="例如 V、℃、m³/s" />
+          </Form.Item>
+          <Form.Item
+            label="小数位数"
+            name="digits"
+            rules={[{ required: true, message: "请输入小数位数" }]}
+          >
+            <InputNumber min={0} max={8} className="!w-full" />
           </Form.Item>
           <Form.Item label="备注" name="remark">
             <Input.TextArea rows={2} />
