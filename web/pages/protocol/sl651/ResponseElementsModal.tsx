@@ -2,10 +2,23 @@
  * SL651 应答要素 Modal
  */
 
-import { AutoComplete, Button, Card, Empty, Flex, Form, Input, InputNumber, Modal, Select, Tag } from "antd";
-import { forwardRef, useImperativeHandle, useMemo, useState, type CSSProperties } from "react";
+import {
+  AutoComplete,
+  Button,
+  Card,
+  Empty,
+  Flex,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Select,
+  Tag,
+} from "antd";
+import { type CSSProperties, forwardRef, useImperativeHandle, useMemo, useState } from "react";
 import type { Protocol, SL651 } from "@/types";
 import { normalizeGroupName } from "../grouping";
+import { useFilterableGroupOptions } from "../useFilterableGroupOptions";
 import { EncodeList, generateId, type SaveMutation } from "./shared";
 
 export interface ResponseElementsModalRef {
@@ -28,16 +41,15 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
     const [typeId, setTypeId] = useState<number>();
     const [func, setFunc] = useState<SL651.Func>();
     const [form] = Form.useForm();
-    const groupOptions = useMemo(() => {
+    const groupNames = useMemo(() => {
       const groups = new Set<string>();
       for (const element of [...(func?.elements || []), ...(func?.responseElements || [])]) {
         const group = normalizeGroupName(element.group);
         if (group) groups.add(group);
       }
-      return Array.from(groups)
-        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
-        .map((value) => ({ value }));
+      return Array.from(groups);
     }, [func]);
+    const groupOptions = useFilterableGroupOptions(groupNames);
 
     useImperativeHandle(ref, () => ({
       open(t, f) {
@@ -135,7 +147,12 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                               配置名称、引导符、编码、长度、单位和小数位数
                             </div>
                           </div>
-                          <Button type="text" danger size="small" onClick={() => remove(field.name)}>
+                          <Button
+                            type="text"
+                            danger
+                            size="small"
+                            onClick={() => remove(field.name)}
+                          >
                             删除
                           </Button>
                         </Flex>
@@ -151,9 +168,11 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
                           <Form.Item name={[field.name, "group"]} className="!mb-0">
                             <AutoComplete
                               allowClear
-                              options={groupOptions}
+                              options={groupOptions.options}
                               placeholder="分组"
-                              filterOption
+                              filterOption={false}
+                              onDropdownVisibleChange={groupOptions.onDropdownVisibleChange}
+                              onSearch={groupOptions.onSearch}
                             />
                           </Form.Item>
                           <Form.Item

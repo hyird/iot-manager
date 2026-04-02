@@ -24,7 +24,15 @@ import {
   Tooltip,
   Tree,
 } from "antd";
-import { forwardRef, type ReactNode, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  type ReactNode,
+  useCallback,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
@@ -40,6 +48,7 @@ import {
   SortableGroupSectionFrame,
   SortableGroupSectionList,
 } from "./SortableGroup";
+import { useFilterableGroupOptions } from "./useFilterableGroupOptions";
 
 /** 寄存器类型选项 */
 const RegisterTypeOptions: { value: Modbus.RegisterType; label: string }[] = [
@@ -730,7 +739,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
     // 监听寄存器类型和数据类型变化
     const registerType = Form.useWatch("registerType", form);
     const dataType = Form.useWatch("dataType", form);
-    const groupOptions = useMemo(() => {
+    const groupNames = useMemo(() => {
       const currentType = types.find((t) => t.id === typeId);
       const config = currentType?.config as Modbus.Config | undefined;
       const groups = new Set<string>();
@@ -743,10 +752,9 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
       const currentGroup = normalizeGroupName(current?.group);
       if (currentGroup) groups.add(currentGroup);
 
-      return Array.from(groups)
-        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
-        .map((value) => ({ value }));
+      return Array.from(groups);
     }, [current?.group, typeId, types]);
+    const groupOptions = useFilterableGroupOptions(groupNames);
 
     useImperativeHandle(ref, () => ({
       open(m, t, register) {
@@ -894,9 +902,11 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
           >
             <AutoComplete
               allowClear
-              options={groupOptions}
+              options={groupOptions.options}
               placeholder="例如：基础信息、告警、控制"
-              filterOption
+              filterOption={false}
+              onDropdownVisibleChange={groupOptions.onDropdownVisibleChange}
+              onSearch={groupOptions.onSearch}
             />
           </Form.Item>
 

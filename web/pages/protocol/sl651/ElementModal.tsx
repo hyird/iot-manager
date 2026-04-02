@@ -6,6 +6,7 @@ import { AutoComplete, Form, Input, InputNumber, Modal, Select } from "antd";
 import { forwardRef, useImperativeHandle, useMemo, useState } from "react";
 import type { Protocol, SL651 } from "@/types";
 import { normalizeGroupName } from "../grouping";
+import { useFilterableGroupOptions } from "../useFilterableGroupOptions";
 import { EncodeList, generateId, type SaveMutation } from "./shared";
 
 export interface ElementModalRef {
@@ -26,7 +27,7 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
     const [funcId, setFuncId] = useState<string>();
     const [current, setCurrent] = useState<SL651.Element>();
     const [form] = Form.useForm();
-    const groupOptions = useMemo(() => {
+    const groupNames = useMemo(() => {
       const type = types.find((t) => t.id === typeId);
       const config = type?.config as SL651.Config | undefined;
       const groups = new Set<string>();
@@ -45,10 +46,9 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
       const currentGroup = normalizeGroupName(current?.group);
       if (currentGroup) groups.add(currentGroup);
 
-      return Array.from(groups)
-        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
-        .map((value) => ({ value }));
+      return Array.from(groups);
     }, [current?.group, typeId, types]);
+    const groupOptions = useFilterableGroupOptions(groupNames);
 
     useImperativeHandle(ref, () => ({
       open(m, t, fId, element) {
@@ -134,9 +134,11 @@ const ElementModal = forwardRef<ElementModalRef, ElementModalProps>(
           >
             <AutoComplete
               allowClear
-              options={groupOptions}
+              options={groupOptions.options}
               placeholder="例如：基础信息、告警、控制"
-              filterOption
+              filterOption={false}
+              onDropdownVisibleChange={groupOptions.onDropdownVisibleChange}
+              onSearch={groupOptions.onSearch}
             />
           </Form.Item>
           <Form.Item

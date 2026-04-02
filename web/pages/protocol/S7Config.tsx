@@ -8,25 +8,32 @@ import {
   AutoComplete,
   Button,
   Card,
+  Col,
   Empty,
   Flex,
   Form,
   Input,
   InputNumber,
   Modal,
-  Row,
   Popconfirm,
   Result,
+  Row,
   Select,
   Skeleton,
   Space,
-  Col,
   Switch,
   Tag,
   Tooltip,
   Tree,
 } from "antd";
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
@@ -39,10 +46,11 @@ import {
   reorderItemsWithinGroupOrder,
 } from "./grouping";
 import {
+  SortableGroupItemList,
   SortableGroupSectionFrame,
   SortableGroupSectionList,
-  SortableGroupItemList,
 } from "./SortableGroup";
+import { useFilterableGroupOptions } from "./useFilterableGroupOptions";
 
 type DeviceTypeFormValues = {
   deviceType: string;
@@ -568,6 +576,7 @@ function AreaModal({
           },
     [defaultAreaType, initialDataType, initialDbNumber, initialValue, normalizedInitialArea]
   );
+  const groupOptionList = useFilterableGroupOptions(groupOptions);
   const isStringType = dataType === "STRING";
   const isBoolDataType = dataType === "BOOL";
   const canUseDecimals = supportsS7Decimals(dataType);
@@ -668,9 +677,11 @@ function AreaModal({
         >
           <AutoComplete
             allowClear
-            options={groupOptions.map((value) => ({ value }))}
+            options={groupOptionList.options}
             placeholder="例如: 基础信息、告警、控制"
-            filterOption
+            filterOption={false}
+            onDropdownVisibleChange={groupOptionList.onDropdownVisibleChange}
+            onSearch={groupOptionList.onSearch}
           />
         </Form.Item>
         <Row gutter={12}>
@@ -902,11 +913,11 @@ const S7ConfigPage = () => {
   const activeConfig = (activeType?.config as S7.Config) ?? null;
   const activeAreas = activeConfig?.areas ?? [];
   const areaGroups = useMemo(() => buildGroupSections(activeAreas), [activeAreas]);
-  const areaGroupOptions = useMemo(
+  const areaGroupNames = useMemo(
     () =>
       Array.from(
         new Set(activeAreas.map((area) => normalizeGroupName(area.group)).filter(Boolean))
-      ).sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
+      ),
     [activeAreas]
   );
   const activeConnectionMode = activeConfig
@@ -924,8 +935,7 @@ const S7ConfigPage = () => {
         const isSameOrder =
           nextAreas.every((area, index) => area.id === activeAreas[index]?.id) &&
           nextAreas.every(
-            (area, index) =>
-              getGroupKey(area.group) === getGroupKey(activeAreas[index]?.group)
+            (area, index) => getGroupKey(area.group) === getGroupKey(activeAreas[index]?.group)
           );
         if (isSameOrder) return;
       }
@@ -958,7 +968,8 @@ const S7ConfigPage = () => {
   );
 
   const renderAreaCard = (area: S7.Area, dragHandle?: ReactNode) => {
-    const displayArea = normalizeAreaTypeForPlcModel(activeConfig?.plcModel, area.area) ?? area.area;
+    const displayArea =
+      normalizeAreaTypeForPlcModel(activeConfig?.plcModel, area.area) ?? area.area;
     const displayDataType = normalizeS7DataType(area.dataType);
     const addressRange = getAreaAddressRangeText({ ...area, area: displayArea });
     const canShowDecimals = supportsS7Decimals(displayDataType);
@@ -1366,21 +1377,21 @@ const S7ConfigPage = () => {
                         </Space>
                       }
                     >
-                    <SortableGroupItemList
-                      items={group.items}
-                      className="grid gap-3"
-                      style={AREA_CARD_GRID_STYLE}
-                      disabled={saveMutation.isPending || !canEdit}
-                      empty={<Empty description="暂无寄存器" />}
-                      onOrderChange={(nextOrder) =>
-                        handleAreaItemOrderChange(group.key, nextOrder)
-                      }
-                    >
-                      {(area, dragHandle) => renderAreaCard(area, dragHandle)}
-                    </SortableGroupItemList>
-                  </SortableGroupSectionFrame>
-                );
-              }}
+                      <SortableGroupItemList
+                        items={group.items}
+                        className="grid gap-3"
+                        style={AREA_CARD_GRID_STYLE}
+                        disabled={saveMutation.isPending || !canEdit}
+                        empty={<Empty description="暂无寄存器" />}
+                        onOrderChange={(nextOrder) =>
+                          handleAreaItemOrderChange(group.key, nextOrder)
+                        }
+                      >
+                        {(area, dragHandle) => renderAreaCard(area, dragHandle)}
+                      </SortableGroupItemList>
+                    </SortableGroupSectionFrame>
+                  );
+                }}
               </SortableGroupSectionList>
             )}
           </Card>
@@ -1555,7 +1566,7 @@ const S7ConfigPage = () => {
             : undefined
         }
         plcModel={activeConfig?.plcModel}
-        groupOptions={areaGroupOptions}
+        groupOptions={areaGroupNames}
         onCancel={() => setAreaModalOpen(false)}
         onSubmit={async (value) => {
           if (!activeTypeId || !activeConfig) return;
