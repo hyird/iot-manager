@@ -4,6 +4,16 @@
 
 // ==================== 设备相关事件 ====================
 
+struct CommandDispatched : DomainEvent {
+    std::string funcCode;
+    Json::Value elements;
+
+    CommandDispatched(int deviceId, std::string fc, Json::Value elems)
+        : DomainEvent("CommandDispatched", deviceId, "Device")
+        , funcCode(std::move(fc))
+        , elements(std::move(elems)) {}
+};
+
 struct DeviceCreated : DomainEvent {
     std::string protocol;
     std::string deviceCode;

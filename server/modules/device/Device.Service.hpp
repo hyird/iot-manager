@@ -733,16 +733,12 @@ public:
         int pageSize,
         int deviceId
     ) {
+        // ==================== 1. 初始化与归档检测 ====================
         std::string deviceIdStr = std::to_string(deviceId);
 
-        // 判断是否需要查询归档数据（startTime 早于 365 天前）
-        // 如果需要，使用 device_data_all 视图；否则只查询 device_data 主表
         bool needArchive = false;
         if (!startTime.empty()) {
-            // 简单判断：如果 startTime 年份小于当前年份-1，或者月份差大于 12，则认为需要归档
-            // 这是一个近似判断，实际可以更精确
             try {
-                // 获取当前时间的归档阈值天数前
                 auto now = std::chrono::system_clock::now();
                 auto archiveThreshold = now - std::chrono::hours(Constants::ARCHIVE_THRESHOLD_DAYS * 24);
                 auto tt = std::chrono::system_clock::to_time_t(archiveThreshold);
@@ -754,21 +750,15 @@ public:
                 #endif
                 char buf[32];
                 std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
-                std::string thresholdStr(buf);
-
-                // 如果 startTime 早于阈值，需要查询归档
-                if (startTime < thresholdStr) {
+                if (startTime < std::string(buf)) {
                     needArchive = true;
                 }
-            } catch (...) {
-                // 解析失败，保守起见不查归档
-            }
+            } catch (...) {}
         }
 
-        // 选择查询的表：主表或合并视图
         std::string tableName = needArchive ? "device_data_all" : "device_data";
 
-        // 默认时间范围：如果未指定 startTime，默认查询最近 N 天（利用 TimescaleDB 分区裁剪）
+        // ==================== 2. 时间范围处理 ====================
         std::string effectiveStartTime = startTime;
         if (effectiveStartTime.empty()) {
             auto now = std::chrono::system_clock::now();
@@ -785,11 +775,8 @@ public:
             effectiveStartTime = std::string(buf);
         }
 
-        // 构建时间条件（直接使用 device_id，无需 JOIN）
-        // 始终包含 startTime 条件以利用分区裁剪
         auto buildTimeCondition = [&effectiveStartTime, &endTime](std::vector<std::string>& params) -> std::string {
             std::string condition;
-            // 始终添加起始时间条件（默认或用户指定）
             condition += " AND report_time >= ?::timestamptz";
             params.push_back(effectiveStartTime);
             if (!endTime.empty()) {
@@ -799,7 +786,6 @@ public:
             return condition;
         };
 
-        // 过滤空 data 的条件
         std::string filterEmptyData = " AND (data->'data' IS NOT NULL AND data->'data' <> '{}'::jsonb)";
 
         // 查询具体数据（直接使用 device_id，利用复合索引）
@@ -859,6 +845,7 @@ public:
 
         auto t0 = std::chrono::steady_clock::now();
 
+        // ==================== 3. SQL 查询构建 ====================
         // 按 dataType 过滤 funcCode（IMAGE 对应 36/B6，ELEMENT 排除 36/B6）
         // ELEMENT 模式额外排除 DOWN 方向（写命令记录）
         std::string funcCodeFilter = isImage
@@ -942,6 +929,7 @@ public:
                  << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
                  << "ms, rows=" << result.size();
 
+        // ==================== 4. 结果处理 ====================
         Json::Value items(Json::arrayValue);
 
         // JSONB 单值解析器：将 PostgreSQL 返回的 JSONB 文本转为 Json::Value（无需 JSON 库解析）

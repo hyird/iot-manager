@@ -1,4 +1,4 @@
-import "@/pages"; // 触发页面注册
+import "@/pages"; // 页面注册（侧副效应导入，调用 registerPage() 将页面加入全局注册表）
 import { type ComponentType, lazy, useMemo, useRef } from "react";
 import { createHashRouter, Navigate, RouterProvider } from "react-router-dom";
 import { AuthGuard } from "@/components/AuthGuard";

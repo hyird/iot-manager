@@ -2,6 +2,7 @@
 
 #include "common/domain/EventBus.hpp"
 #include "modules/alert/domain/Events.hpp"
+#include "modules/device/domain/Events.hpp"
 #include "OpenWebhookDispatcher.hpp"
 
 class OpenWebhookEventHandlers {
@@ -22,6 +23,12 @@ public:
             co_return;
         });
 
-        LOG_INFO << "[OpenWebhook] Alert event handlers registered";
+        bus.subscribe<CommandDispatched>([](const CommandDispatched& event) -> Task<void> {
+            OpenWebhookDispatcher::instance().dispatchCommandDispatched(
+                event.aggregateId, event.funcCode, event.elements);
+            co_return;
+        });
+
+        LOG_INFO << "[OpenWebhook] Event handlers registered";
     }
 };

@@ -11,7 +11,8 @@
 #include "common/cache/DeviceConnectionCache.hpp"
 #include "common/protocol/ProtocolAdapter.hpp"
 #include "common/utils/Constants.hpp"
-#include "modules/open/OpenWebhookDispatcher.hpp"
+#include "modules/device/domain/Events.hpp"
+#include "common/domain/EventBus.hpp"
 
 #include <atomic>
 #include <memory>
@@ -406,8 +407,8 @@ public:
                 co_return CommandResult::sendFailed("DTU 会话不可用或发送失败");
             }
 
-            OpenWebhookDispatcher::instance().dispatchCommandDispatched(
-                deviceId, req.funcCode, req.elements);
+            co_await EventBus::instance().publish(
+                CommandDispatched{deviceId, req.funcCode, req.elements});
 
             co_return co_await awaitCommandResponse(pendingKey, req.timeoutMs, downCommandId);
 
