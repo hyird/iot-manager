@@ -31,17 +31,3 @@ set_target_properties(iot-edgenode PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/$<LOWER_CASE:$<CONFIG>>"
 )
 
-set(AGENT_CONFIG_SOURCE "${CMAKE_SOURCE_DIR}/config/agent.example.json")
-if(EXISTS "${CMAKE_SOURCE_DIR}/config/agent.local.json")
-    set(AGENT_CONFIG_SOURCE "${CMAKE_SOURCE_DIR}/config/agent.local.json")
-elseif(EXISTS "${CMAKE_SOURCE_DIR}/config/agent.json")
-    set(AGENT_CONFIG_SOURCE "${CMAKE_SOURCE_DIR}/config/agent.json")
-endif()
-
-add_custom_command(TARGET iot-edgenode POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:iot-edgenode>/config"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${AGENT_CONFIG_SOURCE}"
-        "$<TARGET_FILE_DIR:iot-edgenode>/config/agent.json"
-    COMMENT "Copying edgenode config..."
-)

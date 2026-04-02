@@ -36,16 +36,22 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-    // 支持 -c <config_path> 指定配置文件
+    // 支持 -c <config_path> 指定配置文件（可选）
+    // 支持 -p <platform_url> 或 --platform <platform_url> 指定平台地址
     std::string configPath;
+    std::string platformUrl;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "-c" && i + 1 < argc) {
             configPath = argv[++i];
+            continue;
+        }
+        if ((std::string(argv[i]) == "-p" || std::string(argv[i]) == "--platform") && i + 1 < argc) {
+            platformUrl = argv[++i];
         }
     }
 
     std::string error;
-    auto configOpt = agent_app::EdgeNodeConfigLoader::load(configPath, &error);
+    auto configOpt = agent_app::EdgeNodeConfigLoader::load(configPath, platformUrl, &error);
     if (!configOpt) {
         std::cerr << "[EdgeNode] " << error << std::endl;
         return 1;

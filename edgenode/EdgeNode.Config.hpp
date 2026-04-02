@@ -4,6 +4,7 @@
 #include "common/utils/JsonHelper.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -32,52 +33,68 @@ inline std::string toUpperCode(std::string s) {
 class EdgeNodeConfigLoader {
 public:
     static std::optional<EdgeNodeConfig> load(const std::string& explicitPath = {},
-                                           std::string* error = nullptr) {
+                                              const std::string& platformOverride = {},
+                                              std::string* error = nullptr) {
         std::string resolvedPath;
-        if (!explicitPath.empty()) {
-            if (!fs::exists(explicitPath)) {
-                setError(error, "指定的配置文件不存在: " + explicitPath);
-                return std::nullopt;
-            }
-            resolvedPath = explicitPath;
-        } else {
-            auto found = findConfigPath();
-            if (!found) {
-                setError(error, "未找到 EdgeNode 配置文件");
-                return std::nullopt;
-            }
-            resolvedPath = *found;
-        }
-
-        std::cout << "[EdgeNode] loading config: " << resolvedPath << std::endl;
-
-        std::ifstream ifs(resolvedPath);
-        if (!ifs) {
-            setError(error, "无法打开 EdgeNode 配置文件: " + resolvedPath);
-            return std::nullopt;
-        }
-
         Json::Value root;
-        Json::CharReaderBuilder reader;
-        std::string errs;
-        if (!Json::parseFromStream(reader, ifs, &root, &errs)) {
-            setError(error, "EdgeNode 配置 JSON 解析失败: " + errs);
-            return std::nullopt;
+        const Json::Value emptyAgent(Json::objectValue);
+
+        if (!explicitPath.empty() && fs::exists(explicitPath)) {
+            resolvedPath = explicitPath;
+        } else if (explicitPath.empty()) {
+            if (auto found = findConfigPath()) {
+                resolvedPath = *found;
+            }
         }
 
-        const auto& agent = root["agent"];
-        if (!agent.isObject()) {
-            setError(error, "EdgeNode 配置缺少 agent 节点");
+        if (!resolvedPath.empty()) {
+            std::cout << "[EdgeNode] loading config: " << resolvedPath << std::endl;
+
+            std::ifstream ifs(resolvedPath);
+            if (!ifs) {
+                setError(error, "无法打开 EdgeNode 配置文件: " + resolvedPath);
+                return std::nullopt;
+            }
+
+            Json::CharReaderBuilder reader;
+            std::string errs;
+            if (!Json::parseFromStream(reader, ifs, &root, &errs)) {
+                setError(error, "EdgeNode 配置 JSON 解析失败: " + errs);
+                return std::nullopt;
+            }
+        }
+
+        if (!explicitPath.empty() && resolvedPath.empty()) {
+            std::cout << "[EdgeNode] config file not found, continue without file: "
+                      << explicitPath << std::endl;
+        }
+
+        const auto* envPlatform = std::getenv("IOT_AGENT_PLATFORM_URL");
+        if (!envPlatform || std::string(envPlatform).empty()) {
+            envPlatform = std::getenv("IOT_PLATFORM_URL");
+        }
+        std::string envPlatformUrl = envPlatform ? std::string(envPlatform) : "";
+        trim(envPlatformUrl);
+
+        const auto& agent = root.isObject() ? root["agent"] : emptyAgent;
+        if (!agent.isObject() && !root.isNull()) {
+            setError(error, "EdgeNode 配置的 agent 节点格式错误");
             return std::nullopt;
         }
 
         EdgeNodeConfig config;
         config.sn = readDeviceTreeSerial().value_or(toUpperCode(agent.get("code", "").asString()));
         config.model = readDeviceTreeModel().value_or(agent.get("model", "").asString());
-        config.platformHost = normalizeToWsHost(agent.get("platform_url", "").asString());
+        std::string platformUrl = platformOverride;
+        trim(platformUrl);
+        if (platformUrl.empty()) platformUrl = envPlatformUrl;
+        if (platformUrl.empty()) platformUrl = agent.get("platform_url", "").asString();
+        trim(platformUrl);
+        config.platformHost = normalizeToWsHost(platformUrl);
 
         if (config.sn.empty() || config.platformHost.empty()) {
-            setError(error, "EdgeNode 配置缺少 sn/platform_url");
+            setError(error,
+                     "EdgeNode 启动失败：缺少 SN 或 platform_url（可通过 --platform 或环境变量 IOT_AGENT_PLATFORM_URL 提供）");
             return std::nullopt;
         }
         if (config.model.empty()) {
