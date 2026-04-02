@@ -121,7 +121,7 @@ export default function AdminLayout() {
   const siderContent = (
     <>
       <div className="h-12 m-2 rounded flex items-center justify-center shrink-0 text-white font-medium">
-        {!isInitialLoading && <span>{collapsed ? "IoT" : "物联平台"}</span>}
+        {!isInitialLoading && <span>{collapsed ? "IoT" : "云边端数据采集管控一体化平台"}</span>}
       </div>
       {!isInitialLoading && (
         <>
