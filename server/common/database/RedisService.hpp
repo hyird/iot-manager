@@ -203,8 +203,9 @@ public:
             "if v == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end "
             "return v";
 
+        // 使用 to_string 确保 ttl 作为字符串传递，Redis 会自动转换
         auto result = co_await client->execCommandCoro(
-            "EVAL %s 1 %s %d", script.c_str(), key.c_str(), ttl);
+            "EVAL %s 1 %s %s", script.c_str(), key.c_str(), std::to_string(ttl).c_str());
         co_return result.asInteger();
     }
 };
