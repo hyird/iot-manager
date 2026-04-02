@@ -259,10 +259,18 @@ const buildDeviceCardItems = (elements?: Device.Element[]): DeviceCardDisplayIte
         }
       }
 
-      const displayValue =
-        el.value === null || el.value === undefined || el.value === "" ? "--" : el.value;
+      const formatValue = (val: string | number | null, decimals?: number) => {
+        if (val === null || val === undefined || val === "") return "--";
+        if (typeof val === "string") return val;
+        if (typeof decimals === "number" && decimals >= 0) {
+          return Number(val.toFixed(decimals)).toString();
+        }
+        return String(val);
+      };
+
+      const displayValue = formatValue(el.value, el.decimals);
       const children =
-        displayValue === "--" || !el.unit ? String(displayValue) : `${displayValue} ${el.unit}`;
+        displayValue === "--" || !el.unit ? displayValue : `${displayValue} ${el.unit}`;
       return { key: idx, label: el.name, children, group };
     })
     .filter((item): item is NonNullable<typeof item> => item !== null);

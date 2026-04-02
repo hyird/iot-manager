@@ -27,6 +27,7 @@ import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave }
 import type { SL651 } from "@/types";
 import {
   buildGroupSections,
+  getGroupKey,
   reorderItemsByGroupOrder,
   reorderItemsWithinGroupOrder,
 } from "./grouping";
@@ -177,7 +178,12 @@ const SL651ConfigPage = () => {
       if (!type) return;
 
       if (nextItems.length === currentItems.length) {
-        const isSameOrder = nextItems.every((item, index) => item.id === currentItems[index]?.id);
+        const isSameOrder =
+          nextItems.every((item, index) => item.id === currentItems[index]?.id) &&
+          nextItems.every(
+            (item, index) =>
+              getGroupKey(item.group) === getGroupKey(currentItems[index]?.group)
+          );
         if (isSameOrder) return;
       }
 

@@ -31,6 +31,7 @@ import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave }
 import type { Modbus, ModbusDictConfig, Protocol } from "@/types";
 import {
   buildGroupSections,
+  getGroupKey,
   reorderItemsByGroupOrder,
   reorderItemsWithinGroupOrder,
 } from "./grouping";
@@ -252,9 +253,12 @@ const ModbusConfigPage = () => {
 
       const config = activeType.config as Modbus.Config;
       if (nextRegisters.length === registers.length) {
-        const isSameOrder = nextRegisters.every(
-          (register, index) => register.id === registers[index]?.id
-        );
+        const isSameOrder =
+          nextRegisters.every((register, index) => register.id === registers[index]?.id) &&
+          nextRegisters.every(
+            (register, index) =>
+              getGroupKey(register.group) === getGroupKey(registers[index]?.group)
+          );
         if (isSameOrder) return;
       }
 

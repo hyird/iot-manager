@@ -34,6 +34,7 @@ import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave }
 import type { S7 } from "@/types";
 import {
   buildGroupSections,
+  getGroupKey,
   normalizeGroupName,
   reorderItemsByGroupOrder,
   reorderItemsWithinGroupOrder,
@@ -551,6 +552,8 @@ function AreaModal({
             dataType: "INT16" as S7.AreaDataType,
             start: 0,
             size: 1,
+            unit: undefined,
+            decimals: undefined,
             writable: false,
             remark: "",
             startBit: undefined,
@@ -656,6 +659,27 @@ function AreaModal({
             filterOption
           />
         </Form.Item>
+        <Row gutter={12}>
+          <Col xs={24} sm={8}>
+            <Form.Item name="unit" label="单位">
+              <Input placeholder="如：V、A、℃、%" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={8}>
+            <Form.Item
+              name="decimals"
+              label="小数位数"
+              extra="仅对数值类型生效，-1或不填表示原始值"
+            >
+              <InputNumber
+                min={-1}
+                max={8}
+                placeholder="不限制"
+                className="!w-full"
+              />
+            </Form.Item>
+          </Col>
+        </Row>
         <Row gutter={12}>
           <Col xs={24} sm={12}>
             <Form.Item
@@ -880,7 +904,12 @@ const S7ConfigPage = () => {
       if (!activeTypeId || !activeConfig) return;
 
       if (nextAreas.length === activeAreas.length) {
-        const isSameOrder = nextAreas.every((area, index) => area.id === activeAreas[index]?.id);
+        const isSameOrder =
+          nextAreas.every((area, index) => area.id === activeAreas[index]?.id) &&
+          nextAreas.every(
+            (area, index) =>
+              getGroupKey(area.group) === getGroupKey(activeAreas[index]?.group)
+          );
         if (isSameOrder) return;
       }
 

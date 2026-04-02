@@ -196,6 +196,8 @@ export interface DeviceElement {
   name: string;
   value: string | number | null;
   unit?: string;
+  /** 小数位数（-1 或 undefined 表示原始值） */
+  decimals?: number;
   /** 分组名称（由协议配置映射，用于设备管理页聚合展示） */
   group?: string;
   /** 编码类型 */

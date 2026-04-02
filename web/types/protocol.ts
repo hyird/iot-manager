@@ -209,6 +209,10 @@ export interface S7Area {
   start: number;
   startBit?: number;
   size: number;
+  /** 单位 */
+  unit?: string;
+  /** 小数位数（-1 或 undefined 表示原始值不处理） */
+  decimals?: number;
   writable?: boolean;
   remark?: string;
 }
