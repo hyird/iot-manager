@@ -634,7 +634,8 @@ private:
                     .unitSize = candidate.unitSize,
                     .dbNumber = candidate.dbNumber,
                     .start = candidate.start,
-                    .amount = candidate.amount
+                    .amount = candidate.amount,
+                    .members = {}
                 };
                 currentEnd = candidateEnd;
             } else if (candidateEnd > currentEnd) {

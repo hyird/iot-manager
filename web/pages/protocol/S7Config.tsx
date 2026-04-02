@@ -26,8 +26,7 @@ import {
   Tooltip,
   Tree,
 } from "antd";
-import type { ColumnsType } from "antd/es/table";
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
@@ -42,7 +41,7 @@ import {
 import {
   SortableGroupSectionFrame,
   SortableGroupSectionList,
-  SortableGroupTableList,
+  SortableGroupItemList,
 } from "./SortableGroup";
 
 type DeviceTypeFormValues = {
@@ -352,6 +351,9 @@ const getDataTypeSize = (dataType?: S7.AreaDataType) =>
 
 const writableAreaTypes: S7.AreaType[] = ["DB", "V", "MK", "PA"];
 const bitOnlyAreaTypes: S7.AreaType[] = ["PE", "PA"];
+const AREA_CARD_GRID_STYLE: CSSProperties = {
+  gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+};
 
 const getAreaDataTypeOptions = (
   areaType?: S7.AreaType
@@ -955,100 +957,95 @@ const S7ConfigPage = () => {
     [activeAreas, persistAreas]
   );
 
-  const areaColumns: ColumnsType<S7.Area> = [
-    { title: "寄存器名称", dataIndex: "name", ellipsis: true },
-    {
-      title: "寄存器类型",
-      dataIndex: "area",
-      render: (value: S7.AreaType) => {
-        const displayArea = normalizeAreaTypeForPlcModel(activeConfig?.plcModel, value) ?? value;
-        return <Tag color="blue">{displayArea}</Tag>;
-      },
-    },
-    {
-      title: "数据类型",
-      dataIndex: "dataType",
-      ellipsis: true,
-      render: (value?: string) => (value ? normalizeS7DataType(value) : "-"),
-    },
-    {
-      title: "DB 编号",
-      dataIndex: "dbNumber",
-      render: (value: number | undefined, record: S7.Area) => {
-        const displayArea =
-          normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
-        if (displayArea === "V") {
-          return "-";
-        }
-        return value ?? "-";
-      },
-    },
-    {
-      title: "起始地址",
-      render: (_, record: S7.Area) => {
-        const displayArea =
-          normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
-        return getAreaAddressRangeText({ ...record, area: displayArea }).start;
-      },
-    },
-    {
-      title: "结束地址",
-      render: (_, record: S7.Area) => {
-        const displayArea =
-          normalizeAreaTypeForPlcModel(activeConfig?.plcModel, record.area) ?? record.area;
-        return getAreaAddressRangeText({ ...record, area: displayArea }).end;
-      },
-    },
-    { title: "长度（字节）", dataIndex: "size" },
-    {
-      title: "可写",
-      dataIndex: "writable",
-      render: (value?: boolean) => (value ? <Tag color="orange">可写</Tag> : <Tag>只读</Tag>),
-    },
-    { title: "备注", dataIndex: "remark", ellipsis: true },
-    {
-      title: "操作",
-      width: 160,
-      render: (_, record) => (
-        <Space>
-          {canEdit && (
-            <Button
-              size="small"
-              type="link"
-              onClick={() => {
-                setEditingAreaId(record.id);
-                setAreaModalOpen(true);
-              }}
-            >
-              编辑
-            </Button>
-          )}
-          {canDelete && (
-            <Popconfirm
-              title="确认删除该寄存器？"
-              onConfirm={async () => {
-                if (!activeTypeId || !activeConfig) return;
-                const nextAreas = activeConfig.areas.filter((item) => item.id !== record.id);
-                await saveMutation.mutateAsync({
-                  id: activeTypeId,
-                  protocol: "S7",
-                  config: {
-                    ...activeConfig,
-                    areas: nextAreas,
-                  },
-                });
-                await refetch();
-              }}
-            >
-              <Button size="small" danger type="link">
-                删除
+  const renderAreaCard = (area: S7.Area, dragHandle?: ReactNode) => {
+    const displayArea = normalizeAreaTypeForPlcModel(activeConfig?.plcModel, area.area) ?? area.area;
+    const displayDataType = normalizeS7DataType(area.dataType);
+    const addressRange = getAreaAddressRangeText({ ...area, area: displayArea });
+    const canShowDecimals = supportsS7Decimals(displayDataType);
+    const areaLocationLabel =
+      displayArea === "DB"
+        ? `DB ${area.dbNumber ?? "-"}`
+        : displayArea === "V"
+          ? "V 区"
+          : `${displayArea} 区`;
+
+    return (
+      <Card
+        key={area.id}
+        size="small"
+        hoverable
+        className="h-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+        styles={{ body: { padding: 12 } }}
+      >
+        <Flex justify="space-between" gap={12} align="start" className="mb-2">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold text-slate-800">{area.name}</div>
+            <div className="mt-0.5 text-[12px] text-slate-400">
+              起始 {addressRange.start} · 结束 {addressRange.end}
+            </div>
+          </div>
+          <Space size={4} className="shrink-0">
+            {dragHandle}
+            {canEdit && (
+              <Button
+                size="small"
+                type="link"
+                onClick={() => {
+                  setEditingAreaId(area.id);
+                  setAreaModalOpen(true);
+                }}
+              >
+                编辑
               </Button>
-            </Popconfirm>
-          )}
+            )}
+            {canDelete && (
+              <Popconfirm
+                title="确认删除该寄存器？"
+                onConfirm={async () => {
+                  if (!activeTypeId || !activeConfig) return;
+                  const nextAreas = activeConfig.areas.filter((item) => item.id !== area.id);
+                  await saveMutation.mutateAsync({
+                    id: activeTypeId,
+                    protocol: "S7",
+                    config: {
+                      ...activeConfig,
+                      areas: nextAreas,
+                    },
+                  });
+                  await refetch();
+                }}
+              >
+                <Button size="small" danger type="link">
+                  删除
+                </Button>
+              </Popconfirm>
+            )}
+          </Space>
+        </Flex>
+
+        <Space size={6} wrap className="mb-2">
+          <Tag color="blue">{displayArea}</Tag>
+          <Tag color="geekblue">{displayDataType}</Tag>
+          <Tag>{areaLocationLabel}</Tag>
+          <Tag>{area.size} 字节</Tag>
+          {area.writable ? <Tag color="orange">可写</Tag> : <Tag>只读</Tag>}
+          {area.unit ? <Tag>{area.unit}</Tag> : null}
+          {canShowDecimals && typeof area.decimals === "number" ? (
+            <Tag>小数位数 {area.decimals}</Tag>
+          ) : null}
+          {displayDataType === "BOOL" && typeof area.startBit === "number" ? (
+            <Tag>位 {area.startBit}</Tag>
+          ) : null}
         </Space>
-      ),
-    },
-  ];
+
+        {area.remark ? (
+          <div className="text-xs leading-5 text-slate-500">{area.remark}</div>
+        ) : (
+          <div className="text-xs leading-5 text-slate-400">暂无备注</div>
+        )}
+      </Card>
+    );
+  };
 
   const handleDeleteType = async () => {
     if (!activeTypeId) return;
@@ -1347,7 +1344,7 @@ const S7ConfigPage = () => {
               <SortableGroupSectionList
                 sections={areaGroups}
                 className="w-full p-4"
-                disabled={saveMutation.isPending}
+                disabled={saveMutation.isPending || !canEdit}
                 onOrderChange={handleAreaGroupOrderChange}
                 empty={<Empty description="暂无寄存器，点击右上角新增寄存器" />}
               >
@@ -1360,7 +1357,7 @@ const S7ConfigPage = () => {
                       key={group.key}
                       className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4"
                       bodyClassName="mt-4"
-                      disabled={saveMutation.isPending}
+                      disabled={saveMutation.isPending || !canEdit}
                       title={group.label}
                       meta={
                         <Space size={6} wrap>
@@ -1369,25 +1366,21 @@ const S7ConfigPage = () => {
                         </Space>
                       }
                     >
-                      <div style={{ "--ant-table-header-border-radius": 0 } as CSSProperties}>
-                        <SortableGroupTableList
-                          items={group.items}
-                          columns={areaColumns}
-                          disabled={saveMutation.isPending}
-                          empty={<Empty description="暂无寄存器" />}
-                          onOrderChange={(nextOrder) =>
-                            handleAreaItemOrderChange(group.key, nextOrder)
-                          }
-                          tableProps={{
-                            size: "small",
-                            sticky: true,
-                            scroll: { x: "max-content" },
-                          }}
-                        />
-                      </div>
-                    </SortableGroupSectionFrame>
-                  );
-                }}
+                    <SortableGroupItemList
+                      items={group.items}
+                      className="grid gap-3"
+                      style={AREA_CARD_GRID_STYLE}
+                      disabled={saveMutation.isPending || !canEdit}
+                      empty={<Empty description="暂无寄存器" />}
+                      onOrderChange={(nextOrder) =>
+                        handleAreaItemOrderChange(group.key, nextOrder)
+                      }
+                    >
+                      {(area, dragHandle) => renderAreaCard(area, dragHandle)}
+                    </SortableGroupItemList>
+                  </SortableGroupSectionFrame>
+                );
+              }}
               </SortableGroupSectionList>
             )}
           </Card>

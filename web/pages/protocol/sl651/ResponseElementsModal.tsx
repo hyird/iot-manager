@@ -2,8 +2,8 @@
  * SL651 应答要素 Modal
  */
 
-import { AutoComplete, Button, Form, Input, InputNumber, Modal, Select, Table, Tag } from "antd";
-import { forwardRef, useImperativeHandle, useMemo, useState } from "react";
+import { AutoComplete, Button, Card, Empty, Flex, Form, Input, InputNumber, Modal, Select, Tag } from "antd";
+import { forwardRef, useImperativeHandle, useMemo, useState, type CSSProperties } from "react";
 import type { Protocol, SL651 } from "@/types";
 import { normalizeGroupName } from "../grouping";
 import { EncodeList, generateId, type SaveMutation } from "./shared";
@@ -17,6 +17,10 @@ interface ResponseElementsModalProps {
   onSuccess?: () => void;
   saveMutation: SaveMutation;
 }
+
+const RESPONSE_ELEMENT_CARD_GRID_STYLE: CSSProperties = {
+  gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
+};
 
 const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseElementsModalProps>(
   ({ types, onSuccess, saveMutation }, ref) => {
@@ -112,122 +116,86 @@ const ResponseElementsModal = forwardRef<ResponseElementsModalRef, ResponseEleme
           <Form.List name="responseElements">
             {(fields, { add, remove }) => (
               <>
-                <Table
-                  dataSource={fields}
-                  rowKey="key"
-                  pagination={false}
-                  size="small"
-                  scroll={{ x: "max-content" }}
-                  columns={[
-                    {
-                      title: "要素名称",
-                      width: 150,
-                      render: (_, field) => (
-                        <Form.Item
-                          name={[field.name, "name"]}
-                          rules={[{ required: true, message: "必填" }]}
-                          className="!mb-0"
-                        >
-                          <Input placeholder="要素名称" />
-                        </Form.Item>
-                      ),
-                    },
-                    {
-                      title: "分组",
-                      width: 150,
-                      render: (_, field) => (
-                        <Form.Item name={[field.name, "group"]} className="!mb-0">
-                          <AutoComplete
-                            allowClear
-                            options={groupOptions}
-                            placeholder="分组"
-                            filterOption
-                          />
-                        </Form.Item>
-                      ),
-                    },
-                    {
-                      title: "引导符(HEX)",
-                      width: 120,
-                      render: (_, field) => (
-                        <Form.Item
-                          name={[field.name, "guideHex"]}
-                          rules={[{ required: true, message: "必填" }]}
-                          className="!mb-0"
-                        >
-                          <Input placeholder="如: 01" />
-                        </Form.Item>
-                      ),
-                    },
-                    {
-                      title: "编码",
-                      width: 140,
-                      render: (_, field) => (
-                        <Form.Item
-                          name={[field.name, "encode"]}
-                          rules={[{ required: true, message: "必填" }]}
-                          className="!mb-0"
-                        >
-                          <Select
-                            placeholder="选择"
-                            options={EncodeList.map((e) => ({ value: e, label: e }))}
-                          />
-                        </Form.Item>
-                      ),
-                    },
-                    {
-                      title: "长度",
-                      width: 80,
-                      render: (_, field) => (
-                        <Form.Item
-                          name={[field.name, "length"]}
-                          rules={[{ required: true, message: "必填" }]}
-                          className="!mb-0"
-                        >
-                          <InputNumber min={1} className="!w-full" />
-                        </Form.Item>
-                      ),
-                    },
-                    {
-                      title: "单位",
-                      width: 80,
-                      render: (_, field) => (
-                        <Form.Item name={[field.name, "unit"]} className="!mb-0">
-                          <Input placeholder="单位" />
-                        </Form.Item>
-                      ),
-                    },
-                    {
-                      title: "小数位数",
-                      width: 100,
-                      render: (_, field) => (
-                        <Form.Item name={[field.name, "digits"]} className="!mb-0">
-                          <InputNumber min={0} max={8} className="!w-full" />
-                        </Form.Item>
-                      ),
-                    },
-                    {
-                      title: "备注",
-                      width: 120,
-                      render: (_, field) => (
-                        <Form.Item name={[field.name, "remark"]} className="!mb-0">
-                          <Input placeholder="备注" />
-                        </Form.Item>
-                      ),
-                    },
-                    {
-                      title: "操作",
-                      width: 60,
-                      fixed: "right" as const,
-                      render: (_, field) => (
-                        <Button type="text" danger onClick={() => remove(field.name)}>
-                          删除
-                        </Button>
-                      ),
-                    },
-                  ]}
-                  locale={{ emptyText: "暂无应答要素，点击下方按钮添加" }}
-                />
+                {fields.length > 0 ? (
+                  <div className="grid gap-3" style={RESPONSE_ELEMENT_CARD_GRID_STYLE}>
+                    {fields.map((field, index) => (
+                      <Card
+                        key={field.key}
+                        size="small"
+                        hoverable
+                        className="h-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+                        styles={{ body: { padding: 12 } }}
+                      >
+                        <Flex justify="space-between" gap={12} align="start" className="mb-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-semibold text-slate-800">
+                              应答要素 {index + 1}
+                            </div>
+                            <div className="mt-0.5 text-[12px] text-slate-400">
+                              配置名称、引导符、编码、长度、单位和小数位数
+                            </div>
+                          </div>
+                          <Button type="text" danger size="small" onClick={() => remove(field.name)}>
+                            删除
+                          </Button>
+                        </Flex>
+
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <Form.Item
+                            name={[field.name, "name"]}
+                            rules={[{ required: true, message: "必填" }]}
+                            className="!mb-0"
+                          >
+                            <Input placeholder="要素名称" />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "group"]} className="!mb-0">
+                            <AutoComplete
+                              allowClear
+                              options={groupOptions}
+                              placeholder="分组"
+                              filterOption
+                            />
+                          </Form.Item>
+                          <Form.Item
+                            name={[field.name, "guideHex"]}
+                            rules={[{ required: true, message: "必填" }]}
+                            className="!mb-0"
+                          >
+                            <Input placeholder="如: 01" />
+                          </Form.Item>
+                          <Form.Item
+                            name={[field.name, "encode"]}
+                            rules={[{ required: true, message: "必填" }]}
+                            className="!mb-0"
+                          >
+                            <Select
+                              placeholder="选择"
+                              options={EncodeList.map((e) => ({ value: e, label: e }))}
+                            />
+                          </Form.Item>
+                          <Form.Item
+                            name={[field.name, "length"]}
+                            rules={[{ required: true, message: "必填" }]}
+                            className="!mb-0"
+                          >
+                            <InputNumber min={1} className="!w-full" />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "unit"]} className="!mb-0">
+                            <Input placeholder="单位" />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "digits"]} className="!mb-0">
+                            <InputNumber min={0} max={8} className="!w-full" />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "remark"]} className="!mb-0 sm:col-span-2">
+                            <Input placeholder="备注" />
+                          </Form.Item>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty description="暂无应答要素，点击下方按钮添加" />
+                )}
                 <Button
                   type="dashed"
                   onClick={() =>

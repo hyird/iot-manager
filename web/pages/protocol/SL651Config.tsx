@@ -14,13 +14,11 @@ import {
   Result,
   Skeleton,
   Space,
-  Table,
   Tag,
   Tooltip,
   Tree,
 } from "antd";
-import type { ColumnsType } from "antd/es/table";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
@@ -34,7 +32,7 @@ import {
 import {
   SortableGroupSectionFrame,
   SortableGroupSectionList,
-  SortableGroupTableList,
+  SortableGroupItemList,
 } from "./SortableGroup";
 import {
   DeviceTypeModal,
@@ -56,6 +54,14 @@ interface FuncWithElements extends SL651.Func {
   elements: SL651.Element[];
   responseElements?: SL651.Element[];
 }
+
+const FUNC_CARD_GRID_STYLE: CSSProperties = {
+  gridTemplateColumns: "repeat(auto-fill, minmax(460px, 1fr))",
+};
+
+const ELEMENT_CARD_GRID_STYLE: CSSProperties = {
+  gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+};
 
 const SL651ConfigPage = () => {
   // 权限检查
@@ -219,7 +225,12 @@ const SL651ConfigPage = () => {
       nextOrder: string[],
       currentItems: SL651.Element[]
     ) => {
-      await persistElements(funcId, listKind, reorderItemsByGroupOrder(currentItems, nextOrder), currentItems);
+      await persistElements(
+        funcId,
+        listKind,
+        reorderItemsByGroupOrder(currentItems, nextOrder),
+        currentItems
+      );
     },
     [persistElements]
   );
@@ -242,166 +253,93 @@ const SL651ConfigPage = () => {
     [persistElements]
   );
 
-  // ========== 功能码表格列 ==========
-
-  const funcColumns: ColumnsType<FuncWithElements> = [
-    { title: "功能码", dataIndex: "funcCode", ellipsis: true },
-    { title: "名称", dataIndex: "name", ellipsis: true },
-    {
-      title: "方向",
-      render: (_, r) => (
-        <Tag color={r.dir === "UP" ? "green" : "orange"}>{r.dir === "UP" ? "上行" : "下行"}</Tag>
-      ),
-    },
-    {
-      title: "要素数",
-      render: (_, r) => r.elements?.length ?? 0,
-    },
-    {
-      title: "应答要素",
-      render: (_, r) =>
-        r.dir === "DOWN" ? (
-          <Tooltip title="下行指令应答报文的解析要素">
-            <Tag color="cyan">{r.responseElements?.length ?? 0}个</Tag>
-          </Tooltip>
-        ) : (
-          "-"
-        ),
-    },
-    {
-      title: "备注",
-      dataIndex: "remark",
-      ellipsis: true,
-    },
-    {
-      title: "操作",
-      width: 320,
-      fixed: "right" as const,
-      render: (_, r) => (
-        <Space>
-          {canEdit && (
-            <Button
-              size="small"
-              type="link"
-              onClick={() => funcModalRef.current?.open("edit", activeTypeId!, r)}
-            >
-              编辑
-            </Button>
-          )}
-          {canDelete && (
-            <Popconfirm title="确认删除？" onConfirm={() => handleDeleteFunc(r.id)}>
-              <Button size="small" danger type="link">
-                删除
-              </Button>
-            </Popconfirm>
-          )}
-          {canAdd && (
-            <Button
-              size="small"
-              type="link"
-              onClick={() => elementModalRef.current?.open("create", activeTypeId!, r.id)}
-            >
-              新增要素
-            </Button>
-          )}
-          {r.dir === "DOWN" && canEdit && (
-            <Button
-              size="small"
-              type="link"
-              onClick={() => responseElementsModalRef.current?.open(activeTypeId!, r)}
-            >
-              应答要素
-            </Button>
-          )}
-        </Space>
-      ),
-    },
-  ];
-
-  // ========== 要素表格列 ==========
-
-  const elementColumns = (
+  const renderElementCard = (
+    element: SL651.Element,
     funcId: string,
     funcDir: SL651.Direction,
-    options?: { advancedActions?: boolean }
-  ): ColumnsType<SL651.Element> => {
+    options?: { advancedActions?: boolean },
+    dragHandle?: ReactNode
+  ) => {
     const advancedActions = options?.advancedActions !== false;
+    const presetValueCount = element.options?.length ?? 0;
+    const dictItemCount = element.dictConfig?.items?.length ?? 0;
+    const showPresetValueTag = funcDir === "DOWN" && advancedActions && presetValueCount > 0;
+    const showDictTag = advancedActions && element.encode === "DICT" && dictItemCount > 0;
 
-    return [
-      { title: "要素名称", dataIndex: "name", ellipsis: true },
-      { title: "引导符", dataIndex: "guideHex" },
-      { title: "编码", dataIndex: "encode" },
-      { title: "长度", dataIndex: "length" },
-      { title: "小数位", dataIndex: "digits" },
-      { title: "单位", dataIndex: "unit" },
-      ...(funcDir === "DOWN" && advancedActions
-        ? [
-            {
-              title: "预设值",
-              dataIndex: "options",
-              render: (value: SL651.Element["options"]) =>
-                value?.length ? `${value.length}个` : "-",
-            },
-          ]
-        : []),
-      ...(advancedActions
-        ? [
-            {
-              title: "字典配置",
-              dataIndex: "dictConfig",
-              render: (dictConfig: SL651.Element["dictConfig"]) => {
-                if (!dictConfig?.items?.length) return "-";
-                const typeLabel = dictConfig.mapType === "VALUE" ? "值" : "位";
-                return `${typeLabel}映射(${dictConfig.items.length}个)`;
-              },
-            },
-          ]
-        : []),
-      { title: "备注", dataIndex: "remark", ellipsis: true },
-      {
-        title: "操作",
-        width: funcDir === "DOWN" && advancedActions ? 300 : 240,
-        fixed: "right" as const,
-        render: (_, r) => (
-          <Space>
+    return (
+      <Card
+        key={element.id}
+        size="small"
+        hoverable
+        className="h-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+        styles={{ body: { padding: 12 } }}
+      >
+        <Flex justify="space-between" gap={12} align="start" className="mb-2">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold text-slate-800">{element.name}</div>
+            <div className="mt-0.5 text-[12px] text-slate-400">
+              引导符 {element.guideHex}
+            </div>
+          </div>
+          <Space size={4} className="shrink-0">
+            {dragHandle}
             {canEdit && (
               <Button
                 size="small"
                 type="link"
-                onClick={() => elementModalRef.current?.open("edit", activeTypeId!, funcId, r)}
+                onClick={() => elementModalRef.current?.open("edit", activeTypeId!, funcId, element)}
               >
                 编辑
               </Button>
             )}
-            {funcDir === "DOWN" && advancedActions && canEdit && (
-              <Button
-                size="small"
-                type="link"
-                onClick={() => presetValueModalRef.current?.open(activeTypeId!, funcId, r)}
-              >
-                预设值
-              </Button>
-            )}
-            {advancedActions && r.encode === "DICT" && canEdit && (
-              <Button
-                size="small"
-                type="link"
-                onClick={() => dictConfigModalRef.current?.open(activeTypeId!, funcId, r)}
-              >
-                字典
-              </Button>
-            )}
             {canDelete && (
-              <Popconfirm title="确认删除？" onConfirm={() => handleDeleteElement(funcId, r.id)}>
+              <Popconfirm title="确认删除？" onConfirm={() => handleDeleteElement(funcId, element.id)}>
                 <Button size="small" danger type="link">
                   删除
                 </Button>
               </Popconfirm>
             )}
           </Space>
-        ),
-      },
-    ];
+        </Flex>
+
+        <Space size={6} wrap className="mb-2">
+          <Tag color="blue">{element.encode}</Tag>
+          <Tag>{element.length} 字节</Tag>
+          {typeof element.digits === "number" ? <Tag>小数位数 {element.digits}</Tag> : null}
+          {element.unit ? <Tag>{element.unit}</Tag> : null}
+          {showPresetValueTag ? <Tag color="cyan">{presetValueCount} 个预设值</Tag> : null}
+          {showDictTag ? <Tag color="purple">{dictItemCount} 个字典项</Tag> : null}
+        </Space>
+
+        {element.remark ? (
+          <div className="text-xs leading-5 text-slate-500">{element.remark}</div>
+        ) : (
+          <div className="text-xs leading-5 text-slate-400">暂无备注</div>
+        )}
+
+        {(funcDir === "DOWN" && advancedActions && canEdit) ||
+        (advancedActions && element.encode === "DICT" && canEdit) ? (
+          <Space size={4} wrap className="mt-3">
+            {funcDir === "DOWN" && advancedActions && canEdit && (
+              <Button
+                size="small"
+                onClick={() => presetValueModalRef.current?.open(activeTypeId!, funcId, element)}
+              >
+                预设值
+              </Button>
+            )}
+            {advancedActions && element.encode === "DICT" && canEdit && (
+              <Button
+                size="small"
+                onClick={() => dictConfigModalRef.current?.open(activeTypeId!, funcId, element)}
+              >
+                字典
+              </Button>
+            )}
+          </Space>
+        ) : null}
+      </Card>
+    );
   };
 
   const renderGroupedElements = (
@@ -422,10 +360,8 @@ const SL651ConfigPage = () => {
       <SortableGroupSectionList
         sections={groups}
         className="w-full"
-        disabled={saveMutation.isPending}
-        onOrderChange={(nextOrder) =>
-          handleReorderElements(funcId, listKind, nextOrder, elements || [])
-        }
+        disabled={saveMutation.isPending || !canEdit}
+        onOrderChange={(nextOrder) => handleReorderElements(funcId, listKind, nextOrder, elements || [])}
         empty={<Empty description={emptyDescription} />}
       >
         {(group) => (
@@ -434,30 +370,121 @@ const SL651ConfigPage = () => {
             key={group.key}
             className="rounded-xl border border-slate-200 bg-white p-3"
             bodyClassName="mt-4"
-            disabled={saveMutation.isPending}
+            disabled={saveMutation.isPending || !canEdit}
             title={group.label}
             meta={<Tag color="blue">{group.count} 个</Tag>}
           >
-            <div style={{ "--ant-table-header-border-radius": 0 } as React.CSSProperties}>
-              <SortableGroupTableList
-                items={group.items}
-                columns={elementColumns(funcId, funcDir, { advancedActions })}
-                disabled={saveMutation.isPending}
-                empty={<Empty description={emptyDescription} />}
-                onOrderChange={(nextOrder) =>
-                  handleReorderElementItems(funcId, listKind, group.key, nextOrder, elements || [])
-                }
-                tableProps={{
-                  size: "small",
-                  scroll: { x: "max-content" },
-                }}
-              />
-            </div>
+            <SortableGroupItemList
+              items={group.items}
+              className="grid gap-3"
+              style={ELEMENT_CARD_GRID_STYLE}
+              disabled={saveMutation.isPending || !canEdit}
+              empty={<Empty description={emptyDescription} />}
+              onOrderChange={(nextOrder) =>
+                handleReorderElementItems(funcId, listKind, group.key, nextOrder, elements || [])
+              }
+            >
+              {(element, dragHandle) =>
+                renderElementCard(element, funcId, funcDir, { advancedActions }, dragHandle)
+              }
+            </SortableGroupItemList>
           </SortableGroupSectionFrame>
         )}
       </SortableGroupSectionList>
     );
   };
+
+  const renderFuncCard = (record: FuncWithElements) => {
+    const elementCount = record.elements?.length ?? 0;
+    const responseCount = record.responseElements?.length ?? 0;
+
+    return (
+      <Card
+        key={record.id}
+        size="small"
+        hoverable
+        className="h-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+        styles={{ body: { padding: 12 } }}
+      >
+        <Flex justify="space-between" gap={12} align="start" className="mb-2">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold text-slate-800">{record.name}</div>
+            <div className="mt-0.5 text-[12px] text-slate-400">功能码 {record.funcCode}</div>
+          </div>
+          <Space size={4} className="shrink-0">
+            {canEdit && (
+              <Button size="small" type="link" onClick={() => funcModalRef.current?.open("edit", activeTypeId!, record)}>
+                编辑
+              </Button>
+            )}
+            {canDelete && (
+              <Popconfirm title="确认删除？" onConfirm={() => handleDeleteFunc(record.id)}>
+                <Button size="small" danger type="link">
+                  删除
+                </Button>
+              </Popconfirm>
+            )}
+          </Space>
+        </Flex>
+
+        <Space size={6} wrap className="mb-2">
+          <Tag color={record.dir === "UP" ? "green" : "orange"}>
+            {record.dir === "UP" ? "上行" : "下行"}
+          </Tag>
+          <Tag color="blue">{elementCount} 个要素</Tag>
+          {record.dir === "DOWN" ? <Tag color="cyan">{responseCount} 个应答要素</Tag> : null}
+        </Space>
+
+        {record.remark ? (
+          <div className="text-xs leading-5 text-slate-500">{record.remark}</div>
+        ) : (
+          <div className="text-xs leading-5 text-slate-400">暂无备注</div>
+        )}
+
+        <Space size={4} wrap className="mt-3">
+          {canAdd && (
+            <Button
+              size="small"
+              type="primary"
+              onClick={() => elementModalRef.current?.open("create", activeTypeId!, record.id)}
+            >
+              新增要素
+            </Button>
+          )}
+          {record.dir === "DOWN" && canEdit && (
+            <Button
+              size="small"
+              onClick={() => responseElementsModalRef.current?.open(activeTypeId!, record)}
+            >
+              应答要素
+            </Button>
+          )}
+        </Space>
+
+        <div className="mt-4 space-y-4">
+          <div>
+            <div className="mb-2 text-sm font-semibold text-slate-700">要素配置</div>
+            {renderGroupedElements(record.elements, record.id, record.dir, "暂无要素", {
+              listKind: "elements",
+            })}
+          </div>
+          {record.dir === "DOWN" && (
+            <div>
+              <div className="mb-2 text-sm font-semibold text-slate-700">应答要素</div>
+              {renderGroupedElements(record.responseElements, record.id, record.dir, "暂无应答要素", {
+                advancedActions: false,
+                listKind: "responseElements",
+              })}
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  };
+
+  const emptyFuncDesc = activeTypeId
+    ? "暂无功能码，点击右上角新增功能码"
+    : emptyTypeDesc;
 
   // 权限检查
   if (!canQuery) {
@@ -595,47 +622,13 @@ const SL651ConfigPage = () => {
           >
             {!activeTypeId ? (
               <Empty description={emptyTypeDesc} />
+            ) : loadingFuncs ? (
+              <Skeleton active paragraph={{ rows: 6 }} className="p-4" />
+            ) : funcs.length === 0 ? (
+              <Empty description={emptyFuncDesc} />
             ) : (
-              <div style={{ "--ant-table-header-border-radius": 0 } as React.CSSProperties}>
-                <Table
-                  dataSource={funcs}
-                  rowKey="id"
-                  pagination={false}
-                  loading={loadingFuncs}
-                  sticky
-                  scroll={{ x: "max-content" }}
-                  expandable={{
-                    expandedRowRender: (record) => (
-                      <Space direction="vertical" className="w-full p-4" size="large">
-                        <div>
-                          <div className="mb-2 text-sm font-semibold text-slate-700">要素配置</div>
-                          {renderGroupedElements(
-                            record.elements,
-                            record.id,
-                            record.dir,
-                            "暂无要素",
-                            { listKind: "elements" }
-                          )}
-                        </div>
-                        {record.dir === "DOWN" && (
-                          <div>
-                            <div className="mb-2 text-sm font-semibold text-slate-700">
-                              应答要素
-                            </div>
-                            {renderGroupedElements(
-                              record.responseElements,
-                              record.id,
-                              record.dir,
-                              "暂无应答要素",
-                              { advancedActions: false, listKind: "responseElements" }
-                            )}
-                          </div>
-                        )}
-                      </Space>
-                    ),
-                  }}
-                  columns={funcColumns}
-                />
+              <div className="grid gap-4 p-4" style={FUNC_CARD_GRID_STYLE}>
+                {funcs.map((record) => renderFuncCard(record))}
               </div>
             )}
           </Card>
