@@ -9,8 +9,6 @@
 #include "common/protocol/ProtocolAdapter.hpp"
 #include "common/utils/AppException.hpp"
 #include "common/utils/Constants.hpp"
-#include "modules/device/domain/Events.hpp"
-#include "common/domain/EventBus.hpp"
 
 #include <memory>
 #include <optional>
@@ -192,8 +190,6 @@ public:
             }
 
             LOG_DEBUG << "[SL651] Command sent to " << connOpt->clientAddr;
-            co_await EventBus::instance().publish(
-                CommandDispatched{configOpt->deviceId, req.funcCode, req.elements});
 
             co_return co_await awaitCommandResponse(req.deviceCode, req.timeoutMs, downCommandId);
 

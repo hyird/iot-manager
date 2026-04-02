@@ -308,6 +308,8 @@ public:
      * 支持两种路由：
      * - linkId > 0: 传统链路模式，通过 linkId 查找协议
      * - linkId = 0: Agent 模式，通过 deviceId 查找协议
+     *
+     * 指令下发成功后发布 CommandDispatched 事件，触发 Webhook 通知。
      */
     Task<CommandResult> sendCommand(const CommandRequest& req) {
         std::string protocol;
@@ -332,7 +334,16 @@ public:
             co_return CommandResult::error("协议未注册适配器");
         }
 
-        co_return co_await adapter->sendCommand(req);
+        auto result = co_await adapter->sendCommand(req);
+
+        if (result.ok()) {
+            int deviceId = req.deviceId > 0 ? req.deviceId :
+                DeviceCache::instance().findByCodeSync(req.deviceCode)->id;
+            co_await EventBus::instance().publish(
+                CommandDispatched{deviceId, req.funcCode, req.elements});
+        }
+
+        co_return result;
     }
 
     /**

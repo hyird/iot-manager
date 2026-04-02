@@ -4,6 +4,7 @@
 #include "../utils/AppException.hpp"
 #include "ProtocolCommandCoordinator.hpp"
 #include "ProtocolCommandStore.hpp"
+#include "common/cache/DeviceCache.hpp"
 
 #include <drogon/drogon.h>
 #include <json/json.h>
@@ -181,6 +182,22 @@ public:
      * @brief 检查设备是否在线（基于实际连接状态）
      */
     virtual bool isDeviceConnected(int /*deviceId*/) const { return false; }
+
+    /**
+     * @brief 获取设备的统一标识符（对外暴露）
+     *
+     * SL651: 直接返回 deviceCode（协议原生）
+     * Modbus/S7: 返回数据库中配置的 deviceCode，若为空则返回 "modbus:<id>" / "s7:<id>"
+     *
+     * 用于日志、WebSocket 推送、Webhook 等对外部暴露的场景，
+     * 确保各协议设备标识格式统一。
+     */
+    virtual std::string getDeviceCode(int deviceId) const {
+        auto device = DeviceCache::instance().findByIdSync(deviceId);
+        if (!device) return std::to_string(deviceId);
+        if (!device->deviceCode.empty()) return device->deviceCode;
+        return std::string(protocol()) + ":" + std::to_string(deviceId);
+    }
 
 protected:
     /**

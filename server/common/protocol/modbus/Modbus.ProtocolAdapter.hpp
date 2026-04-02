@@ -11,8 +11,6 @@
 #include "common/cache/DeviceConnectionCache.hpp"
 #include "common/protocol/ProtocolAdapter.hpp"
 #include "common/utils/Constants.hpp"
-#include "modules/device/domain/Events.hpp"
-#include "common/domain/EventBus.hpp"
 
 #include <atomic>
 #include <memory>
@@ -406,9 +404,6 @@ public:
                     downCommandId, "SEND_FAILED", "DTU 会话不可用或发送失败");
                 co_return CommandResult::sendFailed("DTU 会话不可用或发送失败");
             }
-
-            co_await EventBus::instance().publish(
-                CommandDispatched{deviceId, req.funcCode, req.elements});
 
             co_return co_await awaitCommandResponse(pendingKey, req.timeoutMs, downCommandId);
 
