@@ -150,10 +150,14 @@ endif()
 # Release 优化
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_CONFIGURATION_TYPES)
     if(MSVC)
-        add_compile_options("$<$<CONFIG:Release>:/O2>")
-        # MSVC LTCG (Link-Time Code Generation)
+        # /Ox = 完整优化（比 /O2 更激进）
+        add_compile_options("$<$<CONFIG:Release>:/Ox>")
+        # /GL = Whole Program Optimization（开启 LTO）
         add_compile_options("$<$<CONFIG:Release>:/GL>")
-        add_link_options("$<$<CONFIG:Release>:/LTCG>")
+        # /ipo = 显式启用链接时优化（/LTCG 已启用，此处显式声明）
+        add_link_options("$<$<CONFIG:Release>:/ipo>")
+        # /arch:AVX2 = 启用 AVX2 SIMD 指令集（现代 Intel/AMD CPU 支持）
+        add_compile_options("$<$<CONFIG:Release>:/arch:AVX2>")
     else()
         add_compile_options("$<$<CONFIG:Release>:-O3>")
         # LTO (Link-Time Optimization)

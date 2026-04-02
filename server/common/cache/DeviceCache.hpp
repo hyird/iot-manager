@@ -217,7 +217,7 @@ public:
 
     /**
      * @brief 按 ID 清除单个设备缓存（设备更新/删除时调用）
-     * 使用 swap-and-pop 技术实现 O(1) 删除
+     * 使用 swap-and-pop 技术实现 O(1) 删除，增量更新索引避免全量重建
      */
     void invalidateById(int deviceId) {
         std::unique_lock lock(mutex_);
@@ -229,20 +229,54 @@ public:
         size_t idx = indexIt->second;
         size_t lastIdx = devices_.size() - 1;
 
+        const auto& removedDevice = devices_[idx];
+
         deviceIndex_.erase(indexIt);
+        if (!removedDevice.deviceCode.empty()) {
+            deviceCodeIndex_.erase(removedDevice.deviceCode);
+        }
+        if (removedDevice.linkId > 0) {
+            auto linkIt = linkDeviceIndex_.find(removedDevice.linkId);
+            if (linkIt != linkDeviceIndex_.end()) {
+                auto& vec = linkIt->second;
+                vec.erase(std::remove(vec.begin(), vec.end(), idx), vec.end());
+                if (vec.empty()) {
+                    linkDeviceIndex_.erase(linkIt);
+                } else {
+                    for (auto& i : vec) {
+                        if (i > idx) --i;
+                    }
+                }
+            }
+        }
 
         if (idx != lastIdx) {
+            const auto& movedDevice = devices_[lastIdx];
             devices_[idx] = std::move(devices_[lastIdx]);
+            deviceIndex_[movedDevice.id] = idx;
+            if (!movedDevice.deviceCode.empty()) {
+                deviceCodeIndex_[movedDevice.deviceCode] = idx;
+            }
+            if (movedDevice.linkId > 0) {
+                auto linkIt = linkDeviceIndex_.find(movedDevice.linkId);
+                if (linkIt != linkDeviceIndex_.end()) {
+                    for (auto& i : linkIt->second) {
+                        if (i == lastIdx) {
+                            i = idx;
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         devices_.pop_back();
-        // 重建所有索引（swap-and-pop 后辅助索引失效）
-        rebuildIndicesLocked();
         LOG_DEBUG << "[DeviceCache] Device " << deviceId << " invalidated";
     }
 
     /**
      * @brief 按 ID 批量清除设备缓存
+     * 使用 swap-and-pop 技术，批量移除完成后重建索引
      */
     void invalidateByIds(const std::vector<int>& deviceIds) {
         std::unique_lock lock(mutex_);
@@ -269,8 +303,9 @@ public:
             removedCount++;
         }
 
-        // 重建辅助索引
-        rebuildIndicesLocked();
+        if (removedCount > 0) {
+            rebuildIndicesLocked();
+        }
         LOG_DEBUG << "[DeviceCache] " << removedCount << " devices invalidated";
     }
 

@@ -366,8 +366,13 @@ private:
     }
 
     /**
-     * @brief 批量写入 Redis（Pipeline 优化）
-     * 将所有 HSET 和 EXPIRE 命令合并到一次网络往返中
+     * @brief 批量写入 Redis
+     *
+     * TODO: 当前 Drogon Redis 客户端未暴露底层 sendCommand/recvResponse API，
+     * 每次 co_await execCommandCoro 会等待命令完成，无法真正实现 pipelining。
+     * 如需真正 pipelining，需要修改 Drogon Redis 客户端或考虑使用 hiredis 直接连接。
+     *
+     * 临时优化：将多个设备的数据合并到少量 Lua EVAL 调用中，减少网络往返。
      */
     Task<void> batchUpdateRedis(
         const std::map<int, DeviceRealtimeData>& dataMap,
@@ -379,12 +384,15 @@ private:
             throw std::runtime_error("Redis client not available");
         }
 
-        // 使用 Pipeline：先发送所有命令，最后一起获取结果
-        // Drogon Redis 客户端会自动批量发送多个命令
+        static const std::string luaScript =
+            "redis.call('HSET', KEYS[1], ARGV[2], ARGV[3]) "
+            "if ARGV[4] ~= '' then redis.call('SETEX', KEYS[2], ARGV[5], ARGV[4]) end "
+            "return 1";
 
-        // 写入设备实时数据
         for (const auto& [deviceId, deviceData] : dataMap) {
-            std::string key = std::string(REDIS_KEY_PREFIX) + std::to_string(deviceId);
+            std::string dataKey = std::string(REDIS_KEY_PREFIX) + std::to_string(deviceId);
+            std::string latestKey = std::string(REDIS_LATEST_PREFIX) + std::to_string(deviceId);
+            std::string latestTime = latestTimeMap.count(deviceId) ? latestTimeMap.at(deviceId) : "";
 
             for (const auto& [funcCode, funcData] : deviceData) {
                 Json::Value cacheData;
@@ -392,19 +400,14 @@ private:
                 cacheData["reportTime"] = funcData.reportTime;
                 std::string jsonStr = JsonHelper::serialize(cacheData);
 
-                co_await client->execCommandCoro("HSET %s %s %s",
-                    key.c_str(), funcCode.c_str(), jsonStr.c_str());
+                co_await client->execCommandCoro(
+                    "EVAL %s 2 %s %s %s %s %s %d",
+                    luaScript.c_str(),
+                    dataKey.c_str(), latestKey.c_str(),
+                    funcCode.c_str(), jsonStr.c_str(),
+                    latestTime.c_str(), REDIS_TTL
+                );
             }
-
-            // 设置过期时间
-            co_await client->execCommandCoro("EXPIRE %s %d", key.c_str(), REDIS_TTL);
-        }
-
-        // 批量写入最新上报时间
-        for (const auto& [deviceId, latestTime] : latestTimeMap) {
-            std::string key = std::string(REDIS_LATEST_PREFIX) + std::to_string(deviceId);
-            co_await client->execCommandCoro("SETEX %s %d %s",
-                key.c_str(), REDIS_TTL, latestTime.c_str());
         }
     }
 

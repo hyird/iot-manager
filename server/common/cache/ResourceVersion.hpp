@@ -24,18 +24,17 @@ public:
     }
 
     /**
-     * @brief 获取资源版本号
+     * @brief 获取资源版本号（读锁保护）
      * @param key 资源 key（如 "device", "user" 等）
+     * @return 版本号字符串，不存在则返回空字符串
      */
     std::string getVersion(const std::string& key) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock<std::shared_mutex> lock(sharedMutex_);
         auto it = versions_.find(key);
-        if (it == versions_.end()) {
-            std::string uuid = drogon::utils::getUuid();
-            versions_[key] = uuid;
-            return uuid;
+        if (it != versions_.end()) [[likely]] {
+            return it->second;
         }
-        return it->second;
+        return "";
     }
 
     /**
@@ -50,7 +49,7 @@ public:
     void incrementVersion(const std::string& key) {
         std::string uuid;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<std::shared_mutex> lock(sharedMutex_);
             uuid = drogon::utils::getUuid();
             versions_[key] = uuid;
         }
@@ -86,7 +85,7 @@ public:
      * @brief 重置所有版本号（清理缓存时调用）
      */
     void resetAll() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::shared_mutex> lock(sharedMutex_);
         for (auto& [key, version] : versions_) {
             version = drogon::utils::getUuid();
             LOG_DEBUG << "[ResourceVersion] " << key << " version reset to " << version;
@@ -106,7 +105,7 @@ public:
             std::string redisKey = "resource:version:" + key;
             auto value = co_await redis.get(redisKey);
             if (value && !value->empty()) {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::lock_guard<std::shared_mutex> lock(sharedMutex_);
                 versions_[key] = *value;
                 loaded++;
             }
@@ -132,7 +131,7 @@ private:
     }
 
     std::map<std::string, std::string> versions_;  // key -> UUID
-    std::mutex mutex_;
+    mutable std::shared_mutex sharedMutex_;
 };
 
 /**
