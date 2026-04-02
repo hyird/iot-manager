@@ -96,8 +96,8 @@ interface HistoryDataModalProps {
 
 // ========== 渲染辅助 ==========
 
-const renderElementValue = (el: Device.Element | undefined) => {
-  const result = resolveElementDisplay(el);
+const renderElementValue = (el: Device.Element | undefined, decimals?: number) => {
+  const result = resolveElementDisplay(el, decimals);
   if (result.type === "bits") {
     return (
       <Space size={4} wrap>
@@ -169,6 +169,16 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
   const [selectedElements, setSelectedElements] = useState<string[]>([]);
   const [chartRecords, setChartRecords] = useState<Device.HistoryElement[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
+  const currentElementDecimalsByName = useMemo(() => {
+    const map = new Map<string, number | undefined>();
+    for (const el of device?.elements || []) {
+      const name = el.name.trim();
+      if (name) {
+        map.set(name, el.decimals);
+      }
+    }
+    return map;
+  }, [device?.elements]);
 
   const getTimeRangeParams = useCallback(() => {
     const values = historyForm.getFieldsValue();
@@ -336,7 +346,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
         ellipsis: true,
         render: (els: ElementRowType["elements"]) => {
           const el = els.find((e) => e.name === name);
-          return renderElementValue(el);
+          return renderElementValue(el, currentElementDecimalsByName.get(name));
         },
       })),
       ...(hasDownData
@@ -361,7 +371,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
               render: (_: unknown, record: ElementRowType) => {
                 if (record.direction !== "DOWN" || !record.responseElements) return "-";
                 const el = record.responseElements.find((e) => e.name === name);
-                return renderElementValue(el);
+                return renderElementValue(el, currentElementDecimalsByName.get(name));
               },
             })),
           ]

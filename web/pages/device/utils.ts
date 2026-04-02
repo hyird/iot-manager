@@ -19,11 +19,7 @@ export const getDefaultTimeRange = () => [
  * 优先使用后端返回的 connected 字段（基于实际 TCP 连接状态），
  * 若 connected 未提供则回退到上报时间判断。
  */
-export const isOnline = (
-  connected?: boolean,
-  reportTime?: string,
-  onlineTimeout?: number
-) => {
+export const isOnline = (connected?: boolean, reportTime?: string, onlineTimeout?: number) => {
   // 优先使用后端的连接状态
   if (connected !== undefined) return connected;
 
@@ -42,6 +38,31 @@ export const formatReportTime = (reportTime?: string) => {
   const t = dayjs(reportTime);
   if (!t.isValid()) return "--";
   return t.format("YYYY-MM-DD HH:mm:ss");
+};
+
+const NUMERIC_TEXT_RE = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+/** 按小数位格式化要素值 */
+export const formatElementValue = (
+  value: string | number | null | undefined,
+  decimals?: number
+) => {
+  if (value === null || value === undefined || value === "") return "--";
+
+  if (typeof decimals === "number" && decimals >= 0) {
+    const numericValue =
+      typeof value === "number"
+        ? value
+        : NUMERIC_TEXT_RE.test(value.trim())
+          ? Number.parseFloat(value)
+          : Number.NaN;
+
+    if (Number.isFinite(numericValue)) {
+      return numericValue.toFixed(decimals);
+    }
+  }
+
+  return String(value);
 };
 
 /** 解析位映射字典配置 */
@@ -112,7 +133,8 @@ export const parseBitMapping = (
 
 /** 解析要素显示值（统一字典映射逻辑） */
 export const resolveElementDisplay = (
-  el: Device.Element | undefined
+  el: Device.Element | undefined,
+  decimals?: number
 ): { type: "text"; value: string } | { type: "bits"; labels: string[] } => {
   if (!el) return { type: "text", value: "---" };
 
@@ -123,22 +145,37 @@ export const resolveElementDisplay = (
         (item) => item && typeof item === "object" && item.key === rawValue
       );
       if (matchedItem) return { type: "text", value: matchedItem.label };
-      return { type: "text", value: el.unit ? `${el.value} ${el.unit}` : String(el.value) };
+      const displayValue = formatElementValue(el.value, decimals ?? el.decimals);
+      return {
+        type: "text",
+        value:
+          displayValue === "--"
+            ? displayValue
+            : el.unit
+              ? `${displayValue} ${el.unit}`
+              : displayValue,
+      };
     } else if (el.dictConfig.mapType === "BIT") {
       const matchedLabels = parseBitMapping(el.value, el.dictConfig);
       if (matchedLabels.length > 0) return { type: "bits", labels: matchedLabels };
-      return { type: "text", value: el.unit ? `${el.value} ${el.unit}` : String(el.value) };
+      const displayValue = formatElementValue(el.value, decimals ?? el.decimals);
+      return {
+        type: "text",
+        value:
+          displayValue === "--"
+            ? displayValue
+            : el.unit
+              ? `${displayValue} ${el.unit}`
+              : displayValue,
+      };
     }
   }
 
+  const displayValue = formatElementValue(el.value, decimals ?? el.decimals);
   return {
     type: "text",
     value:
-      el.value === null || el.value === undefined
-        ? "---"
-        : el.unit
-          ? `${el.value} ${el.unit}`
-          : String(el.value),
+      displayValue === "--" ? displayValue : el.unit ? `${displayValue} ${el.unit}` : displayValue,
   };
 };
 
