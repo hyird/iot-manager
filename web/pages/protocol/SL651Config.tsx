@@ -18,7 +18,7 @@ import {
   Tooltip,
   Tree,
 } from "antd";
-import { useCallback, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission, useProtocolImportExport } from "@/hooks";
 import { useProtocolConfigDelete, useProtocolConfigList, useProtocolConfigSave } from "@/services";
@@ -30,9 +30,9 @@ import {
   reorderItemsWithinGroupOrder,
 } from "./grouping";
 import {
+  SortableGroupItemList,
   SortableGroupSectionFrame,
   SortableGroupSectionList,
-  SortableGroupItemList,
 } from "./SortableGroup";
 import {
   DeviceTypeModal,
@@ -54,10 +54,6 @@ interface FuncWithElements extends SL651.Func {
   elements: SL651.Element[];
   responseElements?: SL651.Element[];
 }
-
-const FUNC_CARD_GRID_STYLE: CSSProperties = {
-  gridTemplateColumns: "repeat(auto-fill, minmax(460px, 1fr))",
-};
 
 const ELEMENT_CARD_GRID_STYLE: CSSProperties = {
   gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
@@ -187,8 +183,7 @@ const SL651ConfigPage = () => {
         const isSameOrder =
           nextItems.every((item, index) => item.id === currentItems[index]?.id) &&
           nextItems.every(
-            (item, index) =>
-              getGroupKey(item.group) === getGroupKey(currentItems[index]?.group)
+            (item, index) => getGroupKey(item.group) === getGroupKey(currentItems[index]?.group)
           );
         if (isSameOrder) return;
       }
@@ -277,9 +272,7 @@ const SL651ConfigPage = () => {
         <Flex justify="space-between" gap={12} align="start" className="mb-2">
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-slate-800">{element.name}</div>
-            <div className="mt-0.5 text-[12px] text-slate-400">
-              引导符 {element.guideHex}
-            </div>
+            <div className="mt-0.5 text-[12px] text-slate-400">引导符 {element.guideHex}</div>
           </div>
           <Space size={4} className="shrink-0">
             {dragHandle}
@@ -287,13 +280,18 @@ const SL651ConfigPage = () => {
               <Button
                 size="small"
                 type="link"
-                onClick={() => elementModalRef.current?.open("edit", activeTypeId!, funcId, element)}
+                onClick={() =>
+                  elementModalRef.current?.open("edit", activeTypeId!, funcId, element)
+                }
               >
                 编辑
               </Button>
             )}
             {canDelete && (
-              <Popconfirm title="确认删除？" onConfirm={() => handleDeleteElement(funcId, element.id)}>
+              <Popconfirm
+                title="确认删除？"
+                onConfirm={() => handleDeleteElement(funcId, element.id)}
+              >
                 <Button size="small" danger type="link">
                   删除
                 </Button>
@@ -361,7 +359,9 @@ const SL651ConfigPage = () => {
         sections={groups}
         className="w-full"
         disabled={saveMutation.isPending || !canEdit}
-        onOrderChange={(nextOrder) => handleReorderElements(funcId, listKind, nextOrder, elements || [])}
+        onOrderChange={(nextOrder) =>
+          handleReorderElements(funcId, listKind, nextOrder, elements || [])
+        }
         empty={<Empty description={emptyDescription} />}
       >
         {(group) => (
@@ -403,8 +403,8 @@ const SL651ConfigPage = () => {
         key={record.id}
         size="small"
         hoverable
-        className="h-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
-        styles={{ body: { padding: 12 } }}
+        className="w-full border-slate-200 shadow-[0_1px_4px_rgba(15,23,42,0.06)]"
+        styles={{ body: { padding: 16 } }}
       >
         <Flex justify="space-between" gap={12} align="start" className="mb-2">
           <div className="min-w-0 flex-1">
@@ -413,7 +413,11 @@ const SL651ConfigPage = () => {
           </div>
           <Space size={4} className="shrink-0">
             {canEdit && (
-              <Button size="small" type="link" onClick={() => funcModalRef.current?.open("edit", activeTypeId!, record)}>
+              <Button
+                size="small"
+                type="link"
+                onClick={() => funcModalRef.current?.open("edit", activeTypeId!, record)}
+              >
                 编辑
               </Button>
             )}
@@ -471,10 +475,16 @@ const SL651ConfigPage = () => {
           {record.dir === "DOWN" && (
             <div>
               <div className="mb-2 text-sm font-semibold text-slate-700">应答要素</div>
-              {renderGroupedElements(record.responseElements, record.id, record.dir, "暂无应答要素", {
-                advancedActions: false,
-                listKind: "responseElements",
-              })}
+              {renderGroupedElements(
+                record.responseElements,
+                record.id,
+                record.dir,
+                "暂无应答要素",
+                {
+                  advancedActions: false,
+                  listKind: "responseElements",
+                }
+              )}
             </div>
           )}
         </div>
@@ -482,9 +492,7 @@ const SL651ConfigPage = () => {
     );
   };
 
-  const emptyFuncDesc = activeTypeId
-    ? "暂无功能码，点击右上角新增功能码"
-    : emptyTypeDesc;
+  const emptyFuncDesc = activeTypeId ? "暂无功能码，点击右上角新增功能码" : emptyTypeDesc;
 
   // 权限检查
   if (!canQuery) {
@@ -627,7 +635,7 @@ const SL651ConfigPage = () => {
             ) : funcs.length === 0 ? (
               <Empty description={emptyFuncDesc} />
             ) : (
-              <div className="grid gap-4 p-4" style={FUNC_CARD_GRID_STYLE}>
+              <div className="flex flex-col gap-4 p-4">
                 {funcs.map((record) => renderFuncCard(record))}
               </div>
             )}
