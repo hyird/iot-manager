@@ -42,19 +42,6 @@ import type { Agent } from "@/types";
 const EdgeNodeTerminal = lazy(() => import("@/components/EdgeNodeTerminal"));
 const { Search } = Input;
 
-const configStatusConfig: Record<string, { label: string; color: string }> = {
-  idle: { label: "空闲", color: "default" },
-  pending: { label: "待应用", color: "processing" },
-  applied: { label: "已应用", color: "success" },
-  failed: { label: "失败", color: "error" },
-};
-
-const authStatusConfig: Record<string, { label: string; color: string }> = {
-  pending: { label: "待同意", color: "warning" },
-  approved: { label: "已同意", color: "success" },
-  rejected: { label: "已拒绝", color: "error" },
-};
-
 const eventLevelConfig: Record<string, { label: string; color: string }> = {
   info: { label: "信息", color: "blue" },
   success: { label: "成功", color: "success" },
@@ -285,9 +272,12 @@ function AgentCard({
   resyncLoading: boolean;
   deleteLoading: boolean;
 }) {
-  const configStatus = configStatusConfig[agent.config_status || "idle"] || configStatusConfig.idle;
-  const authStatus = authStatusConfig[agent.auth_status || "pending"] || authStatusConfig.pending;
   const isApproved = (agent.auth_status || "pending") === "approved";
+  const nodeStatus = !isApproved
+    ? { label: "待授权", color: "warning" as const }
+    : agent.is_online
+      ? { label: "在线", color: "success" as const }
+      : { label: "离线", color: "default" as const };
   const interfaces = getInterfaces(agent);
   const expectedEndpoints = getExpectedEndpoints(agent);
   const recentEvents = getRecentEvents(agent);
@@ -300,9 +290,7 @@ function AgentCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <div className="truncate text-base font-semibold text-slate-900">{agent.name}</div>
-            <Tag color={agent.is_online ? "success" : "default"}>
-              {agent.is_online ? "在线" : "离线"}
-            </Tag>
+            <Tag color={nodeStatus.color}>{nodeStatus.label}</Tag>
           </div>
           <div className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-xs text-slate-500">
             <span className="text-slate-400">SN</span>
@@ -314,15 +302,11 @@ function AgentCard({
               {agent.model || "-"}
             </Tag>
           </div>
-          <div className="mt-1 text-xs text-slate-500">
-            <Tag className="m-0" color="default">
-              {agent.version ? `版本 v${agent.version}` : "版本 -"}
-            </Tag>
-          </div>
         </div>
         <div className="flex items-center gap-2">
-          <Tag color={authStatus.color}>{authStatus.label}</Tag>
-          <Tag color={configStatus.color}>{configStatus.label}</Tag>
+          <Tag className="m-0" color="default">
+            {agent.version ? `v${agent.version}` : "v-"}
+          </Tag>
         </div>
       </div>
 
