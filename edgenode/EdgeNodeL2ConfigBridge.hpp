@@ -336,7 +336,7 @@ private:
                 case l2config::MsgType::TCP_DATA:
                     handleTcpData(frame);
                     break;
-                case l2config::MsgType::TCP_CLOSE:
+                case l2config::MsgType::TCP_CLOSE_MSG:
                     handleTcpClose(frame);
                     break;
                 default:
@@ -507,7 +507,7 @@ private:
         if (sendClose && rawFd_ >= 0) {
             auto frames = l2config::buildFrames(
                 conn.peerMac, conn.localMac,
-                l2config::MsgType::TCP_CLOSE, connId);
+                l2config::MsgType::TCP_CLOSE_MSG, connId);
             sendFrames(frames, conn.ifIndex);
         }
 

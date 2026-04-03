@@ -47,7 +47,7 @@ enum class MsgType : uint8_t {
     TCP_CONNECTED = 0x11,
     TCP_CONNECT_FAIL = 0x12,
     TCP_DATA = 0x13,
-    TCP_CLOSE = 0x14,
+    TCP_CLOSE_MSG = 0x14,
 };
 
 #pragma pack(push, 1)
