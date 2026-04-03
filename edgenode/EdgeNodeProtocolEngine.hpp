@@ -32,6 +32,7 @@ public:
         sl651Parsers_.clear();
         sl651ConfigsByEndpoint_.clear();
         modbusEndpoints_.clear();
+        s7Endpoints_.clear();
         endpointProtocols_.clear();
 
         for (const auto& ep : endpoints) {
@@ -42,12 +43,15 @@ public:
             } else if (ep.protocol == Constants::PROTOCOL_MODBUS) {
                 // 记录 Modbus 端点信息，供 Step 6 使用
                 modbusEndpoints_[ep.id] = ep;
+            } else if (ep.protocol == Constants::PROTOCOL_S7) {
+                s7Endpoints_[ep.id] = ep;
             }
         }
 
         std::cout << "[EdgeNodeProtocolEngine] Loaded config: "
                   << sl651ConfigsByEndpoint_.size() << " SL651 endpoint(s), "
-                  << modbusEndpoints_.size() << " Modbus endpoint(s)" << std::endl;
+                  << modbusEndpoints_.size() << " Modbus endpoint(s), "
+                  << s7Endpoints_.size() << " S7 endpoint(s)" << std::endl;
     }
 
     /**
@@ -103,6 +107,16 @@ public:
         std::vector<agent::DeviceEndpoint> result;
         result.reserve(modbusEndpoints_.size());
         for (const auto& [_, ep] : modbusEndpoints_) {
+            result.push_back(ep);
+        }
+        return result;
+    }
+
+    std::vector<agent::DeviceEndpoint> getS7Endpoints() const {
+        std::lock_guard lock(mutex_);
+        std::vector<agent::DeviceEndpoint> result;
+        result.reserve(s7Endpoints_.size());
+        for (const auto& [_, ep] : s7Endpoints_) {
             result.push_back(ep);
         }
         return result;
@@ -294,6 +308,9 @@ private:
 
     // Modbus: endpointId → DeviceEndpoint（Step 6 使用）
     std::unordered_map<std::string, agent::DeviceEndpoint> modbusEndpoints_;
+
+    // S7: endpointId → DeviceEndpoint
+    std::unordered_map<std::string, agent::DeviceEndpoint> s7Endpoints_;
 };
 
 using AgentProtocolEngine = EdgeNodeProtocolEngine;

@@ -6,6 +6,7 @@
 #include "EdgeNodeModbusPoller.hpp"
 #include "EdgeNodeNetworkConfigurator.hpp"
 #include "EdgeNodeProtocolEngine.hpp"
+#include "EdgeNodeS7Poller.hpp"
 #include "EdgeNodeShellManager.hpp"
 #include "EdgeNodeL2ConfigBridge.hpp"
 #include "EdgeNodeSerialLinkManager.hpp"
@@ -90,6 +91,12 @@ public:
                 loop_->queueInLoop([this]() { flushPendingData(); });
             }
         });
+        s7Poller_.setDataCallback([this](std::vector<ParsedFrameResult>&& results) {
+            dataStore_.storeBatch(results);
+            if (connected_) {
+                loop_->queueInLoop([this]() { flushPendingData(); });
+            }
+        });
 
         // 续传定时器：每秒尝试上报缓存的待发送数据
         loop_->runEvery(1.0, [this]() {
@@ -98,6 +105,10 @@ public:
         // Modbus 轮询定时器：每 200ms tick 一次
         loop_->runEvery(0.2, [this]() {
             modbusPoller_.tick();
+        });
+        // S7 轮询定时器：每 200ms tick 一次
+        loop_->runEvery(0.2, [this]() {
+            s7Poller_.tick();
         });
         // SQLite 缓存清理：每小时清理已确认的旧数据
         loop_->runEvery(3600.0, [this]() {
@@ -120,6 +131,7 @@ public:
         shellManager_.close();
         loop_->queueInLoop([this]() {
             modbusPoller_.clear();
+            s7Poller_.clear();
             if (wsClient_) {
                 wsClient_->stop();
             }
@@ -471,6 +483,8 @@ private:
 
             // 加载 Modbus 轮询配置
             modbusPoller_.loadConfig(protocolEngine_.getModbusEndpoints(), keyByEpId_);
+            // 加载 S7 轮询配置
+            s7Poller_.loadConfig(protocolEngine_.getS7Endpoints());
         } catch (const std::exception& e) {
             return rollbackEndpoints(previousEndpoints, e.what());
         }
@@ -795,6 +809,10 @@ private:
         if (protocol == Constants::PROTOCOL_MODBUS) {
             // Modbus 响应交给轮询器解析
             modbusPoller_.onData(epKey, clientAddr, data);
+            return;
+        }
+        if (protocol == Constants::PROTOCOL_S7) {
+            // S7 由轮询器主动采集，忽略被动上行帧
             return;
         }
 
@@ -1140,6 +1158,7 @@ private:
     // 协议引擎 + 数据缓存
     EdgeNodeProtocolEngine protocolEngine_;
     EdgeNodeModbusPoller modbusPoller_;
+    EdgeNodeS7Poller s7Poller_;
     EdgeNodeDataStore dataStore_;
     std::vector<agent::DeviceEndpoint> currentEndpoints_;  // 当前端点配置（含 protocolConfig）
 
