@@ -60,7 +60,48 @@ function getManagedDeviceCount(agent: Agent.Item) {
 }
 
 function getInterfaces(agent?: Agent.Item | null) {
-  return agent?.interfaces ?? agent?.capabilities?.interfaces ?? [];
+  const liveInterfaces = agent?.interfaces ?? agent?.capabilities?.interfaces ?? [];
+  const persistedNetworkConfig = agent?.network_config ?? [];
+  const merged = liveInterfaces.map((iface) => {
+    const config = persistedNetworkConfig.find((item) => item.name === iface.name);
+    if (!config) return iface;
+
+    return {
+      ...iface,
+      ip: config.ip ?? iface.ip,
+      prefix_length: config.prefix_length ?? iface.prefix_length,
+      gateway: config.gateway ?? iface.gateway,
+      bridge_ports: config.bridge_ports ?? iface.bridge_ports,
+      method:
+        config.mode === "static"
+          ? "static"
+          : config.mode === "dhcp"
+            ? "dhcp"
+            : iface.method,
+    };
+  });
+
+  const knownNames = new Set(merged.map((iface) => iface.name));
+  for (const config of persistedNetworkConfig) {
+    if (knownNames.has(config.name) || config.action === "delete") continue;
+    merged.push({
+      name: config.name,
+      display_name: config.name,
+      ip: config.ip,
+      prefix_length: config.prefix_length,
+      up: false,
+      gateway: config.gateway,
+      bridge_ports: config.bridge_ports,
+      method:
+        config.mode === "static"
+          ? "static"
+          : config.mode === "dhcp"
+            ? "dhcp"
+            : "unknown",
+    });
+  }
+
+  return merged;
 }
 
 function getExpectedEndpoints(agent: Agent.Item) {

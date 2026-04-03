@@ -81,6 +81,9 @@ public:
         loop_->runEvery(static_cast<double>(config_.heartbeatIntervalSec), [this]() {
             sendHeartbeat();
         });
+        loop_->runEvery(1.0, [this]() {
+            checkInterfaceChanges();
+        });
         loop_->runEvery(10.0, [this]() {
             sendStatusSnapshot();
         });
@@ -360,15 +363,19 @@ private:
         data["capabilities"] = AgentCapabilitiesCollector::collectCapabilities();
         data["runtime"] = buildRuntimePayload();
         sendMessage(agent::MESSAGE_HELLO, data);
+        lastInterfacesFingerprint_ = computeInterfacesFingerprint();
     }
 
-    void sendHeartbeat() {
+    void sendHeartbeat(bool includeCapabilities = false) {
         if (!connected_) {
             return;
         }
 
         Json::Value data(Json::objectValue);
         data["version"] = IOT_AGENT_VERSION;
+        if (includeCapabilities) {
+            data["capabilities"] = AgentCapabilitiesCollector::collectCapabilities();
+        }
         data["runtime"] = buildRuntimePayload();
         sendMessage(agent::MESSAGE_HEARTBEAT, data);
     }
@@ -982,6 +989,51 @@ private:
         return runtime;
     }
 
+    void checkInterfaceChanges() {
+        const auto currentFingerprint = computeInterfacesFingerprint();
+        if (currentFingerprint.empty() || currentFingerprint == lastInterfacesFingerprint_) {
+            return;
+        }
+
+        lastInterfacesFingerprint_ = currentFingerprint;
+        std::cout << "[Agent] network interfaces changed, reporting snapshot" << std::endl;
+        sendHeartbeat(true);
+    }
+
+    std::string computeInterfacesFingerprint() const {
+        const auto capabilities = AgentCapabilitiesCollector::collectCapabilities();
+        const auto& interfaces = capabilities["interfaces"];
+        if (!interfaces.isArray()) {
+            return {};
+        }
+
+        std::string fingerprint;
+        for (const auto& iface : interfaces) {
+            fingerprint += iface.get("name", "").asString();
+            fingerprint += '|';
+            fingerprint += iface.get("up", false).asBool() ? "1" : "0";
+            fingerprint += '|';
+            fingerprint += iface.get("ip", "").asString();
+            fingerprint += '|';
+            fingerprint += std::to_string(iface.get("prefix_length", 0).asInt());
+            fingerprint += '|';
+            fingerprint += iface.get("method", "").asString();
+            fingerprint += '|';
+            fingerprint += iface.get("gateway", "").asString();
+            fingerprint += '|';
+
+            const auto& ports = iface["bridge_ports"];
+            if (ports.isArray()) {
+                for (const auto& port : ports) {
+                    fingerprint += port.asString();
+                    fingerprint += ',';
+                }
+            }
+            fingerprint += ';';
+        }
+        return fingerprint;
+    }
+
     // ==================== 验证 ====================
 
     std::string validateEndpoints(const std::vector<agent::DeviceEndpoint>& endpoints,
@@ -1154,6 +1206,7 @@ private:
     bool authFailed_ = false;
     int agentId_ = 0;
     agent::ConfigVersion lastAppliedConfigVersion_ = 0;
+    std::string lastInterfacesFingerprint_;
 
     // 协议引擎 + 数据缓存
     EdgeNodeProtocolEngine protocolEngine_;

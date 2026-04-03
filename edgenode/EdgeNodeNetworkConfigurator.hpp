@@ -342,6 +342,7 @@ public:
         }
         return {};
 #else
+        (void)targetInterfaces;
         return {};
 #endif
     }
@@ -370,7 +371,7 @@ private:
 
         auto error = writeFile(path, content);
         if (!error.empty()) return error;
-        return runCommand("networkctl reload");
+        return reloadAndActivateNetworkd({interfaceName});
     }
 
     static std::string applyDhcpNetworkd(const std::string& interfaceName) {
@@ -381,7 +382,7 @@ private:
 
         auto error = writeFile(path, content);
         if (!error.empty()) return error;
-        return runCommand("networkctl reload");
+        return reloadAndActivateNetworkd({interfaceName});
     }
 
     static std::string networkdConfigPath(const std::string& interfaceName) {
@@ -456,7 +457,7 @@ private:
             }
         }
 
-        error = runCommand("networkctl reload");
+        error = reloadAndActivateNetworkd(targetInterfaces);
         if (!error.empty()) return error;
 
         for (const auto& bridge : bridges) {
@@ -744,7 +745,7 @@ private:
             if (!error.empty()) return "设置端口 " + port + " 失败: " + error;
         }
 
-        return runCommand("networkctl reload");
+        return reloadAndActivateNetworkd(collectTargets(bridgeName, ports));
     }
 
     static std::string deleteBridgeNetworkd(const std::string& bridgeName) {
@@ -756,7 +757,7 @@ private:
         // 删除桥的 .netdev 和 .network
         runCommand("rm -f " + networkdNetdevPath(bridgeName));
         runCommand("rm -f " + networkdConfigPath(bridgeName));
-        auto error = runCommand("networkctl reload");
+        auto error = reloadAndActivateNetworkd({bridgeName});
         if (!error.empty()) return error;
         // networkctl reload 不会立刻删掉接口，需手动
         runCommand("ip link del " + bridgeName + " 2>/dev/null");
@@ -781,7 +782,7 @@ private:
                 if (!error.empty()) return "设置端口 " + port + " 失败: " + error;
             }
         }
-        return runCommand("networkctl reload");
+        return reloadAndActivateNetworkd(collectTargets(bridgeName, desiredPorts));
     }
 
     // ---- netplan 桥接 ----
@@ -1106,6 +1107,32 @@ private:
 #endif
         if (output.empty()) return "系统网络命令执行失败: " + command;
         return output;
+    }
+
+    static std::vector<std::string> collectTargets(const std::string& bridgeName,
+                                                   const std::vector<std::string>& ports) {
+        std::vector<std::string> targets;
+        if (isSafeInterfaceName(bridgeName)) {
+            targets.push_back(bridgeName);
+        }
+        for (const auto& port : ports) {
+            if (isSafeInterfaceName(port)) {
+                targets.push_back(port);
+            }
+        }
+        return targets;
+    }
+
+    static std::string reloadAndActivateNetworkd(const std::vector<std::string>& interfaces) {
+        auto error = runCommand("networkctl reload");
+        if (!error.empty()) return error;
+
+        for (const auto& iface : interfaces) {
+            if (!isSafeInterfaceName(iface)) continue;
+            runCommand("networkctl reconfigure " + iface + " 2>/dev/null");
+            runCommand("networkctl up " + iface + " 2>/dev/null");
+        }
+        return {};
     }
 
     static std::string runCommandOutputImpl(const std::string& command) {
