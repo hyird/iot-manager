@@ -184,6 +184,8 @@ public:
             bool sent = LinkTransportFacade::instance().sendToClient(
                 connOpt->linkId, connOpt->clientAddr, data);
             if (!sent) {
+                LinkTransportFacade::instance().forceDisconnectServerClient(
+                    connOpt->linkId, connOpt->clientAddr);
                 co_await runtimeContext_.commandStore.updateCommandStatus(
                     downCommandId, "SEND_FAILED", "TCP发送失败");
                 co_return CommandResult::sendFailed("TCP发送失败");

@@ -375,6 +375,11 @@ inline bool ModbusSessionEngine::sendFrame(
         LOG_WARN << "[Modbus][" << opLabel << "] TX failed " << device.deviceName
                  << "(id=" << device.deviceId << ") to " << session.clientAddr
                  << ", " << frame.size() << "B";
+        if (device.linkMode == Constants::LINK_MODE_TCP_CLIENT) {
+            LinkTransportFacade::instance().forceDisconnectClient(device.linkId);
+        } else {
+            LinkTransportFacade::instance().forceDisconnectServerClient(device.linkId, session.clientAddr);
+        }
     }
 
     return ok;

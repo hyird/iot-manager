@@ -616,6 +616,17 @@ public:
      * @brief 断开链路下指定 clientAddr 的 Server 连接（用于 DTU 重绑定时关闭旧连接）
      */
     void disconnectServerClient(int linkId, const std::string& clientAddr) {
+        forceDisconnectServerClient(linkId, clientAddr);
+    }
+
+    /**
+     * @brief 强制断开链路下指定 clientAddr 的 Server 连接，并立即通知上层
+     *
+     * 用于业务层判定连接已经不可用的场景，例如发送失败。
+     * 即使底层 socket 还停留在 FIN_WAIT1，也会先触发一次连接断开回调，
+     * 让注册表和会话状态立即清理。
+     */
+    void forceDisconnectServerClient(int linkId, const std::string& clientAddr) {
         std::shared_ptr<LinkRuntime> runtime;
         {
             std::shared_lock lock(mutex_);
@@ -624,13 +635,49 @@ public:
             runtime = it->second;
         }
 
-        std::lock_guard<std::mutex> connLock(runtime->connMutex);
-        for (const auto& conn : runtime->serverConns) {
-            if (conn->connected() && conn->peerAddr().toIpPort() == clientAddr) {
-                LOG_INFO << "[Link " << linkId << "] Force disconnect old DTU session: " << clientAddr;
-                conn->shutdown();
-                return;
+        {
+            std::lock_guard<std::mutex> connLock(runtime->connMutex);
+            for (const auto& conn : runtime->serverConns) {
+                if (conn->connected() && conn->peerAddr().toIpPort() == clientAddr) {
+                    LOG_INFO << "[Link " << linkId << "] Force disconnect old DTU session: " << clientAddr;
+                    conn->shutdown();
+                    break;
+                }
             }
+        }
+
+        if (connectionCallback_) {
+            connectionCallback_(linkId, clientAddr, false);
+        }
+    }
+
+    /**
+     * @brief 强制断开 TCP Client 链路，并立即通知上层
+     *
+     * 用于业务层判定链路已失效的场景，例如发送失败。
+     * client 模式只有一个远端地址，因此按 linkId 即可定位。
+     */
+    void forceDisconnectClient(int linkId) {
+        std::shared_ptr<LinkRuntime> runtime;
+        std::string remoteAddr;
+        {
+            std::shared_lock lock(mutex_);
+            auto it = runtimes_.find(linkId);
+            if (it == runtimes_.end()) return;
+            runtime = it->second;
+        }
+
+        {
+            std::lock_guard<std::mutex> connLock(runtime->connMutex);
+            if (runtime->clientConn) {
+                remoteAddr = runtime->clientConn->peerAddr().toIpPort();
+            } else if (!runtime->info.ip.empty() && runtime->info.port > 0) {
+                remoteAddr = runtime->info.ip + ":" + std::to_string(runtime->info.port);
+            }
+        }
+
+        if (!remoteAddr.empty() && connectionCallback_) {
+            connectionCallback_(linkId, remoteAddr, false);
         }
     }
 
@@ -639,6 +686,7 @@ public:
      */
     void disconnectServerClients(int linkId) {
         std::shared_ptr<LinkRuntime> runtime;
+        std::vector<std::string> disconnectedClients;
         {
             std::shared_lock lock(mutex_);
             auto it = runtimes_.find(linkId);
@@ -646,17 +694,26 @@ public:
             runtime = it->second;
         }
 
-        std::lock_guard<std::mutex> connLock(runtime->connMutex);
         int count = 0;
-        for (const auto& conn : runtime->serverConns) {
-            if (conn->connected()) {
-                conn->shutdown();
-                ++count;
+        {
+            std::lock_guard<std::mutex> connLock(runtime->connMutex);
+            for (const auto& conn : runtime->serverConns) {
+                if (conn->connected()) {
+                    disconnectedClients.push_back(conn->peerAddr().toIpPort());
+                    conn->shutdown();
+                    ++count;
+                }
             }
         }
         if (count > 0) {
             LOG_INFO << "[Link " << linkId << "] Disconnected " << count
                      << " server clients for re-registration";
+        }
+
+        if (connectionCallback_) {
+            for (const auto& clientAddr : disconnectedClients) {
+                connectionCallback_(linkId, clientAddr, false);
+            }
         }
     }
 

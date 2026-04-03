@@ -2093,14 +2093,15 @@ private:
                 return kS7Ok;
             }
 
+            LinkTransportFacade::instance().disconnectServerClients(requestLinkId);
             std::lock_guard runtimeLock(runtime->mutex);
-            runtime->pendingBridgeToDtu.push_back(std::move(bytes));
             runtime->bridgeDiscoveryInFlight = false;
             runtime->bridgeDiscoveryStartedAt = {};
-            LOG_WARN << "[S7][Direct] Failed to forward discovery payload, queued for retry: deviceId="
+            runtime->pendingBridgeToDtu.clear();
+            LOG_WARN << "[S7][Direct] Failed to forward discovery payload, bridge session closed: deviceId="
                      << deviceId << ", linkId=" << requestLinkId
-                     << ", bytes=" << runtime->pendingBridgeToDtu.back().size()
-                     << ", pendingToDtu=" << runtime->pendingBridgeToDtu.size();
+                     << ", bytes=" << bytes.size()
+                     << ", pendingToDtu=0";
             return kS7Ok;
         }
 
@@ -2108,13 +2109,16 @@ private:
             return kS7Ok;
         }
 
+        LinkTransportFacade::instance().forceDisconnectServerClient(bridgeLinkId, bridgeClientAddr);
         std::lock_guard runtimeLock(runtime->mutex);
-        runtime->pendingBridgeToDtu.push_back(std::move(bytes));
-        LOG_WARN << "[S7][Direct] Failed to forward payload, queued for retry: deviceId="
+        runtime->pendingBridgeToDtu.clear();
+        runtime->bridgeDiscoveryInFlight = false;
+        runtime->bridgeDiscoveryStartedAt = {};
+        LOG_WARN << "[S7][Direct] Failed to forward payload, bridge session closed: deviceId="
                  << deviceId << ", linkId=" << bridgeLinkId
                  << ", client=" << bridgeClientAddr
-                 << ", bytes=" << runtime->pendingBridgeToDtu.back().size()
-                 << ", pendingToDtu=" << runtime->pendingBridgeToDtu.size();
+                 << ", bytes=" << bytes.size()
+                 << ", pendingToDtu=0";
         return kS7Ok;
     }
 
@@ -2299,9 +2303,15 @@ private:
             return remaining;
         };
 
+        bool transportFailed = false;
         auto remainingToDtu = sendPending(pendingToDtu, [&](const std::vector<uint8_t>& frame) {
-            return LinkTransportFacade::instance().sendToClient(
+            const bool sent = LinkTransportFacade::instance().sendToClient(
                 bridgeLinkId, bridgeClientAddr, bytesToString(frame));
+            if (!sent) {
+                transportFailed = true;
+                LinkTransportFacade::instance().forceDisconnectServerClient(bridgeLinkId, bridgeClientAddr);
+            }
+            return sent;
         });
 
         const std::size_t flushedToDtu = queuedToDtu - remainingToDtu.size();
@@ -2310,6 +2320,10 @@ private:
                      << ", dtu=" << flushedToDtu << "/" << queuedToDtu
                      << ", linkId=" << bridgeLinkId
                      << ", client=" << bridgeClientAddr;
+        }
+
+        if (transportFailed) {
+            return;
         }
 
         if (!remainingToDtu.empty()) {

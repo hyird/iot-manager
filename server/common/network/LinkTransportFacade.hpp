@@ -135,6 +135,20 @@ public:
         TcpLinkManager::instance().disconnectServerClient(linkId, clientAddr);
     }
 
+    void forceDisconnectServerClient(int linkId, const std::string& clientAddr) const {
+        if (isAgentManaged(linkId)) {
+            return;
+        }
+        TcpLinkManager::instance().forceDisconnectServerClient(linkId, clientAddr);
+    }
+
+    void forceDisconnectClient(int linkId) const {
+        if (isAgentManaged(linkId)) {
+            return;
+        }
+        TcpLinkManager::instance().forceDisconnectClient(linkId);
+    }
+
     void disconnectServerClients(int linkId) const {
         if (isAgentManaged(linkId)) {
             return;
