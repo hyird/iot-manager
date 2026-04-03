@@ -187,8 +187,8 @@ public:
             status_ = data["status"].asString();
             markDirty();
         }
-        if (data.isMember("departmentId")) {
-            departmentId_ = data["departmentId"].isNull() ? 0 : data["departmentId"].asInt();
+        if (hasDepartmentId(data)) {
+            departmentId_ = readDepartmentId(data);
             markDirty();
         }
         if (data.isMember("password") && !data["password"].asString().empty()) {
@@ -315,7 +315,7 @@ private:
         nickname_ = data.get("nickname", "").asString();
         phone_ = data.get("phone", "").asString();
         email_ = data.get("email", "").asString();
-        departmentId_ = data.get("departmentId", 0).asInt();
+        departmentId_ = readDepartmentId(data);
         status_ = data.get("status", Constants::USER_STATUS_ENABLED).asString();
     }
 
@@ -360,6 +360,28 @@ private:
         } catch (...) {
             departmentName_ = "";
         }
+    }
+
+    /**
+     * @brief 判断请求体中是否包含部门字段
+     *
+     * 兼容前端常见的两种命名：departmentId / department_id
+     */
+    static bool hasDepartmentId(const Json::Value& data) {
+        return data.isMember("departmentId") || data.isMember("department_id");
+    }
+
+    /**
+     * @brief 读取部门 ID，兼容驼峰和下划线命名
+     */
+    static int readDepartmentId(const Json::Value& data) {
+        if (data.isMember("departmentId")) {
+            return data["departmentId"].isNull() ? 0 : data["departmentId"].asInt();
+        }
+        if (data.isMember("department_id")) {
+            return data["department_id"].isNull() ? 0 : data["department_id"].asInt();
+        }
+        return 0;
     }
 
     /**
