@@ -209,7 +209,7 @@ private:
         if (running_) {
             auto frames = l2config::buildFrames(
                 targetMac_, transport_.localMac(),
-                l2config::MsgType::TCP_CLOSE, connId_);
+                l2config::MsgType::TCP_CLOSE_MSG, connId_);
             transport_.sendFrames(frames);
         }
 
@@ -254,7 +254,7 @@ private:
                 }
                 break;
 
-            case l2config::MsgType::TCP_CLOSE:
+            case l2config::MsgType::TCP_CLOSE_MSG:
                 if (frame.header.seqNum == connId_) {
                     std::cout << "[L2Tunnel] device closed connection" << std::endl;
                     closeClient();
