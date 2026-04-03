@@ -62,6 +62,8 @@ const eventLevelConfig: Record<string, { label: string; color: string }> = {
   error: { label: "错误", color: "error" },
 };
 
+const actionSeparatorClass = "inline-block h-3.5 mx-1 border-l border-gray-300";
+
 function formatConfigVersion(value?: number) {
   return value && value > 0 ? String(value) : "-";
 }
@@ -95,6 +97,19 @@ function formatEndpointDesc(ep: Agent.Endpoint) {
   }
   const addr = [ep.ip, ep.port].filter(Boolean).join(":");
   return [ep.mode, addr].filter(Boolean).join(" · ");
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return "-";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
 function SummaryCard({
@@ -289,10 +304,20 @@ function AgentCard({
               {agent.is_online ? "在线" : "离线"}
             </Tag>
           </div>
-          <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
-            <span>SN: {agent.sn || agent.code}</span>
-            {agent.model && <span>{agent.model}</span>}
-            {agent.version && <span>v{agent.version}</span>}
+          <div className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-xs text-slate-500">
+            <span className="text-slate-400">SN</span>
+            <Tag className="m-0 w-fit max-w-full font-mono tracking-wide text-slate-600 break-all whitespace-normal">
+              {agent.sn || agent.code}
+            </Tag>
+            <span className="text-slate-400">型号</span>
+            <Tag className="m-0 w-fit max-w-full text-slate-600 break-words whitespace-normal">
+              {agent.model || "-"}
+            </Tag>
+          </div>
+          <div className="mt-1 text-xs text-slate-500">
+            <Tag className="m-0" color="default">
+              {agent.version ? `版本 v${agent.version}` : "版本 -"}
+            </Tag>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -403,27 +428,36 @@ function AgentCard({
             </Button>
           </div>
           <div className="mt-1 truncate text-xs text-slate-600">{recentEvents[0].message}</div>
+          <div className="mt-1">
+            <Tag className="m-0 text-[11px]" color="default">
+              {formatDateTime(recentEvents[0].ts)}
+            </Tag>
+          </div>
         </div>
       )}
 
       {/* Actions */}
       {canEdit && (
-        <Flex gap={4} className="mt-4 border-t border-slate-100 pt-3">
+        <Flex align="center" justify="space-around" className="mt-4 w-full border-t border-slate-100 pt-3">
           {!isApproved && (
-            <Tooltip title="同意接入">
-              <Button
-                type="text"
-                size="small"
-                onClick={onApprove}
-                loading={approveLoading}
-              >
-                同意
-              </Button>
-            </Tooltip>
+            <>
+              <Tooltip title="同意接入">
+                <Button
+                  type="text"
+                  size="small"
+                  onClick={onApprove}
+                  loading={approveLoading}
+                >
+                  同意
+                </Button>
+              </Tooltip>
+              <span className={actionSeparatorClass} />
+            </>
           )}
           <Tooltip title="编辑">
             <Button type="text" size="small" icon={<EditOutlined />} onClick={onEdit} />
           </Tooltip>
+          <span className={actionSeparatorClass} />
           <Tooltip title="重新同步">
             <Button
               type="text"
@@ -434,6 +468,7 @@ function AgentCard({
               onClick={onResync}
             />
           </Tooltip>
+          <span className={actionSeparatorClass} />
           <Tooltip title="终端">
             <Button
               type="text"
@@ -443,9 +478,11 @@ function AgentCard({
               onClick={onOpenTerminal}
             />
           </Tooltip>
+          <span className={actionSeparatorClass} />
           <Tooltip title="事件记录">
             <Button type="text" size="small" icon={<HistoryOutlined />} onClick={onViewEvents} />
           </Tooltip>
+          <span className={actionSeparatorClass} />
           <Popconfirm
             title="确认删除"
             description={`确定删除 Agent「${agent.name}」？此操作不可恢复。`}
@@ -1190,7 +1227,9 @@ export default function EdgeNodePage() {
                       <Tag color={eventLevel.color}>{eventLevel.label}</Tag>
                       <span className="text-xs text-slate-500">{event.type}</span>
                     </Space>
-                    <div className="text-xs text-slate-400">{event.ts || "-"}</div>
+                    <Tag className="m-0 text-[11px]" color="default">
+                      {formatDateTime(event.ts)}
+                    </Tag>
                   </div>
                   <div className="mt-2 text-sm text-slate-700">{event.message}</div>
                   {event.detail ? (

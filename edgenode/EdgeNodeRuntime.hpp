@@ -537,6 +537,28 @@ private:
         std::cout << "[Agent] network:config received, " << interfaces.size()
                   << " interface(s), backend=" << AgentNetworkConfigurator::backendName(backend) << std::endl;
 
+        // 先清理旧的 iot 网络配置文件，避免历史残留与当前配置冲突
+        if (backend != AgentNetworkConfigurator::Backend::NONE) {
+            std::vector<std::string> targetInterfaces;
+            targetInterfaces.reserve(static_cast<size_t>(interfaces.size()) * 3);
+            for (const auto& iface : interfaces) {
+                const auto name = iface.get("name", "").asString();
+                if (!name.empty()) targetInterfaces.push_back(name);
+                if (iface.isMember("bridge_ports") && iface["bridge_ports"].isArray()) {
+                    for (const auto& p : iface["bridge_ports"]) {
+                        const auto port = p.asString();
+                        if (!port.empty()) targetInterfaces.push_back(port);
+                    }
+                }
+            }
+            auto cleanupError = AgentNetworkConfigurator::cleanupManagedConfigs(targetInterfaces);
+            if (!cleanupError.empty()) {
+                std::cout << "[ERROR] " << "[Agent] cleanup old network config failed: " << cleanupError << std::endl;
+                sendNetworkConfigFailed("cleanup", cleanupError);
+                return;
+            }
+        }
+
         for (const auto& iface : interfaces) {
             const auto name = iface.get("name", "").asString();
             const auto type = iface.get("type", "ethernet").asString();

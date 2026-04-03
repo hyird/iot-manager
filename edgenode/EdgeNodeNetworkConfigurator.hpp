@@ -3,7 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <set>
+#include <sstream>
+#include <vector>
 
 #ifdef __linux__
 #include <arpa/inet.h>
@@ -316,6 +320,32 @@ public:
 #endif
     }
 
+    /**
+     * @brief 清理 iot 管理的历史网络配置，避免残留配置与新配置冲突
+     *
+     * - systemd-networkd: 删除 /etc/systemd/network/90-iot-*.network|*.netdev
+     * - netplan: 删除 /etc/netplan/90-iot-*.yaml
+     * - ifupdown: 删除 /etc/network/interfaces.d/iot-*
+     */
+    static std::string cleanupManagedConfigs(const std::vector<std::string>& targetInterfaces = {}) {
+#ifdef __linux__
+        const auto backend = detectBackend();
+        switch (backend) {
+            case Backend::NETWORKD:
+                return cleanupManagedConfigsNetworkd(targetInterfaces);
+            case Backend::NETPLAN:
+                return cleanupManagedConfigsNetplan();
+            case Backend::IFUPDOWN:
+                return cleanupManagedConfigsIfupdown();
+            case Backend::NONE:
+                return {};
+        }
+        return {};
+#else
+        return {};
+#endif
+    }
+
 private:
     // ==================== systemd-networkd ====================
 
@@ -356,6 +386,83 @@ private:
 
     static std::string networkdConfigPath(const std::string& interfaceName) {
         return "/etc/systemd/network/90-iot-" + interfaceName + ".network";
+    }
+
+    static std::string cleanupManagedConfigsNetworkd(const std::vector<std::string>& targetInterfaces) {
+        namespace fs = std::filesystem;
+
+        // 先记录历史桥名，reload 后主动删接口（networkctl reload 不保证立即删）
+        std::vector<std::string> bridges;
+        std::set<std::string> targets;
+        for (const auto& name : targetInterfaces) {
+            if (isSafeInterfaceName(name)) targets.insert(name);
+        }
+
+        // 1) 删除所有 iot 托管文件
+        const auto netdevList = runCommandOutputImpl("ls /etc/systemd/network/90-iot-*.netdev 2>/dev/null");
+        for (const auto& path : splitLines(netdevList)) {
+            std::ifstream ifs(path);
+            if (!ifs) continue;
+            std::string line;
+            while (std::getline(ifs, line)) {
+                if (line.rfind("Name=", 0) == 0) {
+                    const auto bridgeName = line.substr(5);
+                    if (!bridgeName.empty() && isSafeInterfaceName(bridgeName)) {
+                        bridges.push_back(bridgeName);
+                    }
+                    break;
+                }
+            }
+        }
+
+        auto error = runCommand("rm -f /etc/systemd/network/90-iot-*.network /etc/systemd/network/90-iot-*.netdev");
+        if (!error.empty()) return error;
+
+        // 2) 删除与本次目标接口同名匹配的“其它”networkd文件（非 90-iot-*）
+        if (!targets.empty()) {
+            for (const auto& entry : fs::directory_iterator("/etc/systemd/network")) {
+                if (!entry.is_regular_file()) continue;
+                const auto p = entry.path();
+                const auto filename = p.filename().string();
+                const auto ext = p.extension().string();
+                if (ext != ".network" && ext != ".netdev") continue;
+                if (filename.rfind("90-iot-", 0) == 0) continue;
+
+                std::ifstream ifs(p.string());
+                if (!ifs) continue;
+                std::string line;
+                bool shouldDelete = false;
+                while (std::getline(ifs, line)) {
+                    if (line.rfind("Name=", 0) == 0) {
+                        auto name = line.substr(5);
+                        if (targets.count(name) > 0) {
+                            shouldDelete = true;
+                            if (ext == ".netdev") bridges.push_back(name);
+                            break;
+                        }
+                    }
+                    if (line.rfind("Bridge=", 0) == 0) {
+                        auto bridgeName = line.substr(7);
+                        if (targets.count(bridgeName) > 0) {
+                            shouldDelete = true;
+                            break;
+                        }
+                    }
+                }
+                if (shouldDelete) {
+                    std::error_code ec;
+                    fs::remove(p, ec);
+                }
+            }
+        }
+
+        error = runCommand("networkctl reload");
+        if (!error.empty()) return error;
+
+        for (const auto& bridge : bridges) {
+            runCommand("ip link del " + bridge + " 2>/dev/null");
+        }
+        return {};
     }
 
     // ==================== netplan ====================
@@ -407,6 +514,12 @@ private:
             "      dhcp4: true\n";
 
         auto error = writeFile(path, content);
+        if (!error.empty()) return error;
+        return runCommand("netplan apply");
+    }
+
+    static std::string cleanupManagedConfigsNetplan() {
+        auto error = runCommand("rm -f /etc/netplan/90-iot-*.yaml");
         if (!error.empty()) return error;
         return runCommand("netplan apply");
     }
@@ -559,6 +672,15 @@ private:
 
         runCommand("ifdown " + interfaceName + " 2>/dev/null");
         return runCommand("ifup " + interfaceName);
+    }
+
+    static std::string cleanupManagedConfigsIfupdown() {
+        auto error = runCommand("rm -f /etc/network/interfaces.d/iot-*");
+        if (!error.empty()) return error;
+        if (runCommand("which ifreload > /dev/null 2>&1").empty()) {
+            return runCommand("ifreload -a");
+        }
+        return {};
     }
 
     // ==================== 桥接实现 ====================
