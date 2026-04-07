@@ -98,4 +98,5 @@
 2. `onConnectionChanged()` 只处理连接生命周期，不负责业务解析。
 3. `onDataReceived()` 只处理输入报文，不负责配置重建。
 4. 共享逻辑放到基类 helper 或公共工具中，协议特有逻辑保留在各自适配器内。
+5. 仅在明确的 TCP 发送失败场景下，才允许服务端主动断开连接；配置更新、session 重绑、注册变化、reload、维护任务等都不应主动踢掉 TCP server client。
 
