@@ -2,7 +2,7 @@
  * 设备管理 Query Hooks
  */
 
-import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
+import { type UseQueryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useRef } from "react";
 import type { Device } from "@/types";
 import { deepEqual } from "@/utils/deepEqual";
@@ -56,6 +56,71 @@ const areRealtimeEntriesEqual = (previous?: Device.Realtime, current?: Device.Re
   );
 };
 
+const getReportTimeMs = (reportTime?: string) => {
+  if (!reportTime) return Number.NEGATIVE_INFINITY;
+  const ts = new Date(reportTime).getTime();
+  return Number.isNaN(ts) ? Number.NEGATIVE_INFINITY : ts;
+};
+
+const shouldPreferCurrentRealtime = (current?: Device.Realtime, fetched?: Device.Realtime) => {
+  if (!current) return false;
+  if (!fetched) return true;
+
+  const currentTs = getReportTimeMs(current.reportTime);
+  const fetchedTs = getReportTimeMs(fetched.reportTime);
+
+  if (currentTs !== fetchedTs) {
+    return currentTs > fetchedTs;
+  }
+
+  if (current.connectionState !== fetched.connectionState) {
+    if (current.connectionState === "online" || current.connectionState === "offline") {
+      return true;
+    }
+    if (fetched.connectionState === "online" || fetched.connectionState === "offline") {
+      return false;
+    }
+  }
+
+  return current.connected === true && fetched.connected !== true;
+};
+
+const mergeRealtimeSnapshots = (
+  currentList: Device.Realtime[],
+  fetchedList: Device.Realtime[]
+) => {
+  if (currentList.length === 0) return fetchedList;
+  if (fetchedList.length === 0) return currentList;
+
+  const currentMap = new Map(currentList.map((item) => [item.id, item]));
+  const fetchedMap = new Map(fetchedList.map((item) => [item.id, item]));
+  const mergedIds = new Set<number>([...currentMap.keys(), ...fetchedMap.keys()]);
+
+  const mergedList: Device.Realtime[] = [];
+  for (const id of mergedIds) {
+    const current = currentMap.get(id);
+    const fetched = fetchedMap.get(id);
+
+    if (!current) {
+      if (fetched) mergedList.push(fetched);
+      continue;
+    }
+
+    if (!fetched || shouldPreferCurrentRealtime(current, fetched)) {
+      mergedList.push(current);
+      continue;
+    }
+
+    mergedList.push({
+      ...current,
+      ...fetched,
+      connectionState: fetched.connectionState ?? current.connectionState,
+    });
+  }
+
+  return mergedList;
+};
+
 /** 设备详情 Query */
 export function useDeviceDetail(
   id: number,
@@ -100,9 +165,22 @@ export function useDeviceRealtime(
   }
 ) {
   const { pollingInterval = 3000, ...queryOptions } = options || {};
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: deviceKeys.realtime(),
-    queryFn: () => deviceApi.getRealtime(),
+    queryFn: async () => {
+      const fetched = await deviceApi.getRealtime();
+      const current = queryClient.getQueryData<PaginatedResult<Device.Realtime>>(deviceKeys.realtime());
+
+      if (!current?.list?.length) {
+        return fetched;
+      }
+
+      return {
+        ...fetched,
+        list: mergeRealtimeSnapshots(current.list, fetched.list ?? []),
+      };
+    },
     refetchInterval: pollingInterval,
     refetchIntervalInBackground: false,
     ...queryOptions,
