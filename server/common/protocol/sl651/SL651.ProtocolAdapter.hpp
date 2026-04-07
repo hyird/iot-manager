@@ -18,6 +18,14 @@
 
 namespace sl651 {
 
+/**
+ * @brief SL651 协议适配器
+ *
+ * 运行模型是“配置缓存 + 报文解析”：
+ * - 设备运行态主要依赖 DeviceConfigProvider 的缓存视图
+ * - reload 主要清理和重置缓存
+ * - 不依赖 DTU 聚合和轮询激活模型
+ */
 class SL651ProtocolAdapter final : public ProtocolAdapter {
 public:
     using Sl651Stats = SL651Parser::Sl651Stats;
@@ -51,12 +59,12 @@ public:
     }
 
     Task<> initializeAsync() override {
-        configProvider_.clear();
+        clearRuntimeCaches();
         co_return;
     }
 
     Task<> reloadAsync() override {
-        configProvider_.clear();
+        clearRuntimeCaches();
         co_return;
     }
 
@@ -68,16 +76,7 @@ public:
             return;
         }
 
-        auto results = parser_->parseDataSync(
-            linkId,
-            clientAddr,
-            ingress.payload,
-            [this](int lookupLinkId, const std::string& remoteCode) {
-                return configProvider_.buildFromCache(lookupLinkId, remoteCode);
-            });
-        if (!results.empty() && runtimeContext_.submitParsedResults) {
-            runtimeContext_.submitParsedResults(std::move(results));
-        }
+        parseAndSubmit(linkId, clientAddr, std::move(ingress.payload));
     }
 
     void onMaintenanceTick() override {
@@ -209,6 +208,33 @@ public:
     }
 
 private:
+    /**
+     * @brief 清理协议运行时缓存
+     */
+    void clearRuntimeCaches() {
+        configProvider_.clear();
+    }
+
+    /**
+     * @brief 解析有效载荷并提交解析结果
+     */
+    void parseAndSubmit(int linkId, const std::string& clientAddr, std::vector<uint8_t> payload) {
+        if (!parser_) {
+            return;
+        }
+
+        auto results = parser_->parseDataSync(
+            linkId,
+            clientAddr,
+            std::move(payload),
+            [this](int lookupLinkId, const std::string& remoteCode) {
+                return configProvider_.buildFromCache(lookupLinkId, remoteCode);
+            });
+        if (!results.empty() && runtimeContext_.submitParsedResults) {
+            runtimeContext_.submitParsedResults(std::move(results));
+        }
+    }
+
     static Json::Value buildElementsData(
         const DeviceConfig& config,
         const std::string& funcCode,

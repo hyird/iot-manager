@@ -22,6 +22,14 @@
 
 namespace modbus {
 
+/**
+ * @brief Modbus 协议适配器
+ *
+ * 运行模型是“DTU 聚合 + 多 slave 轮询”：
+ * - 同一 link + registration 聚合成一个逻辑 DTU
+ * - 通过 session 绑定恢复当前运行态
+ * - 调度器负责具体轮询，reload 后需要重放已绑定 session
+ */
 class ModbusProtocolAdapter final : public ProtocolAdapter {
 public:
     using ModbusStats = ModbusSessionEngine::ModbusStats;
@@ -60,7 +68,7 @@ public:
         sessionManager_->setOldSessionDisplacedCallback(
             [this](int linkId, const std::string& clientAddr) {
                 if (pollScheduler_) {
-                    // 通知 PollScheduler 旧 session 的 DTU 已解绑（通过 dtuKey 查找）
+                    // 通知 PollScheduler 旧绑定关系已解除（通过 dtuKey 查找）
                     auto sessionOpt = sessionManager_->getSession(linkId, clientAddr);
                     if (sessionOpt && !sessionOpt->dtuKey.empty()) {
                         pollScheduler_->onSessionUnbound(sessionOpt->dtuKey);
@@ -92,17 +100,19 @@ public:
         if (dtuRegistry_) {
             co_await dtuRegistry_->reload();
         }
-        // 重载后旧的 readGroup 索引已失效，必须先清除 session 中的 inflight 和 poll 队列
+        // 配置重载后旧的读组索引已失效，需要先清理 session 的 in-flight 和 poll 队列
         if (sessionManager_) {
             sessionManager_->clearInflightAndPollQueues();
         }
         if (sessionEngine_) {
-            // 清除残留的 poll cycle 聚合数据
+            // 清除残留的轮询周期聚合数据
             sessionEngine_->clearAllPollCycles();
         }
         if (pollScheduler_ && dtuRegistry_) {
             pollScheduler_->reload(*dtuRegistry_);
         }
+
+        refreshBoundDtuRuntime();
         co_return;
     }
 
@@ -160,23 +170,14 @@ public:
                 if (pollScheduler_ && dtuRegistry_) {
                     auto dtuOpt = dtuRegistry_->findByDtuKey(normalized.dtuKey);
                     if (dtuOpt) {
-                        pollScheduler_->onSessionBound(*dtuOpt);
+                        activateBoundDtu(*dtuOpt);
                         if (normalized.kind == RegistrationMatchKind::StandaloneFrame) {
-                            for (const auto& [slaveId, device] : dtuOpt->devicesBySlave) {
-                                (void)slaveId;
-                                pollScheduler_->triggerNow(device.deviceId);
-                            }
+                            triggerDtuDevicesNow(*dtuOpt);
                         } else if (normalized.kind == RegistrationMatchKind::PrefixedPayload) {
                             const int discoveryDeviceId = dtuOpt->discoveryPlan.enabled
                                 ? dtuOpt->discoveryPlan.deviceId
                                 : 0;
-                            for (const auto& [slaveId, device] : dtuOpt->devicesBySlave) {
-                                (void)slaveId;
-                                if (discoveryDeviceId > 0 && device.deviceId == discoveryDeviceId) {
-                                    continue;
-                                }
-                                pollScheduler_->triggerNow(device.deviceId);
-                            }
+                            triggerDtuDevicesNow(*dtuOpt, discoveryDeviceId);
                         }
                     }
                 }
@@ -426,6 +427,46 @@ private:
         if (removed > 0) {
             LOG_INFO << "[Modbus][Adapter] Cleaned " << removed
                      << " legacy DeviceConnectionCache mapping(s)";
+        }
+    }
+
+    void refreshBoundDtuRuntime() {
+        if (!pollScheduler_ || !dtuRegistry_ || !sessionManager_) {
+            return;
+        }
+
+        // reload 只负责刷新配置视图，这里把当前已绑定的 session 重新映射到运行态。
+        replayBoundSessions(
+            sessionManager_.get(),
+            [](const DtuSession& session) {
+                return session.bindState == SessionBindState::Bound && !session.dtuKey.empty();
+            },
+            [this](const DtuSession& session) {
+                return dtuRegistry_->findByDtuKey(session.dtuKey);
+            },
+            [this](const DtuDefinition& dtu, const DtuSession&) {
+                activateBoundDtu(dtu);
+            }
+        );
+    }
+
+    void activateBoundDtu(const DtuDefinition& dtu) {
+        if (pollScheduler_) {
+            pollScheduler_->onSessionBound(dtu);
+        }
+    }
+
+    void triggerDtuDevicesNow(const DtuDefinition& dtu, int skipDeviceId = 0) {
+        if (!pollScheduler_) {
+            return;
+        }
+
+        for (const auto& [slaveId, device] : dtu.devicesBySlave) {
+            (void)slaveId;
+            if (skipDeviceId > 0 && device.deviceId == skipDeviceId) {
+                continue;
+            }
+            pollScheduler_->triggerNow(device.deviceId);
         }
     }
 

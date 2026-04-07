@@ -162,11 +162,35 @@ public:
 
     virtual std::string_view protocol() const = 0;
 
+    /**
+     * @brief 协议运行时初始化
+     *
+     * 在进程启动或协议适配器首次装载时调用，通常用于构建初始配置视图、
+     * 清理缓存和预热调度器。
+     */
     virtual Task<> initializeAsync() = 0;
+
+    /**
+     * @brief 协议运行时重载
+     *
+     * 在设备配置、协议配置或拓扑关系变化后调用，用于刷新配置快照，
+     * 并按协议语义恢复当前的运行态。
+     */
     virtual Task<> reloadAsync() = 0;
 
+    /**
+     * @brief 物理连接状态变化
+     */
     virtual void onConnectionChanged(int linkId, const std::string& clientAddr, bool connected) = 0;
+
+    /**
+     * @brief 收到链路原始数据
+     */
     virtual void onDataReceived(int linkId, const std::string& clientAddr, std::vector<uint8_t> bytes) = 0;
+
+    /**
+     * @brief 周期性维护入口
+     */
     virtual void onMaintenanceTick() = 0;
     virtual ProtocolAdapterMetrics getMetrics() const { return {}; }
     virtual ProtocolLifecycleImpact onDeviceLifecycleEvent(const DeviceLifecycleEvent&) {
@@ -200,6 +224,49 @@ public:
     }
 
 protected:
+    /**
+     * @brief 遍历会话快照并对满足条件的会话执行回调
+     *
+     * 只负责“重放运行态会话”，不关心具体协议里的 Bound / Activated 语义，
+     * 由协议自己决定 predicate 和 action。
+     */
+    template<typename SessionList, typename Predicate, typename Action>
+    void replaySessions(const SessionList& sessions, Predicate predicate, Action action) {
+        for (const auto& session : sessions) {
+            if (predicate(session)) {
+                action(session);
+            }
+        }
+    }
+
+    /**
+     * @brief 遍历已绑定会话，并为每个会话解析对应的运行对象后执行回调
+     *
+     * 适用于“配置重载后，恢复当前运行态”的场景。
+     */
+    template<typename SessionManagerT, typename Predicate, typename ResolveDtuFn, typename Action>
+    void replayBoundSessions(
+        SessionManagerT* sessionManager,
+        Predicate predicate,
+        ResolveDtuFn resolveDtu,
+        Action action
+    ) {
+        if (!sessionManager) {
+            return;
+        }
+
+        replaySessions(
+            sessionManager->listSessions(),
+            std::move(predicate),
+            [&](const auto& session) {
+                auto dtuOpt = resolveDtu(session);
+                if (dtuOpt) {
+                    action(*dtuOpt, session);
+                }
+            }
+        );
+    }
+
     /**
      * @brief RAII 守卫：确保命令协调器槽位在离开作用域时被释放
      */

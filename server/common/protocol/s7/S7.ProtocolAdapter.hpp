@@ -87,27 +87,27 @@ struct S7ReadBlockPlan {
 struct S7DeviceRuntime {
     mutable std::mutex mutex;
     mutable std::mutex clientMutex;
-    mutable std::mutex bridgeIoMutex;
-    std::condition_variable bridgeIoCv;
+    mutable std::mutex sessionIoMutex;
+    std::condition_variable sessionIoCv;
     int deviceId = 0;
     int linkId = 0;
     std::string deviceCode;
-    std::string dtuKey;
-    std::string bridgeClientAddr;
-    int bridgeLinkId = 0;
+    std::string sessionKey;
+    std::string sessionClientAddr;
+    int sessionLinkId = 0;
     S7ConnectionConfig connection;
     std::vector<S7AreaDefinition> areas;
-    std::deque<std::vector<uint8_t>> pendingBridgeToDtu;
-    std::deque<uint8_t> bridgeRxBuffer;
+    std::deque<std::vector<uint8_t>> pendingSessionToDtu;
+    std::deque<uint8_t> sessionRxBuffer;
     std::unique_ptr<Client> client;
     bool connected = false;
-    bool bridgeMode = false;
-    bool bridgeBound = false;
-    bool bridgeTransportOpen = false;
-    bool bridgeDiscoveryInFlight = false;
+    bool tcpServerMode = false;
+    bool sessionBound = false;
+    bool sessionTransportOpen = false;
+    bool sessionDiscoveryInFlight = false;
     bool connectInProgress = false;
     std::uint64_t connectGeneration = 0;
-    std::chrono::steady_clock::time_point bridgeDiscoveryStartedAt{};
+    std::chrono::steady_clock::time_point sessionDiscoveryStartedAt{};
     std::chrono::steady_clock::time_point lastConnectAttempt{};
 
     S7DeviceRuntime() = default;
@@ -123,22 +123,22 @@ struct S7DeviceRuntime {
         : deviceId(other.deviceId)
         , linkId(other.linkId)
         , deviceCode(std::move(other.deviceCode))
-        , dtuKey(std::move(other.dtuKey))
-        , bridgeClientAddr(std::move(other.bridgeClientAddr))
-        , bridgeLinkId(other.bridgeLinkId)
+        , sessionKey(std::move(other.sessionKey))
+        , sessionClientAddr(std::move(other.sessionClientAddr))
+        , sessionLinkId(other.sessionLinkId)
         , connection(std::move(other.connection))
         , areas(std::move(other.areas))
-        , pendingBridgeToDtu(std::move(other.pendingBridgeToDtu))
-        , bridgeRxBuffer(std::move(other.bridgeRxBuffer))
+        , pendingSessionToDtu(std::move(other.pendingSessionToDtu))
+        , sessionRxBuffer(std::move(other.sessionRxBuffer))
         , client(std::move(other.client))
         , connected(other.connected)
-        , bridgeMode(other.bridgeMode)
-        , bridgeBound(other.bridgeBound)
-        , bridgeTransportOpen(other.bridgeTransportOpen)
-        , bridgeDiscoveryInFlight(other.bridgeDiscoveryInFlight)
+        , tcpServerMode(other.tcpServerMode)
+        , sessionBound(other.sessionBound)
+        , sessionTransportOpen(other.sessionTransportOpen)
+        , sessionDiscoveryInFlight(other.sessionDiscoveryInFlight)
         , connectInProgress(other.connectInProgress)
         , connectGeneration(other.connectGeneration)
-        , bridgeDiscoveryStartedAt(other.bridgeDiscoveryStartedAt)
+        , sessionDiscoveryStartedAt(other.sessionDiscoveryStartedAt)
         , lastConnectAttempt(other.lastConnectAttempt) {
         other.connected = false;
     }
@@ -153,22 +153,22 @@ struct S7DeviceRuntime {
         deviceId = other.deviceId;
         linkId = other.linkId;
         deviceCode = std::move(other.deviceCode);
-        dtuKey = std::move(other.dtuKey);
-        bridgeClientAddr = std::move(other.bridgeClientAddr);
-        bridgeLinkId = other.bridgeLinkId;
+        sessionKey = std::move(other.sessionKey);
+        sessionClientAddr = std::move(other.sessionClientAddr);
+        sessionLinkId = other.sessionLinkId;
         connection = std::move(other.connection);
         areas = std::move(other.areas);
-        pendingBridgeToDtu = std::move(other.pendingBridgeToDtu);
-        bridgeRxBuffer = std::move(other.bridgeRxBuffer);
+        pendingSessionToDtu = std::move(other.pendingSessionToDtu);
+        sessionRxBuffer = std::move(other.sessionRxBuffer);
         client = std::move(other.client);
         connected = other.connected;
-        bridgeMode = other.bridgeMode;
-        bridgeBound = other.bridgeBound;
-        bridgeTransportOpen = other.bridgeTransportOpen;
-        bridgeDiscoveryInFlight = other.bridgeDiscoveryInFlight;
+        tcpServerMode = other.tcpServerMode;
+        sessionBound = other.sessionBound;
+        sessionTransportOpen = other.sessionTransportOpen;
+        sessionDiscoveryInFlight = other.sessionDiscoveryInFlight;
         connectInProgress = other.connectInProgress;
         connectGeneration = other.connectGeneration;
-        bridgeDiscoveryStartedAt = other.bridgeDiscoveryStartedAt;
+        sessionDiscoveryStartedAt = other.sessionDiscoveryStartedAt;
         lastConnectAttempt = other.lastConnectAttempt;
         other.connected = false;
         return *this;
@@ -180,27 +180,35 @@ struct S7DeviceRuntime {
             client.reset();
         }
         {
-            std::lock_guard bridgeIoLock(bridgeIoMutex);
-            bridgeTransportOpen = false;
-            bridgeRxBuffer.clear();
+            std::lock_guard sessionIoLock(sessionIoMutex);
+            sessionTransportOpen = false;
+            sessionRxBuffer.clear();
         }
-        bridgeIoCv.notify_all();
+        sessionIoCv.notify_all();
         connected = false;
     }
 };
 
+/**
+ * @brief S7 协议适配器
+ *
+ * 运行模型是“单设备 runtime + session binding + 轮询调度”：
+ * - 每个 device 独立维护 runtime
+ * - session 模式下用 session 绑定连接和设备
+ * - reload 时重建 runtime 列表和轮询配置
+ */
 class S7ProtocolAdapter final : public ProtocolAdapter {
 public:
     explicit S7ProtocolAdapter(ProtocolRuntimeContext runtimeContext)
         : ProtocolAdapter(std::move(runtimeContext)) {
-        bridgeRegistry_ = std::make_unique<DtuRegistry>();
-        bridgeSessionManager_ = std::make_unique<DtuSessionManager>();
-        bridgeNormalizer_ = std::make_unique<RegistrationNormalizer>(*bridgeRegistry_, *bridgeSessionManager_);
+        sessionRegistry_ = std::make_unique<DtuRegistry>();
+        sessionManager_ = std::make_unique<DtuSessionManager>();
+        sessionNormalizer_ = std::make_unique<RegistrationNormalizer>(*sessionRegistry_, *sessionManager_);
         pollScheduler_ = std::make_unique<S7PollScheduler>();
         pollScheduler_->setEnqueuePollCallback([this](int deviceId) {
             return enqueueScheduledPoll(deviceId);
         });
-        bridgeSessionManager_->setOldSessionDisplacedCallback(
+        sessionManager_->setOldSessionDisplacedCallback(
             [](int linkId, const std::string& clientAddr) {
                 LinkTransportFacade::instance().disconnectServerClient(linkId, clientAddr);
             }
@@ -222,29 +230,29 @@ public:
     }
 
     void onConnectionChanged(int linkId, const std::string& clientAddr, bool connected) override {
-        if (!bridgeRegistry_ || bridgeRegistry_->empty()) {
+        if (!sessionRegistry_ || sessionRegistry_->empty()) {
             return;
         }
 
-        auto definitions = bridgeRegistry_->getDefinitionsByLink(linkId);
+        auto definitions = sessionRegistry_->getDefinitionsByLink(linkId);
         if (definitions.empty()) {
             return;
         }
 
-        LOG_INFO << "[S7][Adapter] DTU link " << linkId
+        LOG_INFO << "[S7][Adapter] Session link " << linkId
                  << (connected ? " connected: " : " disconnected: ")
                  << clientAddr;
 
         std::optional<S7DtuSession> previousSession;
-        if (bridgeSessionManager_) {
-            previousSession = bridgeSessionManager_->getSession(linkId, clientAddr);
+        if (sessionManager_) {
+            previousSession = sessionManager_->getSession(linkId, clientAddr);
         }
 
-        if (bridgeSessionManager_) {
+        if (sessionManager_) {
             if (connected) {
-                bridgeSessionManager_->onConnected(linkId, clientAddr);
+                sessionManager_->onConnected(linkId, clientAddr);
             } else {
-                bridgeSessionManager_->onDisconnected(linkId, clientAddr);
+                sessionManager_->onDisconnected(linkId, clientAddr);
             }
         }
 
@@ -255,16 +263,16 @@ public:
     }
 
     void onDataReceived(int linkId, const std::string& clientAddr, std::vector<uint8_t> bytes) override {
-        if (!bridgeNormalizer_ || !bridgeRegistry_ || !bridgeSessionManager_) {
+        if (!sessionNormalizer_ || !sessionRegistry_ || !sessionManager_) {
             return;
         }
 
-        auto definitions = bridgeRegistry_->getDefinitionsByLink(linkId);
+        auto definitions = sessionRegistry_->getDefinitionsByLink(linkId);
         if (definitions.empty()) {
             return;
         }
 
-        auto normalized = bridgeNormalizer_->normalize(linkId, clientAddr, bytes);
+        auto normalized = sessionNormalizer_->normalize(linkId, clientAddr, bytes);
         if (normalized.kind == RegistrationMatchKind::Conflict) {
             LOG_WARN << "[S7][Adapter] Registration conflict: linkId="
                      << linkId << ", client=" << clientAddr
@@ -276,20 +284,20 @@ public:
 
         int deviceId = 0;
         if (!normalized.dtuKey.empty()) {
-            auto dtuOpt = bridgeRegistry_->findByDtuKey(normalized.dtuKey);
-            if (dtuOpt) {
-                deviceId = dtuOpt->deviceId;
+            auto sessionDefOpt = sessionRegistry_->findByDtuKey(normalized.dtuKey);
+            if (sessionDefOpt) {
+                deviceId = sessionDefOpt->deviceId;
             }
         }
 
-        auto sessionOpt = bridgeSessionManager_->getSession(linkId, clientAddr);
+        auto sessionOpt = sessionManager_->getSession(linkId, clientAddr);
         if (deviceId <= 0 && sessionOpt && sessionOpt->bindState == SessionBindState::Bound) {
             deviceId = sessionOpt->deviceId;
         }
 
         if (deviceId > 0 && sessionOpt && sessionOpt->bindState == SessionBindState::Bound) {
-            const std::string dtuKey = normalized.dtuKey.empty() ? sessionOpt->dtuKey : normalized.dtuKey;
-            attachBridgeSession(deviceId, linkId, clientAddr, dtuKey);
+            const std::string sessionKey = normalized.dtuKey.empty() ? sessionOpt->dtuKey : normalized.dtuKey;
+            attachSessionBinding(deviceId, linkId, clientAddr, sessionKey);
         }
 
         if (!normalized.payload.empty() && deviceId > 0) {
@@ -315,25 +323,25 @@ public:
         metrics.stats["deviceCount"] = static_cast<Json::Int64>(runtimes.size());
         Json::Int64 connectedCount = 0;
         Json::Int64 areaCount = 0;
-        Json::Int64 bridgeDeviceCount = 0;
-        Json::Int64 bridgeReadyCount = 0;
+        Json::Int64 sessionDeviceCount = 0;
+        Json::Int64 sessionReadyCount = 0;
         for (const auto& runtime : runtimes) {
             std::lock_guard runtimeLock(runtime->mutex);
-            if (runtime->bridgeMode) {
-                ++bridgeDeviceCount;
+            if (runtime->tcpServerMode) {
+                ++sessionDeviceCount;
             }
-            if (runtime->connected && (!runtime->bridgeMode || isBridgeReadyLocked(*runtime))) {
+            if (runtime->connected && (!runtime->tcpServerMode || isSessionReadyLocked(*runtime))) {
                 ++connectedCount;
             }
             areaCount += static_cast<Json::Int64>(runtime->areas.size());
-            if (runtime->bridgeMode && isBridgeReadyLocked(*runtime)) {
-                ++bridgeReadyCount;
+            if (runtime->tcpServerMode && isSessionReadyLocked(*runtime)) {
+                ++sessionReadyCount;
             }
         }
         metrics.stats["connectedCount"] = connectedCount;
         metrics.stats["areaCount"] = areaCount;
-        metrics.stats["bridgeDeviceCount"] = bridgeDeviceCount;
-        metrics.stats["bridgeReadyCount"] = bridgeReadyCount;
+        metrics.stats["sessionDeviceCount"] = sessionDeviceCount;
+        metrics.stats["sessionReadyCount"] = sessionReadyCount;
         return metrics;
     }
 
@@ -359,7 +367,7 @@ public:
 
         std::lock_guard runtimeLock(runtime->mutex);
         return runtime->connected
-            && (!runtime->bridgeMode || isBridgeReadyLocked(*runtime));
+            && (!runtime->tcpServerMode || isSessionReadyLocked(*runtime));
     }
 
     Task<CommandResult> sendCommand(const CommandRequest& req) override {
@@ -393,7 +401,7 @@ public:
 
             {
                 std::lock_guard runtimeLock(runtime->mutex);
-                if (runtime->bridgeMode && !runtime->bridgeBound) {
+                if (runtime->tcpServerMode && !runtime->sessionBound) {
                     co_return CommandResult::offline("S7 会话未就绪");
                 }
 
@@ -418,7 +426,7 @@ public:
                 } else {
                     {
                         std::lock_guard runtimeLock(runtime->mutex);
-                        if (runtime->bridgeMode && !runtime->bridgeBound) {
+                        if (runtime->tcpServerMode && !runtime->sessionBound) {
                             failure = "S7 会话未就绪";
                         }
                     }
@@ -1677,14 +1685,14 @@ private:
         runtime->deviceId = device.id;
         runtime->linkId = device.linkId;
         runtime->deviceCode = device.deviceCode.empty() ? ("s7_" + std::to_string(device.id)) : device.deviceCode;
-        runtime->bridgeMode = device.linkMode == Constants::LINK_MODE_TCP_SERVER;
-        if (runtime->bridgeMode) {
-            runtime->dtuKey = std::to_string(device.linkId) + ":"
+        runtime->tcpServerMode = device.linkMode == Constants::LINK_MODE_TCP_SERVER;
+        if (runtime->tcpServerMode) {
+        runtime->sessionKey = std::to_string(device.linkId) + ":"
                 + detail::makeRegistrationToken(device.registrationBytes);
         }
         const std::string plcModel = device.protocolConfig.get("plcModel", "").asString();
         runtime->connection = parseConnection(device.protocolConfig, plcModel);
-        if (runtime->bridgeMode) {
+        if (runtime->tcpServerMode) {
             runtime->connection.host = "tcpserver";
         } else if (!device.linkIp.empty()) {
             runtime->connection.host = device.linkIp;
@@ -1696,32 +1704,50 @@ private:
         return runtime;
     }
 
-    Task<> refreshDevices() {
-        if (bridgeRegistry_) {
-            co_await bridgeRegistry_->reload();
+    /**
+     * @brief 清理当前 session binding 绑定和底层连接
+     */
+    void clearSessionBindings() {
+        if (!sessionManager_) {
+            return;
         }
 
-        if (bridgeSessionManager_) {
-            auto sessions = bridgeSessionManager_->listSessions();
-            for (const auto& session : sessions) {
-                if (session.linkId > 0 && !session.clientAddr.empty()) {
-                    LinkTransportFacade::instance().disconnectServerClient(session.linkId, session.clientAddr);
-                }
+        auto sessions = sessionManager_->listSessions();
+        for (const auto& session : sessions) {
+            if (session.linkId > 0 && !session.clientAddr.empty()) {
+                LinkTransportFacade::instance().disconnectServerClient(session.linkId, session.clientAddr);
             }
-            bridgeSessionManager_->clearAllSessions();
         }
+        sessionManager_->clearAllSessions();
+    }
 
-        auto devices = co_await DeviceCache::instance().getDevices();
-        std::unordered_map<int, std::shared_ptr<S7DeviceRuntime>> next;
-        std::size_t bridgeCount = 0;
-        std::vector<S7PollScheduler::DeviceConfig> pollConfigs;
+    /**
+     * @brief 从 DeviceCache 重建运行时目录和轮询配置
+     */
+    void buildRuntimeCatalog(
+        const std::vector<DeviceCache::CachedDevice>& devices,
+        std::unordered_map<int, std::shared_ptr<S7DeviceRuntime>>& next,
+        std::vector<S7PollScheduler::DeviceConfig>& pollConfigs,
+        std::size_t& sessionCount
+    ) {
+        next.clear();
+        pollConfigs.clear();
+        sessionCount = 0;
+
         for (const auto& device : devices) {
-            if (device.protocolType != Constants::PROTOCOL_S7) continue;
-            auto runtime = buildRuntime(device);
-            if (!runtime) continue;
-            if (runtime->bridgeMode) {
-                ++bridgeCount;
+            if (device.protocolType != Constants::PROTOCOL_S7) {
+                continue;
             }
+
+            auto runtime = buildRuntime(device);
+            if (!runtime) {
+                continue;
+            }
+
+            if (runtime->tcpServerMode) {
+                ++sessionCount;
+            }
+
             if (!runtime->areas.empty()) {
                 pollConfigs.push_back(S7PollScheduler::DeviceConfig{
                     .deviceId = runtime->deviceId,
@@ -1729,8 +1755,28 @@ private:
                     .enabled = true
                 });
             }
-            next.emplace(runtime->deviceId, runtime);
+
+            next.emplace(runtime->deviceId, std::move(runtime));
         }
+    }
+
+    /**
+     * @brief 刷新 S7 运行态
+     *
+     * 先清理旧 session binding，再按最新配置重建 runtime 和轮询表。
+     */
+    Task<> refreshDevices() {
+        if (sessionRegistry_) {
+            co_await sessionRegistry_->reload();
+        }
+
+        clearSessionBindings();
+
+        auto devices = co_await DeviceCache::instance().getDevices();
+        std::unordered_map<int, std::shared_ptr<S7DeviceRuntime>> next;
+        std::size_t sessionCount = 0;
+        std::vector<S7PollScheduler::DeviceConfig> pollConfigs;
+        buildRuntimeCatalog(devices, next, pollConfigs, sessionCount);
 
         std::size_t deviceCount = 0;
         {
@@ -1739,7 +1785,7 @@ private:
             deviceCount = devices_.size();
         }
         LOG_INFO << "[S7][Adapter] Reloaded " << deviceCount
-                 << " S7 device(s), bridge devices=" << bridgeCount;
+                 << " S7 device(s), tcp server devices=" << sessionCount;
         if (pollScheduler_) {
             pollScheduler_->reload(pollConfigs);
         }
@@ -1768,7 +1814,7 @@ private:
 
         int deviceId = 0;
         int linkId = 0;
-        bool bridgeMode = false;
+        bool tcpServerMode = false;
         S7ConnectionConfig connection;
         std::uint64_t attemptId = 0;
 
@@ -1783,7 +1829,7 @@ private:
 
             deviceId = runtime->deviceId;
             linkId = runtime->linkId;
-            bridgeMode = runtime->bridgeMode;
+            tcpServerMode = runtime->tcpServerMode;
             connection = runtime->connection;
             if (runtime->lastConnectAttempt != std::chrono::steady_clock::time_point{}
                 && connection.retryDelayMs > 0
@@ -1795,7 +1841,7 @@ private:
             LOG_DEBUG << "[S7][Adapter] Connecting device " << deviceId
                       << " to " << connection.host
                       << " mode=" << connection.mode
-                      << (bridgeMode ? " (bridge)" : "")
+                      << (tcpServerMode ? " (session)" : "")
                       << ", pingTimeout=" << connection.pingTimeoutMs << "ms"
                       << ", sendTimeout=" << connection.sendTimeoutMs << "ms"
                       << ", recvTimeout=" << connection.recvTimeoutMs << "ms"
@@ -1830,22 +1876,22 @@ private:
                           << " hex=" << bytesToHex(frame);
             }
         );
-        if (bridgeMode) {
+        if (tcpServerMode) {
             client->setTransportHooks({
                 .open = [runtime](const std::string&, std::uint16_t, int, int, int, std::uint16_t& localPort) {
-                    return openBridgeTransport(runtime, localPort);
+                    return openSessionTransport(runtime, localPort);
                 },
                 .close = [runtime]() {
-                    closeBridgeTransport(runtime);
+                    closeSessionTransport(runtime);
                 },
                 .connected = [runtime]() {
-                    return isBridgeTransportOpen(runtime);
+                    return isSessionTransportOpen(runtime);
                 },
                 .send = [this, runtime](const std::uint8_t* data, std::size_t size) {
-                    return sendBridgePayload(runtime, data, size);
+                    return sendSessionPayload(runtime, data, size);
                 },
                 .recv = [runtime](std::uint8_t* data, std::size_t size, int timeoutMs) {
-                    return recvBridgePayload(runtime, data, size, timeoutMs);
+                    return recvSessionPayload(runtime, data, size, timeoutMs);
                 }
             });
         }
@@ -1919,7 +1965,7 @@ private:
                  << ", linkId=" << linkId
                  << ", host=" << connection.host
                  << ", mode=" << connection.mode
-                 << ", bridge=" << (bridgeMode ? "yes" : "no");
+                 << ", session=" << (tcpServerMode ? "yes" : "no");
         return true;
     }
 
@@ -1971,54 +2017,54 @@ private:
         setTimeout(p_i32_RecvTimeout, connection.recvTimeoutMs, "RecvTimeout");
     }
 
-    static bool isBridgeReadyLocked(const S7DeviceRuntime& runtime) {
-        return runtime.bridgeMode
+    static bool isSessionReadyLocked(const S7DeviceRuntime& runtime) {
+        return runtime.tcpServerMode
             && runtime.connected
             && !runtime.connectInProgress
-            && runtime.bridgeBound
-            && !runtime.bridgeClientAddr.empty()
-            && runtime.bridgeLinkId > 0;
+            && runtime.sessionBound
+            && !runtime.sessionClientAddr.empty()
+            && runtime.sessionLinkId > 0;
     }
 
-    static int openBridgeTransport(const std::shared_ptr<S7DeviceRuntime>& runtime,
+    static int openSessionTransport(const std::shared_ptr<S7DeviceRuntime>& runtime,
                                    std::uint16_t& localPort) {
         if (!runtime) {
             return kS7ErrInvalidHandle;
         }
 
         {
-            std::lock_guard bridgeIoLock(runtime->bridgeIoMutex);
-            runtime->bridgeTransportOpen = true;
-            runtime->bridgeRxBuffer.clear();
+            std::lock_guard sessionIoLock(runtime->sessionIoMutex);
+            runtime->sessionTransportOpen = true;
+            runtime->sessionRxBuffer.clear();
         }
-        runtime->bridgeIoCv.notify_all();
+        runtime->sessionIoCv.notify_all();
         localPort = 0;
         return kS7Ok;
     }
 
-    static void closeBridgeTransport(const std::shared_ptr<S7DeviceRuntime>& runtime) {
+    static void closeSessionTransport(const std::shared_ptr<S7DeviceRuntime>& runtime) {
         if (!runtime) {
             return;
         }
 
         {
-            std::lock_guard bridgeIoLock(runtime->bridgeIoMutex);
-            runtime->bridgeTransportOpen = false;
-            runtime->bridgeRxBuffer.clear();
+            std::lock_guard sessionIoLock(runtime->sessionIoMutex);
+            runtime->sessionTransportOpen = false;
+            runtime->sessionRxBuffer.clear();
         }
-        runtime->bridgeIoCv.notify_all();
+        runtime->sessionIoCv.notify_all();
     }
 
-    static bool isBridgeTransportOpen(const std::shared_ptr<S7DeviceRuntime>& runtime) {
+    static bool isSessionTransportOpen(const std::shared_ptr<S7DeviceRuntime>& runtime) {
         if (!runtime) {
             return false;
         }
 
-        std::lock_guard bridgeIoLock(runtime->bridgeIoMutex);
-        return runtime->bridgeTransportOpen;
+        std::lock_guard sessionIoLock(runtime->sessionIoMutex);
+        return runtime->sessionTransportOpen;
     }
 
-    int sendBridgePayload(const std::shared_ptr<S7DeviceRuntime>& runtime,
+    int sendSessionPayload(const std::shared_ptr<S7DeviceRuntime>& runtime,
                           const std::uint8_t* data,
                           std::size_t size) {
         if (!runtime) {
@@ -2033,41 +2079,41 @@ private:
 
         int deviceId = 0;
         int requestLinkId = 0;
-        std::string bridgeClientAddr;
-        int bridgeLinkId = 0;
+        std::string sessionClientAddr;
+        int sessionLinkId = 0;
         bool shouldBroadcast = false;
         std::set<std::string> excludeAddrs;
 
         {
             std::lock_guard runtimeLock(runtime->mutex);
-            if (!runtime->bridgeMode) {
+            if (!runtime->tcpServerMode) {
                 return kS7ErrInvalidHandle;
             }
 
             deviceId = runtime->deviceId;
             requestLinkId = runtime->linkId;
-            bridgeClientAddr = runtime->bridgeClientAddr;
-            bridgeLinkId = runtime->bridgeLinkId;
+            sessionClientAddr = runtime->sessionClientAddr;
+            sessionLinkId = runtime->sessionLinkId;
 
-            if (!runtime->bridgeBound || bridgeClientAddr.empty() || bridgeLinkId <= 0) {
-                if (!runtime->bridgeDiscoveryInFlight) {
-                    runtime->bridgeDiscoveryInFlight = true;
-                    runtime->bridgeDiscoveryStartedAt = std::chrono::steady_clock::now();
+            if (!runtime->sessionBound || sessionClientAddr.empty() || sessionLinkId <= 0) {
+                if (!runtime->sessionDiscoveryInFlight) {
+                    runtime->sessionDiscoveryInFlight = true;
+                    runtime->sessionDiscoveryStartedAt = std::chrono::steady_clock::now();
                     shouldBroadcast = true;
                 } else {
-                    runtime->pendingBridgeToDtu.push_back(std::move(bytes));
+                    runtime->pendingSessionToDtu.push_back(std::move(bytes));
                     LOG_DEBUG << "[S7][Direct] Queue payload while discovery is in flight: deviceId="
                               << deviceId
-                              << ", bytes=" << runtime->pendingBridgeToDtu.back().size()
-                              << ", pendingToDtu=" << runtime->pendingBridgeToDtu.size();
+                              << ", bytes=" << runtime->pendingSessionToDtu.back().size()
+                              << ", pendingToDtu=" << runtime->pendingSessionToDtu.size();
                     return kS7Ok;
                 }
             }
         }
 
         if (shouldBroadcast) {
-            if (bridgeSessionManager_) {
-                for (const auto& session : bridgeSessionManager_->listSessions()) {
+            if (sessionManager_) {
+                for (const auto& session : sessionManager_->listSessions()) {
                     if (session.linkId == requestLinkId
                         && session.bindState == SessionBindState::Bound
                         && !session.clientAddr.empty()) {
@@ -2076,7 +2122,7 @@ private:
                 }
             }
 
-            LOG_DEBUG << "[S7][Adapter] TX probe to DTU linkId=" << requestLinkId
+            LOG_DEBUG << "[S7][Adapter] TX probe to session linkId=" << requestLinkId
                       << ", deviceId=" << deviceId
                       << ", bytes=" << bytes.size()
                       << ", excluded=" << excludeAddrs.size()
@@ -2095,34 +2141,34 @@ private:
 
             LinkTransportFacade::instance().disconnectServerClients(requestLinkId);
             std::lock_guard runtimeLock(runtime->mutex);
-            runtime->bridgeDiscoveryInFlight = false;
-            runtime->bridgeDiscoveryStartedAt = {};
-            runtime->pendingBridgeToDtu.clear();
-            LOG_WARN << "[S7][Direct] Failed to forward discovery payload, bridge session closed: deviceId="
+            runtime->sessionDiscoveryInFlight = false;
+            runtime->sessionDiscoveryStartedAt = {};
+            runtime->pendingSessionToDtu.clear();
+            LOG_WARN << "[S7][Direct] Failed to forward discovery payload, session binding closed: deviceId="
                      << deviceId << ", linkId=" << requestLinkId
                      << ", bytes=" << bytes.size()
                      << ", pendingToDtu=0";
             return kS7Ok;
         }
 
-        if (LinkTransportFacade::instance().sendToClient(bridgeLinkId, bridgeClientAddr, payload)) {
+        if (LinkTransportFacade::instance().sendToClient(sessionLinkId, sessionClientAddr, payload)) {
             return kS7Ok;
         }
 
-        LinkTransportFacade::instance().forceDisconnectServerClient(bridgeLinkId, bridgeClientAddr);
+        LinkTransportFacade::instance().forceDisconnectServerClient(sessionLinkId, sessionClientAddr);
         std::lock_guard runtimeLock(runtime->mutex);
-        runtime->pendingBridgeToDtu.clear();
-        runtime->bridgeDiscoveryInFlight = false;
-        runtime->bridgeDiscoveryStartedAt = {};
-        LOG_WARN << "[S7][Direct] Failed to forward payload, bridge session closed: deviceId="
-                 << deviceId << ", linkId=" << bridgeLinkId
-                 << ", client=" << bridgeClientAddr
+        runtime->pendingSessionToDtu.clear();
+        runtime->sessionDiscoveryInFlight = false;
+        runtime->sessionDiscoveryStartedAt = {};
+        LOG_WARN << "[S7][Direct] Failed to forward payload, session binding closed: deviceId="
+                 << deviceId << ", linkId=" << sessionLinkId
+                 << ", client=" << sessionClientAddr
                  << ", bytes=" << bytes.size()
                  << ", pendingToDtu=0";
         return kS7Ok;
     }
 
-    static int recvBridgePayload(const std::shared_ptr<S7DeviceRuntime>& runtime,
+    static int recvSessionPayload(const std::shared_ptr<S7DeviceRuntime>& runtime,
                                  std::uint8_t* data,
                                  std::size_t size,
                                  int timeoutMs) {
@@ -2133,67 +2179,67 @@ private:
             return kS7Ok;
         }
 
-        std::unique_lock bridgeIoLock(runtime->bridgeIoMutex);
+        std::unique_lock sessionIoLock(runtime->sessionIoMutex);
         const auto ready = [&]() {
-            return runtime->bridgeRxBuffer.size() >= size || !runtime->bridgeTransportOpen;
+            return runtime->sessionRxBuffer.size() >= size || !runtime->sessionTransportOpen;
         };
 
         if (timeoutMs > 0) {
-            if (!runtime->bridgeIoCv.wait_for(
-                    bridgeIoLock,
+            if (!runtime->sessionIoCv.wait_for(
+                    sessionIoLock,
                     std::chrono::milliseconds(timeoutMs),
                     ready)) {
                 return kS7ErrTimeout;
             }
         } else {
-            runtime->bridgeIoCv.wait(bridgeIoLock, ready);
+            runtime->sessionIoCv.wait(sessionIoLock, ready);
         }
 
-        if (runtime->bridgeRxBuffer.size() < size) {
-            return runtime->bridgeTransportOpen ? kS7ErrTimeout : kS7ErrSocketIo;
+        if (runtime->sessionRxBuffer.size() < size) {
+            return runtime->sessionTransportOpen ? kS7ErrTimeout : kS7ErrSocketIo;
         }
 
         for (std::size_t i = 0; i < size; ++i) {
-            data[i] = runtime->bridgeRxBuffer.front();
-            runtime->bridgeRxBuffer.pop_front();
+            data[i] = runtime->sessionRxBuffer.front();
+            runtime->sessionRxBuffer.pop_front();
         }
         return kS7Ok;
     }
 
-    void attachBridgeSession(int deviceId, int linkId, const std::string& clientAddr, const std::string& dtuKey) {
+    void attachSessionBinding(int deviceId, int linkId, const std::string& clientAddr, const std::string& sessionKey) {
         bool shouldFlush = false;
         bool shouldLog = false;
         {
             auto runtime = findRuntimeLocked(deviceId);
-            if (!runtime || !runtime->bridgeMode) {
+            if (!runtime || !runtime->tcpServerMode) {
                 return;
             }
 
             std::lock_guard runtimeLock(runtime->mutex);
-            shouldLog = !runtime->bridgeBound
-                || runtime->bridgeLinkId != linkId
-                || runtime->bridgeClientAddr != clientAddr
-                || (!dtuKey.empty() && runtime->dtuKey != dtuKey);
-            runtime->bridgeBound = true;
-            runtime->bridgeDiscoveryInFlight = false;
-            runtime->bridgeDiscoveryStartedAt = {};
-            runtime->bridgeLinkId = linkId;
-            runtime->bridgeClientAddr = clientAddr;
-            if (!dtuKey.empty()) {
-                runtime->dtuKey = dtuKey;
+            shouldLog = !runtime->sessionBound
+                || runtime->sessionLinkId != linkId
+                || runtime->sessionClientAddr != clientAddr
+                || (!sessionKey.empty() && runtime->sessionKey != sessionKey);
+            runtime->sessionBound = true;
+            runtime->sessionDiscoveryInFlight = false;
+            runtime->sessionDiscoveryStartedAt = {};
+            runtime->sessionLinkId = linkId;
+            runtime->sessionClientAddr = clientAddr;
+            if (!sessionKey.empty()) {
+                runtime->sessionKey = sessionKey;
             }
-            shouldFlush = runtime->bridgeTransportOpen && !runtime->pendingBridgeToDtu.empty();
+            shouldFlush = runtime->sessionTransportOpen && !runtime->pendingSessionToDtu.empty();
         }
 
         if (shouldLog) {
-            LOG_INFO << "[S7][Adapter] Bridge session bound: deviceId=" << deviceId
+            LOG_INFO << "[S7][Adapter] Session bound: deviceId=" << deviceId
                      << ", linkId=" << linkId
                      << ", client=" << clientAddr
-                     << ", dtuKey=" << (dtuKey.empty() ? "<unknown>" : dtuKey);
+                     << ", sessionKey=" << (sessionKey.empty() ? "<unknown>" : sessionKey);
         }
 
         if (shouldFlush) {
-            flushBridgeSession(deviceId);
+            flushSessionBinding(deviceId);
         }
         if (shouldLog && pollScheduler_) {
             pollScheduler_->triggerNow(deviceId);
@@ -2208,16 +2254,16 @@ private:
 
         {
             std::lock_guard runtimeLock(runtime->mutex);
-            LOG_INFO << "[S7][Adapter] Closing bridge runtime: deviceId=" << deviceId
-                     << ", client=" << (runtime->bridgeClientAddr.empty() ? "<unbound>" : runtime->bridgeClientAddr);
-            runtime->bridgeBound = false;
-            runtime->bridgeDiscoveryInFlight = false;
+            LOG_INFO << "[S7][Adapter] Closing session runtime: deviceId=" << deviceId
+                     << ", client=" << (runtime->sessionClientAddr.empty() ? "<unbound>" : runtime->sessionClientAddr);
+            runtime->sessionBound = false;
+            runtime->sessionDiscoveryInFlight = false;
             runtime->connectInProgress = false;
             ++runtime->connectGeneration;
-            runtime->bridgeDiscoveryStartedAt = {};
-            runtime->bridgeLinkId = 0;
-            runtime->bridgeClientAddr.clear();
-            runtime->pendingBridgeToDtu.clear();
+            runtime->sessionDiscoveryStartedAt = {};
+            runtime->sessionLinkId = 0;
+            runtime->sessionClientAddr.clear();
+            runtime->pendingSessionToDtu.clear();
             runtime->connected = false;
         }
 
@@ -2234,40 +2280,40 @@ private:
 
         const std::size_t byteCount = bytes.size();
         auto runtime = findRuntimeLocked(deviceId);
-        if (!runtime || !runtime->bridgeMode) {
+        if (!runtime || !runtime->tcpServerMode) {
             return;
         }
 
         int linkId = 0;
-        std::string bridgeClientAddr;
+        std::string sessionClientAddr;
         bool accepted = false;
         {
             std::lock_guard runtimeLock(runtime->mutex);
             linkId = runtime->linkId;
-            bridgeClientAddr = runtime->bridgeClientAddr;
+            sessionClientAddr = runtime->sessionClientAddr;
         }
         {
-            std::lock_guard bridgeIoLock(runtime->bridgeIoMutex);
-            if (runtime->bridgeTransportOpen) {
-                runtime->bridgeRxBuffer.insert(runtime->bridgeRxBuffer.end(), bytes.begin(), bytes.end());
+            std::lock_guard sessionIoLock(runtime->sessionIoMutex);
+            if (runtime->sessionTransportOpen) {
+                runtime->sessionRxBuffer.insert(runtime->sessionRxBuffer.end(), bytes.begin(), bytes.end());
                 accepted = true;
             }
         }
         if (accepted) {
-            runtime->bridgeIoCv.notify_all();
+            runtime->sessionIoCv.notify_all();
         }
 
         if (!accepted) {
-            LOG_DEBUG << "[S7][Direct] Drop DTU payload because bridge transport is not open: deviceId="
+            LOG_DEBUG << "[S7][Direct] Drop session payload because session transport is not open: deviceId="
                       << deviceId << ", linkId=" << linkId
                       << ", bytes=" << byteCount;
         }
     }
 
-    void flushBridgeSession(int deviceId) {
+    void flushSessionBinding(int deviceId) {
         std::deque<std::vector<uint8_t>> pendingToDtu;
-        std::string bridgeClientAddr;
-        int bridgeLinkId = 0;
+        std::string sessionClientAddr;
+        int sessionLinkId = 0;
 
         {
             auto runtime = findRuntimeLocked(deviceId);
@@ -2276,12 +2322,12 @@ private:
             }
 
             std::lock_guard runtimeLock(runtime->mutex);
-            if (!isBridgeReadyLocked(*runtime)) {
+            if (!isSessionReadyLocked(*runtime)) {
                 return;
             }
-            bridgeClientAddr = runtime->bridgeClientAddr;
-            bridgeLinkId = runtime->bridgeLinkId;
-            pendingToDtu.swap(runtime->pendingBridgeToDtu);
+            sessionClientAddr = runtime->sessionClientAddr;
+            sessionLinkId = runtime->sessionLinkId;
+            pendingToDtu.swap(runtime->pendingSessionToDtu);
         }
 
         const std::size_t queuedToDtu = pendingToDtu.size();
@@ -2306,20 +2352,20 @@ private:
         bool transportFailed = false;
         auto remainingToDtu = sendPending(pendingToDtu, [&](const std::vector<uint8_t>& frame) {
             const bool sent = LinkTransportFacade::instance().sendToClient(
-                bridgeLinkId, bridgeClientAddr, bytesToString(frame));
+                sessionLinkId, sessionClientAddr, bytesToString(frame));
             if (!sent) {
                 transportFailed = true;
-                LinkTransportFacade::instance().forceDisconnectServerClient(bridgeLinkId, bridgeClientAddr);
+                LinkTransportFacade::instance().forceDisconnectServerClient(sessionLinkId, sessionClientAddr);
             }
             return sent;
         });
 
         const std::size_t flushedToDtu = queuedToDtu - remainingToDtu.size();
         if (flushedToDtu > 0 || !remainingToDtu.empty()) {
-            LOG_INFO << "[S7][Adapter] Flushed bridge session for device " << deviceId
-                     << ", dtu=" << flushedToDtu << "/" << queuedToDtu
-                     << ", linkId=" << bridgeLinkId
-                     << ", client=" << bridgeClientAddr;
+            LOG_INFO << "[S7][Adapter] Flushed session binding for device " << deviceId
+                     << ", session=" << flushedToDtu << "/" << queuedToDtu
+                     << ", linkId=" << sessionLinkId
+                     << ", client=" << sessionClientAddr;
         }
 
         if (transportFailed) {
@@ -2328,9 +2374,9 @@ private:
 
         if (!remainingToDtu.empty()) {
             auto runtime = findRuntimeLocked(deviceId);
-            if (runtime && runtime->bridgeMode) {
+            if (runtime && runtime->tcpServerMode) {
                 std::lock_guard runtimeLock(runtime->mutex);
-                prependQueue(runtime->pendingBridgeToDtu, remainingToDtu);
+                prependQueue(runtime->pendingSessionToDtu, remainingToDtu);
             }
         }
     }
@@ -2390,15 +2436,15 @@ private:
 
         int deviceId = 0;
         int linkId = 0;
-        bool bridgeMode = false;
-        bool bridgeBound = false;
+        bool tcpServerMode = false;
+        bool sessionBound = false;
         std::vector<S7AreaDefinition> areas;
         {
             std::lock_guard runtimeLock(runtime->mutex);
             deviceId = runtime->deviceId;
             linkId = runtime->linkId;
-            bridgeMode = runtime->bridgeMode;
-            bridgeBound = runtime->bridgeBound;
+            tcpServerMode = runtime->tcpServerMode;
+            sessionBound = runtime->sessionBound;
             areas = runtime->areas;
         }
         const auto readBlocks = planReadBlocks(areas);
@@ -2406,8 +2452,8 @@ private:
         LOG_TRACE << "[S7][Adapter] Poll device " << deviceId
                   << ", areas=" << areas.size()
                   << ", blocks=" << readBlocks.size()
-                  << ", bridge=" << (bridgeMode ? "yes" : "no")
-                  << ", bound=" << (bridgeBound ? "yes" : "no");
+                  << ", session=" << (tcpServerMode ? "yes" : "no")
+                  << ", bound=" << (sessionBound ? "yes" : "no");
 
         Json::Value aggregatedData(Json::objectValue);
         const std::string reportTime = makeUtcNowString();
@@ -2424,22 +2470,22 @@ private:
             if (rc != 0) {
                 {
                     std::lock_guard runtimeLock(runtime->mutex);
-                    if (runtime->bridgeMode && !runtime->bridgeBound) {
-                        LOG_DEBUG << "[S7][Adapter] Read block pending bridge bind: deviceId="
+                    if (runtime->tcpServerMode && !runtime->sessionBound) {
+                        LOG_DEBUG << "[S7][Adapter] Read block pending session bind: deviceId="
                                   << runtime->deviceId
                                   << ", area=" << block.area
                                   << ", db=" << block.dbNumber
                                   << ", start=" << block.start
                                   << ", amount=" << block.amount
                                   << ", rc=" << rc;
-                        if (runtime->bridgeDiscoveryInFlight) {
+                        if (runtime->sessionDiscoveryInFlight) {
                             LOG_DEBUG << "[S7][Adapter] Clearing discovery probe state after read failure: deviceId="
                                       << runtime->deviceId
                                       << ", area=" << block.area
                                       << ", start=" << block.start;
                         }
-                        runtime->bridgeDiscoveryInFlight = false;
-                        runtime->bridgeDiscoveryStartedAt = {};
+                        runtime->sessionDiscoveryInFlight = false;
+                        runtime->sessionDiscoveryStartedAt = {};
                     } else {
                         LOG_WARN << "[S7][Adapter] Read block failed: deviceId=" << runtime->deviceId
                                  << ", area=" << block.area
@@ -2449,8 +2495,8 @@ private:
                                  << ", mergedAreas=" << block.members.size()
                                  << ", rc=" << rc
                                  << " (" << explainClientRc(rc) << ")"
-                                 << ", bridge=" << (runtime->bridgeMode ? "yes" : "no")
-                                 << ", bound=" << (runtime->bridgeBound ? "yes" : "no");
+                                 << ", session=" << (runtime->tcpServerMode ? "yes" : "no")
+                                 << ", bound=" << (runtime->sessionBound ? "yes" : "no");
                     }
                 }
                 pollFailed = true;
@@ -2531,10 +2577,12 @@ private:
 
     mutable std::mutex devicesMutex_;
     std::unordered_map<int, std::shared_ptr<S7DeviceRuntime>> devices_;
-    std::unique_ptr<DtuRegistry> bridgeRegistry_;
-    std::unique_ptr<DtuSessionManager> bridgeSessionManager_;
-    std::unique_ptr<RegistrationNormalizer> bridgeNormalizer_;
+    std::unique_ptr<DtuRegistry> sessionRegistry_;
+    std::unique_ptr<DtuSessionManager> sessionManager_;
+    std::unique_ptr<RegistrationNormalizer> sessionNormalizer_;
     std::unique_ptr<S7PollScheduler> pollScheduler_;
 };
 
 }  // namespace s7
+
+
