@@ -191,6 +191,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         // 连接确认
         if (msg.type === "connected") {
           setConnected(true);
+          queryClient.invalidateQueries({ queryKey: deviceKeys.realtime() });
           return;
         }
 
