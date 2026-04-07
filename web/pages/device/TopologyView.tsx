@@ -7,7 +7,7 @@ import ReactEChartsCore from "echarts-for-react/lib/core";
 import { useMemo } from "react";
 import { useDeviceGroupTreeWithCount, useDeviceList } from "@/services";
 import type { Device, DeviceGroup } from "@/types";
-import { isOnline } from "./utils";
+import { getDeviceConnectionState } from "./utils";
 
 echarts.use([TreeChart, TooltipComponent, CanvasRenderer]);
 const EMPTY_DEVICE_LIST: Device.RealTimeData[] = [];
@@ -57,15 +57,26 @@ const TopologyView = ({ open, onClose }: TopologyViewProps) => {
 
   const chartData = useMemo(() => {
     const buildDeviceNode = (device: Device.RealTimeData): TreeNode => {
-      const online = isOnline(device.connected, device.reportTime, device.online_timeout);
+      const connectionState = getDeviceConnectionState(
+        device.connected,
+        device.reportTime,
+        device.online_timeout,
+        device.connectionState
+      );
+      const online = connectionState === "online";
       return {
         name: device.name,
-        value: online ? "在线" : "离线",
+        value:
+          connectionState === "syncing"
+            ? "同步中"
+            : online
+              ? "在线"
+              : "离线",
         itemStyle: {
-          color: online ? "#f6ffed" : "#fff2f0",
-          borderColor: online ? "#52c41a" : "#ff4d4f",
+          color: online ? "#f6ffed" : connectionState === "syncing" ? "#f0f5ff" : "#fff2f0",
+          borderColor: online ? "#52c41a" : connectionState === "syncing" ? "#1677ff" : "#ff4d4f",
         },
-        label: { color: online ? "#389e0d" : "#cf1322" },
+        label: { color: online ? "#389e0d" : connectionState === "syncing" ? "#1677ff" : "#cf1322" },
       };
     };
 

@@ -50,6 +50,7 @@ const areRealtimeEntriesEqual = (previous?: Device.Realtime, current?: Device.Re
   return (
     previous.reportTime === current.reportTime &&
     previous.connected === current.connected &&
+    previous.connectionState === current.connectionState &&
     areImagesEqual(previous.image, current.image) &&
     areElementsEqual(previous.elements, current.elements)
   );
@@ -168,6 +169,7 @@ export function useDeviceList(options?: {
         // 实时数据字段
         reportTime: realtime?.reportTime,
         connected: realtime?.connected,
+        connectionState: realtime?.connectionState,
         elements: realtime?.elements,
         image: realtime?.image,
       } as Device.RealTimeData;
@@ -200,24 +202,30 @@ export function useDeviceList(options?: {
     () => Promise.all([refetchStatic(), refetchRealtime()]),
     [refetchRealtime, refetchStatic]
   );
+  const isLoading = staticQuery.isLoading && mergedList.length === 0;
+  const isFetching = staticQuery.isFetching || realtimeQuery.isFetching;
 
   return useMemo(
     () => ({
       data,
-      isLoading: staticQuery.isLoading || realtimeQuery.isLoading,
+      isLoading,
+      isFetching,
       isError: staticQuery.isError || realtimeQuery.isError,
       error: staticQuery.error || realtimeQuery.error,
       refetch,
     }),
     [
       data,
+      realtimeQuery.isFetching,
+      isFetching,
+      isLoading,
       realtimeQuery.error,
       realtimeQuery.isError,
-      realtimeQuery.isLoading,
       refetch,
       staticQuery.error,
       staticQuery.isError,
       staticQuery.isLoading,
+      staticQuery.isFetching,
     ]
   );
 }

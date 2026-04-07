@@ -628,6 +628,16 @@ public:
     /** 连接状态检查回调类型 */
     using ConnectionChecker = std::function<bool(int deviceId)>;
 
+    static const char* resolveConnectionState(
+        const RealtimeDataCache::DeviceRealtimeData& deviceData,
+        const std::string& latestTime,
+        bool connected
+    ) {
+        if (connected) return "online";
+        if (latestTime.empty() && deviceData.empty()) return "syncing";
+        return "offline";
+    }
+
     static Json::Value buildRealtimeItem(
         const DeviceCache::CachedDevice& device,
         const RealtimeDataCache::DeviceRealtimeData& deviceData,
@@ -637,7 +647,9 @@ public:
         Json::Value item(Json::objectValue);
         item["id"] = device.id;
         item["reportTime"] = latestTime.empty() ? Json::nullValue : Json::Value(latestTime);
-        item["connected"] = isConnected ? isConnected(device.id) : false;
+        const bool connected = isConnected ? isConnected(device.id) : false;
+        item["connected"] = connected;
+        item["connectionState"] = resolveConnectionState(deviceData, latestTime, connected);
 
         // 从 funcCode 数据中提取实时值
         std::map<std::string, std::pair<Json::Value, std::string>> funcDataPairs;
@@ -715,7 +727,9 @@ public:
         item["device"] = deviceObj;
 
         item["reportTime"] = latestTime.empty() ? Json::nullValue : Json::Value(latestTime);
-        item["connected"] = isConnected ? isConnected(device.id) : false;
+        const bool connected = isConnected ? isConnected(device.id) : false;
+        item["connected"] = connected;
+        item["connectionState"] = resolveConnectionState(deviceData, latestTime, connected);
 
         // 解析实时数据
         std::map<std::string, std::pair<Json::Value, std::string>> funcDataPairs;

@@ -6,7 +6,7 @@ import { Alert, App, Button, Checkbox, Flex, Input } from "antd";
 import { useCallback, useState } from "react";
 import { useDeviceCommand } from "@/services";
 import type { Device } from "@/types";
-import { isOnline } from "./utils";
+import { getDeviceConnectionState } from "./utils";
 
 interface CommandElement {
   _key: string;
@@ -135,14 +135,23 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
 
   const checkOnline = useCallback((): Promise<boolean> => {
-    const online = isOnline(device.connected, device.reportTime, device.online_timeout);
-    if (!online) {
+    const connectionState = getDeviceConnectionState(
+      device.connected,
+      device.reportTime,
+      device.online_timeout,
+      device.connectionState
+    );
+    if (connectionState !== "online") {
       return new Promise((resolve) => {
         modal.confirm({
-          title: "设备当前离线",
+          title: connectionState === "syncing" ? "设备数据同步中" : "设备当前离线",
           content: (
             <Alert
-              message="设备离线，指令可能无法送达"
+              message={
+                connectionState === "syncing"
+                  ? "设备正在同步最新数据，建议稍后再下发指令"
+                  : "设备离线，指令可能无法送达"
+              }
               type="warning"
               showIcon
               className="!mt-2"
@@ -156,7 +165,7 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
       });
     }
     return Promise.resolve(true);
-  }, [device.connected, device.reportTime, device.online_timeout, modal]);
+  }, [device.connected, device.connectionState, device.reportTime, device.online_timeout, modal]);
 
   const checkLinkId = useCallback(() => {
     if (device.link_id == null && !device.agent_id) {

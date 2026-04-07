@@ -692,7 +692,28 @@ public:
             for (auto& [id, data] : extraData) {
                 deviceDataMap[id] = std::move(data);
             }
-            // 离线设备不更新 latestTimeMap（保持为空，前端显示离线状态）
+            auto extraLatestTimeMap = co_await realtimeCache.getLatestReportTimes(missingIds);
+            for (auto& [id, time] : extraLatestTimeMap) {
+                latestTimeMap[id] = std::move(time);
+            }
+        }
+
+        // 兜底：如果 latest 键丢失但实时数据还在，从当前数据中重新推导最新上报时间
+        for (const auto& [deviceId, deviceData] : deviceDataMap) {
+            if (latestTimeMap.find(deviceId) != latestTimeMap.end()) {
+                continue;
+            }
+
+            std::string latestTime;
+            for (const auto& [funcCode, funcData] : deviceData) {
+                (void)funcCode;
+                if (latestTime.empty() || funcData.reportTime > latestTime) {
+                    latestTime = funcData.reportTime;
+                }
+            }
+            if (!latestTime.empty()) {
+                latestTimeMap[deviceId] = std::move(latestTime);
+            }
         }
 
         // 构建返回数据（复用 DeviceDataTransformer::buildRealtimeItem）

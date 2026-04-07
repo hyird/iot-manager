@@ -8,6 +8,8 @@ import type { Device } from "@/types";
 /** 默认在线超时时间（秒） */
 export const DEFAULT_ONLINE_TIMEOUT = 300;
 
+export type DeviceConnectionState = "online" | "offline" | "syncing";
+
 /** 获取默认时间范围（最近一周） */
 export const getDefaultTimeRange = () => [
   dayjs().subtract(7, "day").startOf("day"),
@@ -16,20 +18,37 @@ export const getDefaultTimeRange = () => [
 
 /**
  * 判断设备在线状态
- * 优先使用后端返回的 connected 字段（基于实际 TCP 连接状态），
- * 若 connected 未提供则回退到上报时间判断。
+ * 保留旧接口兼容：只要设备是在线或处于同步中，都视为“在线展示态”。
  */
 export const isOnline = (connected?: boolean, reportTime?: string, onlineTimeout?: number) => {
-  // 优先使用后端的连接状态
-  if (connected !== undefined) return connected;
+  return getDeviceConnectionState(connected, reportTime, onlineTimeout) === "online";
+};
 
-  // 回退：基于上报时间判断
-  if (!reportTime) return false;
+/**
+ * 获取设备连接状态
+ *
+ * - online: 实际连接在线
+ * - offline: 明确离线或上报已超时
+ * - syncing: 首次加载/缓存补齐中，尚无有效上报时间
+ */
+export const getDeviceConnectionState = (
+  connected?: boolean,
+  reportTime?: string,
+  onlineTimeout?: number,
+  connectionState?: DeviceConnectionState
+): DeviceConnectionState => {
+  if (connectionState) return connectionState;
+  if (connected === true) return "online";
+  if (connected === false) {
+    return reportTime ? "offline" : "syncing";
+  }
+
+  if (!reportTime) return "syncing";
   const reportTs = new Date(reportTime).getTime();
-  if (reportTs === 0 || Number.isNaN(reportTs)) return false;
+  if (reportTs === 0 || Number.isNaN(reportTs)) return "syncing";
 
   const threshold = (onlineTimeout || DEFAULT_ONLINE_TIMEOUT) * 1000;
-  return Date.now() - reportTs < threshold;
+  return Date.now() - reportTs < threshold ? "online" : "offline";
 };
 
 /** 格式化上报时间 */

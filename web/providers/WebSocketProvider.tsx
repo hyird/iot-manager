@@ -71,6 +71,7 @@ interface RealtimeUpdate {
   id: number;
   reportTime?: string | null;
   connected?: boolean;
+  connectionState?: Device.ConnectionState;
   elements?: Device.Element[];
   image?: { operationId: string; data: string } | null;
 }
@@ -128,6 +129,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         if (
           device.reportTime === (update.reportTime ?? device.reportTime) &&
           device.connected === (update.connected ?? device.connected) &&
+          device.connectionState === (update.connectionState ?? device.connectionState) &&
           !update.elements &&
           !update.image
         ) {
@@ -139,6 +141,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           ...device,
           reportTime: update.reportTime ?? device.reportTime,
           connected: update.connected ?? device.connected,
+          connectionState: update.connectionState ?? device.connectionState,
           elements: update.elements ?? device.elements,
           image: update.image ?? device.image,
         } as Device.Realtime;
