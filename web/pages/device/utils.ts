@@ -29,6 +29,12 @@ export const isOnline = (connected?: boolean, reportTime?: string, onlineTimeout
   return getDeviceConnectionState(connected, reportTime, onlineTimeout) !== "offline";
 };
 
+const getReportTimeMs = (reportTime?: string) => {
+  if (!reportTime) return Number.NEGATIVE_INFINITY;
+  const ts = new Date(reportTime).getTime();
+  return Number.isNaN(ts) ? Number.NEGATIVE_INFINITY : ts;
+};
+
 /**
  * 获取设备连接状态
  *
@@ -42,18 +48,16 @@ export const getDeviceConnectionState = (
   onlineTimeout?: number,
   connectionState?: DeviceConnectionState
 ): DeviceConnectionState => {
-  if (connectionState) return connectionState;
-  if (connected === true) return "online";
-  if (connected === false) {
-    return reportTime ? "offline" : "syncing";
+  const reportTs = getReportTimeMs(reportTime);
+  if (reportTs !== Number.NEGATIVE_INFINITY) {
+    const threshold = (onlineTimeout || DEFAULT_ONLINE_TIMEOUT) * 1000;
+    return Date.now() - reportTs < threshold ? "online" : "offline";
   }
 
-  if (!reportTime) return "syncing";
-  const reportTs = new Date(reportTime).getTime();
-  if (reportTs === 0 || Number.isNaN(reportTs)) return "syncing";
-
-  const threshold = (onlineTimeout || DEFAULT_ONLINE_TIMEOUT) * 1000;
-  return Date.now() - reportTs < threshold ? "online" : "offline";
+  if (connectionState) return connectionState;
+  if (connected === true) return "online";
+  if (connected === false) return "syncing";
+  return "syncing";
 };
 
 /** 获取设备状态徽标 */

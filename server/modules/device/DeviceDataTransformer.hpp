@@ -6,7 +6,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
 #include <functional>
+#include <optional>
+#include <sstream>
 
 /**
  * @brief 设备数据转换器
@@ -628,13 +633,89 @@ public:
     /** 连接状态检查回调类型 */
     using ConnectionChecker = std::function<bool(int deviceId)>;
 
+    static std::optional<std::chrono::system_clock::time_point> parseReportTime(
+        const std::string& reportTime) {
+        if (reportTime.empty()) return std::nullopt;
+
+        std::string timePart = reportTime;
+        int offsetSeconds = 0;
+        bool hasOffset = false;
+
+        if (!timePart.empty() && timePart.back() == 'Z') {
+            timePart.pop_back();
+        } else if (timePart.size() >= 6 &&
+                   (timePart[timePart.size() - 6] == '+' || timePart[timePart.size() - 6] == '-') &&
+                   timePart[timePart.size() - 3] == ':') {
+            const int sign = timePart[timePart.size() - 6] == '-' ? -1 : 1;
+            const auto offsetText = timePart.substr(timePart.size() - 5);
+            int hours = 0;
+            int minutes = 0;
+            try {
+                hours = std::stoi(offsetText.substr(0, 2));
+                minutes = std::stoi(offsetText.substr(3, 2));
+            } catch (...) {
+                return std::nullopt;
+            }
+            offsetSeconds = sign * (hours * 3600 + minutes * 60);
+            timePart.erase(timePart.size() - 6);
+            hasOffset = true;
+        }
+
+        if (timePart.size() >= 19 && timePart[10] == 'T') {
+            timePart[10] = ' ';
+        }
+
+        std::tm tm{};
+        std::istringstream ss(timePart);
+        ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+        if (ss.fail()) return std::nullopt;
+
+        const std::time_t tt =
+#ifdef _WIN32
+            _mkgmtime(&tm);
+#else
+            timegm(&tm);
+#endif
+        if (tt == static_cast<std::time_t>(-1)) return std::nullopt;
+
+        auto tp = std::chrono::system_clock::from_time_t(tt);
+        if (hasOffset) {
+            tp -= std::chrono::seconds(offsetSeconds);
+        }
+        return tp;
+    }
+
+    static bool isReportTimeFresh(const std::string& reportTime, int onlineTimeoutSec) {
+        const auto parsed = parseReportTime(reportTime);
+        if (!parsed) return false;
+
+        const int timeoutSec = onlineTimeoutSec > 0 ? onlineTimeoutSec : 300;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now() - *parsed
+        ).count();
+        return elapsed < timeoutSec;
+    }
+
     static const char* resolveConnectionState(
         const RealtimeDataCache::DeviceRealtimeData& deviceData,
         const std::string& latestTime,
-        bool connected
+        bool connected,
+        int onlineTimeoutSec
     ) {
-        if (connected) return "online";
-        if (latestTime.empty() && deviceData.empty()) return "syncing";
+        if (latestTime.empty()) {
+            if (deviceData.empty()) {
+                return connected ? "online" : "syncing";
+            }
+            return connected ? "online" : "offline";
+        }
+
+        if (isReportTimeFresh(latestTime, onlineTimeoutSec)) {
+            return "online";
+        }
+
+        if (connected && deviceData.empty()) {
+            return "syncing";
+        }
         return "offline";
     }
 
@@ -642,14 +723,15 @@ public:
         const DeviceCache::CachedDevice& device,
         const RealtimeDataCache::DeviceRealtimeData& deviceData,
         const std::string& latestTime,
-        const ConnectionChecker& isConnected = nullptr
+        const ConnectionChecker& isConnected = nullptr,
+        int onlineTimeoutSec = 300
     ) {
         Json::Value item(Json::objectValue);
         item["id"] = device.id;
         item["reportTime"] = latestTime.empty() ? Json::nullValue : Json::Value(latestTime);
         const bool connected = isConnected ? isConnected(device.id) : false;
         item["connected"] = connected;
-        item["connectionState"] = resolveConnectionState(deviceData, latestTime, connected);
+        item["connectionState"] = resolveConnectionState(deviceData, latestTime, connected, onlineTimeoutSec);
 
         // 从 funcCode 数据中提取实时值
         std::map<std::string, std::pair<Json::Value, std::string>> funcDataPairs;
@@ -711,7 +793,8 @@ public:
         const DeviceCache::CachedDevice& device,
         const RealtimeDataCache::DeviceRealtimeData& deviceData,
         const std::string& latestTime,
-        const ConnectionChecker& isConnected = nullptr
+        const ConnectionChecker& isConnected = nullptr,
+        int onlineTimeoutSec = 300
     ) {
         Json::Value item(Json::objectValue);
 
@@ -729,7 +812,7 @@ public:
         item["reportTime"] = latestTime.empty() ? Json::nullValue : Json::Value(latestTime);
         const bool connected = isConnected ? isConnected(device.id) : false;
         item["connected"] = connected;
-        item["connectionState"] = resolveConnectionState(deviceData, latestTime, connected);
+        item["connectionState"] = resolveConnectionState(deviceData, latestTime, connected, onlineTimeoutSec);
 
         // 解析实时数据
         std::map<std::string, std::pair<Json::Value, std::string>> funcDataPairs;
