@@ -284,7 +284,6 @@ interface DeviceGridItemProps {
   device: Device.RealTimeData;
   canEdit: boolean;
   canDelete: boolean;
-  isRealtimeSyncing: boolean;
   isCommandPopoverOpen: boolean;
   activeCommandFunc: Device.CommandOperation | null;
   onImageClick: (imageOp: Device.ImageOperation) => void;
@@ -300,7 +299,6 @@ const DeviceGridItem = memo(
     device,
     canEdit,
     canDelete,
-    isRealtimeSyncing,
     isCommandPopoverOpen,
     activeCommandFunc,
     onImageClick,
@@ -323,7 +321,7 @@ const DeviceGridItem = memo(
     const statusTag =
       connectionState === "online"
         ? { label: "在线", color: "success" as const }
-        : connectionState === "syncing" || (isRealtimeSyncing && !device.reportTime)
+        : connectionState === "syncing"
           ? { label: "同步中", color: "processing" as const }
           : { label: "离线", color: "error" as const };
     const items = useMemo(() => buildDeviceCardItems(device.elements), [device.elements]);
@@ -537,7 +535,7 @@ const DevicePage = () => {
   // ========== Queries & Mutations ==========
 
   const { connected: wsConnected } = useWsStatus();
-  const { data, isLoading, isFetching, refetch } = useDeviceList({
+  const { data, isLoading, refetch } = useDeviceList({
     enabled: canQuery,
     pollingInterval: wsConnected ? false : 3000,
   });
@@ -735,7 +733,6 @@ const DevicePage = () => {
           device={device}
           canEdit={canEdit}
           canDelete={canDelete}
-          isRealtimeSyncing={isFetching && !isLoading}
           isCommandPopoverOpen={commandPopoverOpen && commandDevice?.id === device.id}
           activeCommandFunc={commandDevice?.id === device.id ? commandFunc : null}
           onImageClick={handleImageClick}
