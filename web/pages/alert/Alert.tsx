@@ -32,6 +32,7 @@ import {
   useAlertTemplateList,
   useAlertTemplateSave,
   useDeviceOptions,
+  alertKeys,
 } from "@/services";
 import type { Alert } from "@/types";
 import { AlertRuleFormModal } from "./AlertRuleFormModal";
@@ -199,7 +200,7 @@ function RuleConfigModal({ open, onClose }: { open: boolean; onClose: () => void
       {
         onSuccess: () => {
           setApplyingTemplate(null);
-          queryClient.invalidateQueries({ queryKey: ["alert"] });
+          queryClient.invalidateQueries({ queryKey: alertKeys.all });
         },
       }
     );

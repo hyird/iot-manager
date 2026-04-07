@@ -3,22 +3,20 @@
  */
 
 import type { Device } from "@/types";
-import { useMutationWithFeedback } from "../common";
+import { useMutationWithFeedback, useSaveMutationWithFeedback } from "../common";
 import * as deviceApi from "./api";
 import { deviceKeys } from "./keys";
 
 /** 保存设备 Mutation (创建或更新) */
 export function useDeviceSave() {
-  return useMutationWithFeedback({
-    mutationFn: async (data: Device.CreateDto & { id?: number }): Promise<void> => {
-      if (data.id) {
-        const { id, ...rest } = data;
-        await deviceApi.update(id, rest);
-      } else {
-        await deviceApi.create(data);
-      }
-    },
-    successMessage: (_, variables) => (variables.id ? "更新成功" : "创建成功"),
+  return useSaveMutationWithFeedback<
+    Device.CreateDto & { id?: number },
+    Device.CreateDto,
+    Device.UpdateDto
+  >({
+    createFn: deviceApi.create,
+    updateFn: deviceApi.update,
+    toUpdatePayload: ({ id: _id, ...rest }) => rest,
     invalidateKeys: [deviceKeys.all],
   });
 }

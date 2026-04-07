@@ -80,7 +80,7 @@ public:
         auto json = ControllerUtils::requireJson(req, "无效的请求体");
 
         co_await service_.update(id, *json);
-        co_return Response::ok(Json::Value::null, "更新成功");
+        co_return Response::updated("更新成功");
     }
 
     Task<HttpResponsePtr> approve(HttpRequestPtr req, int id) {
@@ -93,7 +93,7 @@ public:
             co_return Response::notFound("采集 Agent 不存在");
         }
 
-        co_return Response::ok(Json::Value::null, result.message);
+        co_return Response::message(result.message);
     }
 
     Task<HttpResponsePtr> resync(HttpRequestPtr req, int id) {
@@ -108,7 +108,7 @@ public:
             co_return Response::conflict("采集 Agent 当前离线，无法立即重同步");
         }
 
-        co_return Response::ok(Json::Value::null, "已发送配置重同步请求");
+        co_return Response::message("已发送配置重同步请求");
     }
 
     Task<HttpResponsePtr> updateNetworkConfig(HttpRequestPtr req, int id) {
@@ -122,8 +122,9 @@ public:
             co_return Response::notFound("采集 Agent 不存在");
         }
 
-        co_return Response::ok(Json::Value::null,
-            result.dispatched ? "网络配置已保存并下发" : "网络配置已保存，Agent 离线时将在上线后自动下发");
+        co_return Response::message(
+            result.dispatched ? "网络配置已保存并下发" : "网络配置已保存，Agent 离线时将在上线后自动下发"
+        );
     }
 
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
@@ -138,7 +139,7 @@ public:
             co_return Response::conflict(result.rejectReason);
         }
 
-        co_return Response::ok(Json::Value::null, "采集 Agent 已删除");
+        co_return Response::deleted("采集 Agent 已删除");
     }
 
     // ========== Agent Endpoint ==========
@@ -168,7 +169,7 @@ public:
         auto json = ControllerUtils::requireJson(req, "无效的请求体");
 
         co_await service_.updateEndpoint(id, *json);
-        co_return Response::ok(Json::Value::null, "更新成功");
+        co_return Response::updated("更新成功");
     }
 
     Task<HttpResponsePtr> removeEndpoint(HttpRequestPtr req, int id) {
@@ -179,7 +180,7 @@ public:
         if (!result.found) co_return Response::notFound("端点不存在");
         if (result.rejected) co_return Response::conflict(result.rejectReason);
 
-        co_return Response::ok(Json::Value::null, "端点已删除");
+        co_return Response::deleted("端点已删除");
     }
 };
 

@@ -8,12 +8,7 @@ export * as departmentApi from "./api";
 // Keys
 export { departmentKeys, departmentQueryKeys } from "./keys";
 // Mutations
-export {
-  useDepartmentCreate,
-  useDepartmentDelete,
-  useDepartmentSave,
-  useDepartmentUpdate,
-} from "./mutations";
+export { useDepartmentSave } from "./mutations";
 // Queries
 export {
   useDepartmentDetail,

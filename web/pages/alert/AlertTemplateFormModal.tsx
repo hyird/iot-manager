@@ -2,7 +2,7 @@ import { PlusOutlined } from "@ant-design/icons";
 import { type UseMutationResult, useQueryClient } from "@tanstack/react-query";
 import { AutoComplete, Button, Form, Input, InputNumber, Modal, Select, Spin } from "antd";
 import { useEffect, useMemo, useState } from "react";
-import { useProtocolConfigDetail, useProtocolConfigOptions } from "@/services";
+import { alertKeys, useProtocolConfigDetail, useProtocolConfigOptions } from "@/services";
 import type { Alert, Modbus, Protocol, SL651 } from "@/types";
 import { ConditionEditor } from "./ConditionEditor";
 
@@ -184,7 +184,7 @@ export function AlertTemplateFormModal({
       {
         onSuccess: () => {
           onClose();
-          queryClient.invalidateQueries({ queryKey: ["alert"] });
+          queryClient.invalidateQueries({ queryKey: alertKeys.all });
         },
       }
     );

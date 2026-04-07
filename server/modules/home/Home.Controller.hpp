@@ -69,7 +69,7 @@ public:
 
         LOG_INFO << "All caches cleared by userId: " << req->attributes()->get<int>("userId");
 
-        co_return Response::ok("缓存清理成功");
+        co_return Response::message("缓存清理成功");
     }
 
     /**

@@ -26,6 +26,19 @@ public:
         return error(e.getCode(), e.getMessage(), e.getStatus());
     }
 
+private:
+    static HttpResponsePtr messageResponse(const std::string& message, HttpStatusCode status) {
+        Json::Value json;
+        json["code"] = 0;
+        json["message"] = message;
+
+        auto resp = HttpResponse::newHttpJsonResponse(json);
+        resp->setStatusCode(status);
+        return resp;
+    }
+
+public:
+
     static HttpResponsePtr ok(const Json::Value &data = Json::Value::null,
                                const std::string &message = "Success") {
         Json::Value json;
@@ -38,6 +51,11 @@ public:
         auto resp = HttpResponse::newHttpJsonResponse(json);
         resp->setStatusCode(k200OK);
         return resp;
+    }
+
+    static HttpResponsePtr message(const std::string &message,
+                                    HttpStatusCode status = k200OK) {
+        return messageResponse(message, status);
     }
 
     static HttpResponsePtr page(const Json::Value &items,
@@ -63,33 +81,15 @@ public:
     }
 
     static HttpResponsePtr created(const std::string &message = "创建成功") {
-        Json::Value json;
-        json["code"] = 0;
-        json["message"] = message;
-
-        auto resp = HttpResponse::newHttpJsonResponse(json);
-        resp->setStatusCode(k201Created);
-        return resp;
+        return messageResponse(message, k201Created);
     }
 
     static HttpResponsePtr updated(const std::string &message = "更新成功") {
-        Json::Value json;
-        json["code"] = 0;
-        json["message"] = message;
-
-        auto resp = HttpResponse::newHttpJsonResponse(json);
-        resp->setStatusCode(k200OK);
-        return resp;
+        return messageResponse(message, k200OK);
     }
 
     static HttpResponsePtr deleted(const std::string &message = "删除成功") {
-        Json::Value json;
-        json["code"] = 0;
-        json["message"] = message;
-
-        auto resp = HttpResponse::newHttpJsonResponse(json);
-        resp->setStatusCode(k200OK);
-        return resp;
+        return messageResponse(message, k200OK);
     }
 
     static HttpResponsePtr error(int code,

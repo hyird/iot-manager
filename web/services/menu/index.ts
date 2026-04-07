@@ -8,7 +8,7 @@ export * as menuApi from "./api";
 // Keys
 export { menuKeys, menuQueryKeys } from "./keys";
 // Mutations
-export { useMenuCreate, useMenuDelete, useMenuSave, useMenuUpdate } from "./mutations";
+export { useMenuSave } from "./mutations";
 // Queries
 export {
   useMenuDetail,

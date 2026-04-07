@@ -3,27 +3,9 @@
  */
 
 import type { User } from "@/types";
-import { useMutationWithFeedback } from "../common";
+import { useMutationWithFeedback, useSaveMutationWithFeedback } from "../common";
 import * as api from "./api";
 import { userQueryKeys } from "./keys";
-
-/** 创建用户 */
-export function useUserCreate() {
-  return useMutationWithFeedback({
-    mutationFn: api.create,
-    successMessage: "创建成功",
-    invalidateKeys: [userQueryKeys.all],
-  });
-}
-
-/** 更新用户 */
-export function useUserUpdate() {
-  return useMutationWithFeedback({
-    mutationFn: ({ id, data }: { id: number; data: User.UpdateDto }) => api.update(id, data),
-    successMessage: "更新成功",
-    invalidateKeys: [userQueryKeys.all],
-  });
-}
 
 /** 删除用户 */
 export function useUserDelete() {
@@ -36,15 +18,16 @@ export function useUserDelete() {
 
 /** 保存用户（创建或更新） */
 export function useUserSave() {
-  return useMutationWithFeedback({
-    mutationFn: async (values: User.CreateDto & { id?: number }) => {
-      if (values.id) {
-        const { id, username: _, ...data } = values;
-        return api.update(id, data);
-      }
-      return api.create(values);
-    },
-    successMessage: "保存成功",
+  return useSaveMutationWithFeedback<
+    User.CreateDto & { id?: number },
+    User.CreateDto,
+    User.UpdateDto
+  >({
+    createFn: api.create,
+    updateFn: api.update,
+    toUpdatePayload: ({ id: _id, username: _username, ...data }) => data as User.UpdateDto,
+    createMessage: "保存成功",
+    updateMessage: "保存成功",
     invalidateKeys: [userQueryKeys.all],
   });
 }

@@ -3,22 +3,20 @@
  */
 
 import type { Alert } from "@/types";
-import { useMutationWithFeedback } from "../common";
+import { useMutationWithFeedback, useSaveMutationWithFeedback } from "../common";
 import * as alertApi from "./api";
 import { alertKeys } from "./keys";
 
 /** 保存告警规则 Mutation (创建或更新) */
 export function useAlertRuleSave() {
-  return useMutationWithFeedback({
-    mutationFn: async (data: Alert.RuleDto & { id?: number }): Promise<void> => {
-      if (data.id) {
-        const { id, ...rest } = data;
-        await alertApi.updateRule(id, rest);
-      } else {
-        await alertApi.createRule(data);
-      }
-    },
-    successMessage: (_, variables) => (variables.id ? "更新成功" : "创建成功"),
+  return useSaveMutationWithFeedback<
+    Alert.RuleDto & { id?: number },
+    Alert.RuleDto,
+    Alert.RuleDto
+  >({
+    createFn: alertApi.createRule,
+    updateFn: (id, data) => alertApi.updateRule(id, data),
+    toUpdatePayload: ({ id: _id, ...rest }) => rest,
     invalidateKeys: [alertKeys.all],
   });
 }
@@ -61,16 +59,14 @@ export function useAlertBatchAcknowledge() {
 
 /** 保存告警模板 Mutation (创建或更新) */
 export function useAlertTemplateSave() {
-  return useMutationWithFeedback({
-    mutationFn: async (data: Alert.TemplateDto & { id?: number }): Promise<void> => {
-      if (data.id) {
-        const { id, ...rest } = data;
-        await alertApi.updateTemplate(id, rest);
-      } else {
-        await alertApi.createTemplate(data);
-      }
-    },
-    successMessage: (_, variables) => (variables.id ? "更新成功" : "创建成功"),
+  return useSaveMutationWithFeedback<
+    Alert.TemplateDto & { id?: number },
+    Alert.TemplateDto,
+    Alert.TemplateDto
+  >({
+    createFn: alertApi.createTemplate,
+    updateFn: (id, data) => alertApi.updateTemplate(id, data),
+    toUpdatePayload: ({ id: _id, ...rest }) => rest,
     invalidateKeys: [alertKeys.all],
   });
 }

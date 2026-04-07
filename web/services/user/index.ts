@@ -8,6 +8,6 @@ export * as userApi from "./api";
 // Keys
 export { userKeys, userQueryKeys } from "./keys";
 // Mutations
-export { useUserCreate, useUserDelete, useUserSave, useUserUpdate } from "./mutations";
+export { useUserDelete, useUserSave } from "./mutations";
 // Queries
 export { useUserDetail, useUserList } from "./queries";

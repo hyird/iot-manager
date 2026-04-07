@@ -19,6 +19,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { alertKeys } from "@/services";
 import { deviceKeys } from "@/services/device/keys";
 import { useAppSelector } from "@/store/hooks";
 import type { Device } from "@/types";
@@ -213,7 +214,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
             description: `${p.deviceName}: ${p.message}`,
             duration: p.severity === "critical" ? 0 : 5,
           });
-          queryClient.invalidateQueries({ queryKey: ["alert"] });
+          queryClient.invalidateQueries({ queryKey: alertKeys.all });
           return;
         }
 
@@ -228,7 +229,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
             description: `告警记录 #${p.recordId} 已${p.reason}`,
             duration: 3,
           });
-          queryClient.invalidateQueries({ queryKey: ["alert"] });
+          queryClient.invalidateQueries({ queryKey: alertKeys.all });
           return;
         }
 

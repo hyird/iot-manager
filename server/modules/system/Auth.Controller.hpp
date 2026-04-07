@@ -65,7 +65,7 @@ public:
         }
 
         co_await authService_.logout(userId, token, refreshToken);
-        co_return Response::ok("登出成功");
+        co_return Response::message("登出成功");
     }
 
     Task<HttpResponsePtr> getCurrentUser(HttpRequestPtr req) {

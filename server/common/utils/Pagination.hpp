@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Response.hpp"
+
 /**
  * @brief 分页参数结构
  * page 和 pageSize 都传才分页，任意一个没传则返回全部数据
@@ -70,24 +72,7 @@ struct Pagination {
                                           int total,
                                           int page,
                                           int pageSize) {
-        Json::Value data;
-        data["list"] = items;
-        data["total"] = total;
-
-        if (pageSize > 0) {
-            data["page"] = page;
-            data["pageSize"] = pageSize;
-            data["totalPages"] = static_cast<int>(std::ceil(static_cast<double>(total) / pageSize));
-        }
-
-        Json::Value json;
-        json["code"] = 0;
-        json["message"] = "Success";
-        json["data"] = data;
-
-        auto resp = HttpResponse::newHttpJsonResponse(json);
-        resp->setStatusCode(k200OK);
-        return resp;
+        return Response::page(items, total, page, pageSize);
     }
 
     std::string limitClause() const {

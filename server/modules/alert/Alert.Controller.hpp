@@ -126,7 +126,7 @@ public:
 
         int userId = ControllerUtils::getUserId(req);
         co_await service_.acknowledgeRecord(static_cast<int64_t>(id), userId);
-        co_return Response::ok("确认成功");
+        co_return Response::message("确认成功");
     }
 
     Task<HttpResponsePtr> batchAcknowledge(HttpRequestPtr req) {
@@ -138,7 +138,7 @@ public:
 
         int userId = ControllerUtils::getUserId(req);
         co_await service_.batchAcknowledge(ids, userId);
-        co_return Response::ok("批量确认成功");
+        co_return Response::message("批量确认成功");
     }
 
     // ==================== 统计 ====================
@@ -208,7 +208,7 @@ public:
         auto ids = ControllerUtils::toIntArray(idsArray);
 
         co_await service_.batchDeleteRules(ids);
-        co_return Response::ok("批量删除成功");
+        co_return Response::message("批量删除成功");
     }
 
     Task<HttpResponsePtr> applyTemplate(HttpRequestPtr req) {

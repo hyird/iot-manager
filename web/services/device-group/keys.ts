@@ -1,7 +1,9 @@
+import { createQueryKeys } from "../common";
+
+const deviceGroupBaseKeys = createQueryKeys("deviceGroup");
+
 export const deviceGroupKeys = {
-  all: ["deviceGroup"] as const,
-  tree: () => [...deviceGroupKeys.all, "tree"] as const,
-  treeWithCount: () => [...deviceGroupKeys.all, "treeCount"] as const,
-  details: () => [...deviceGroupKeys.all, "detail"] as const,
-  detail: (id: number) => [...deviceGroupKeys.details(), id] as const,
+  ...deviceGroupBaseKeys,
+  tree: () => [...deviceGroupBaseKeys.all, "tree"] as const,
+  treeWithCount: () => [...deviceGroupBaseKeys.all, "treeCount"] as const,
 };

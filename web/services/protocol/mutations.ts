@@ -3,7 +3,7 @@
  */
 
 import type { Protocol } from "@/types";
-import { useMutationWithFeedback } from "../common";
+import { useMutationWithFeedback, useSaveMutationWithFeedback } from "../common";
 import { deviceKeys } from "../device/keys";
 import * as api from "./api";
 import { protocolQueryKeys } from "./keys";
@@ -15,16 +15,17 @@ export type SaveProtocolConfigParams =
 
 /** 创建或更新协议配置 */
 export function useProtocolConfigSave() {
-  return useMutationWithFeedback({
-    mutationFn: async (data: SaveProtocolConfigParams) => {
-      if (data.id) {
-        const { id, protocol: _protocol, ...rest } = data;
-        await api.update(id, rest);
-        return;
-      }
-      await api.create(data as Protocol.CreateDto);
+  return useSaveMutationWithFeedback<
+    SaveProtocolConfigParams,
+    Protocol.CreateDto,
+    Protocol.UpdateDto
+  >({
+    createFn: api.create,
+    updateFn: (id, data) => api.update(id, data),
+    toUpdatePayload: (data) => {
+      const { id: _id, protocol: _protocol, ...rest } = data;
+      return rest as Protocol.UpdateDto;
     },
-    successMessage: (_, variables) => (variables.id ? "更新成功" : "创建成功"),
     invalidateKeys: [protocolQueryKeys.all, deviceKeys.all],
   });
 }

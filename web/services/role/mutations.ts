@@ -3,18 +3,9 @@
  */
 
 import type { Role } from "@/types";
-import { useMutationWithFeedback } from "../common";
+import { useMutationWithFeedback, useSaveMutationWithFeedback } from "../common";
 import * as api from "./api";
 import { roleQueryKeys } from "./keys";
-
-/** 创建角色 */
-export function useRoleCreate() {
-  return useMutationWithFeedback({
-    mutationFn: api.create,
-    successMessage: "创建成功",
-    invalidateKeys: [roleQueryKeys.all],
-  });
-}
 
 /** 更新角色 */
 export function useRoleUpdate() {
@@ -36,15 +27,16 @@ export function useRoleDelete() {
 
 /** 保存角色（创建或更新） */
 export function useRoleSave() {
-  return useMutationWithFeedback({
-    mutationFn: async (values: Role.CreateDto & { id?: number }) => {
-      if (values.id) {
-        const { id, ...data } = values;
-        return api.update(id, data);
-      }
-      return api.create(values);
-    },
-    successMessage: "保存成功",
+  return useSaveMutationWithFeedback<
+    Role.CreateDto & { id?: number },
+    Role.CreateDto,
+    Role.UpdateDto
+  >({
+    createFn: api.create,
+    updateFn: api.update,
+    toUpdatePayload: ({ id: _id, ...data }) => data,
+    createMessage: "保存成功",
+    updateMessage: "保存成功",
     invalidateKeys: [roleQueryKeys.all],
   });
 }

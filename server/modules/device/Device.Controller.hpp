@@ -208,7 +208,7 @@ public:
         auto result = co_await service_.sendCommand(linkId, deviceCode, elements, userId, deviceId);
 
         if (result.ok()) {
-            co_return Response::ok(Json::nullValue, result.message);
+            co_return Response::message(result.message);
         }
         throw result.toException();
     }
