@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <unistd.h>
+#include <fstream>
 #elif defined(_WIN32)
 #include <winsock2.h>
 #include <iphlpapi.h>
@@ -228,8 +229,8 @@ private:
                 item["display_name"] = name;
                 item["ip"] = "";
                 item["prefix_length"] = 0;
+                item["up"] = detectInterfaceUp(name);
             }
-            item["up"] = (ifa->ifa_flags & IFF_UP) != 0;
 
             if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) {
                 continue;
@@ -350,6 +351,60 @@ private:
     }
 
 #ifdef __linux__
+    static std::string readTrimmedFile(const std::string& path) {
+        std::ifstream ifs(path);
+        if (!ifs) {
+            return {};
+        }
+
+        std::string value;
+        std::getline(ifs, value);
+        const auto start = value.find_first_not_of(" \t\r\n");
+        if (start == std::string::npos) {
+            return {};
+        }
+        const auto end = value.find_last_not_of(" \t\r\n");
+        return value.substr(start, end - start + 1);
+    }
+
+    static bool detectInterfaceUp(const std::string& name) {
+        const std::string basePath = "/sys/class/net/" + name + "/";
+        const auto operstate = readTrimmedFile(basePath + "operstate");
+        if (operstate == "up") {
+            return true;
+        }
+        if (operstate == "down" || operstate == "dormant" || operstate == "lowerlayerdown") {
+            return false;
+        }
+
+        const auto carrier = readTrimmedFile(basePath + "carrier");
+        if (carrier == "1") {
+            return true;
+        }
+        if (carrier == "0") {
+            return false;
+        }
+
+        // 兜底：如果系统没有暴露 operstate / carrier，回退到行政启用状态
+        struct ifaddrs* interfaces = nullptr;
+        if (getifaddrs(&interfaces) != 0 || !interfaces) {
+            return false;
+        }
+
+        bool adminUp = false;
+        for (auto* ifa = interfaces; ifa != nullptr; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_name || name != ifa->ifa_name) {
+                continue;
+            }
+            adminUp = (ifa->ifa_flags & IFF_UP) != 0;
+            if (adminUp) {
+                break;
+            }
+        }
+        freeifaddrs(interfaces);
+        return adminUp;
+    }
+
     static int resolvePrefixLength(const sockaddr* netmask) {
         if (!netmask || netmask->sa_family != AF_INET) {
             return 0;

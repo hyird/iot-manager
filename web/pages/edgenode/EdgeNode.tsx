@@ -104,6 +104,38 @@ function getInterfaces(agent?: Agent.Item | null) {
   return merged;
 }
 
+function mergeNetworkConfig(
+  agent: Agent.Item,
+  updates: Agent.NetworkConfigItem[]
+): Agent.NetworkConfigItem[] {
+  const persisted = agent.network_config ?? [];
+  const merged = [...persisted];
+
+  for (const update of updates) {
+    if (!update.name) continue;
+
+    if (update.action === "delete") {
+      const index = merged.findIndex((item) => item.name === update.name);
+      if (index >= 0) {
+        merged.splice(index, 1);
+      }
+      continue;
+    }
+
+    const nextItem: Agent.NetworkConfigItem = {
+      ...update,
+    };
+    const index = merged.findIndex((item) => item.name === update.name);
+    if (index >= 0) {
+      merged[index] = nextItem;
+    } else {
+      merged.push(nextItem);
+    }
+  }
+
+  return merged;
+}
+
 function getExpectedEndpoints(agent: Agent.Item) {
   return agent.expected_endpoints ?? [];
 }
@@ -748,6 +780,10 @@ function NetworkConfigModal({
 }) {
   const [form] = Form.useForm();
   const isBridge = !!iface?.bridge_ports;
+  const deleteLabel = isBridge ? "删除桥接" : "清空配置";
+  const deleteDescription = isBridge
+    ? `确定删除桥接口「${iface?.display_name || iface?.name || ""}」？`
+    : `确定清空网卡「${iface?.display_name || iface?.name || ""}」的网络配置？`;
   const allInterfaces = getInterfaces(agent);
   // 可选的桥接端口：所有 UP 的物理接口（排除桥接口自身和已被桥接的端口）
   const availablePorts = useMemo(() => {
@@ -789,6 +825,18 @@ function NetworkConfigModal({
     onSubmit([item]);
   };
 
+  const handleDelete = () => {
+    if (!iface) return;
+    onSubmit([
+      {
+        name: iface.name,
+        type: isBridge ? "bridge" : "ethernet",
+        action: "delete",
+        mode: "none",
+      },
+    ]);
+  };
+
   const networkBackend = agent?.capabilities?.network_backend;
 
   return (
@@ -801,6 +849,24 @@ function NetworkConfigModal({
       afterOpenChange={(visible) => visible && handleOpen()}
       destroyOnHidden
       width={480}
+      footer={[
+        <Button key="cancel" onClick={onClose}>
+          取消
+        </Button>,
+        <Popconfirm
+          key="delete"
+          title={deleteLabel}
+          description={deleteDescription}
+          onConfirm={handleDelete}
+          okText="删除"
+          cancelText="取消"
+        >
+          <Button danger>{deleteLabel}</Button>
+        </Popconfirm>,
+        <Button key="ok" type="primary" loading={loading} onClick={handleSubmit}>
+          保存
+        </Button>,
+      ]}
     >
       {!iface ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未选择接口" />
@@ -1300,8 +1366,11 @@ export default function EdgeNodePage() {
         onClose={() => setNetworkConfigTarget(null)}
         onSubmit={(data) => {
           if (networkConfigTarget) {
+            const mergedData = data.some((item) => item.action === "delete")
+              ? data
+              : mergeNetworkConfig(networkConfigTarget.agent, data);
             networkConfigMutation.mutate(
-              { id: networkConfigTarget.agent.id, data },
+              { id: networkConfigTarget.agent.id, data: mergedData },
               {
                 onSuccess: () => setNetworkConfigTarget(null),
               }
@@ -1318,8 +1387,9 @@ export default function EdgeNodePage() {
         onClose={() => setCreateBridgeAgent(null)}
         onSubmit={(data) => {
           if (createBridgeAgent) {
+            const mergedData = mergeNetworkConfig(createBridgeAgent, data);
             networkConfigMutation.mutate(
-              { id: createBridgeAgent.id, data },
+              { id: createBridgeAgent.id, data: mergedData },
               {
                 onSuccess: () => setCreateBridgeAgent(null),
               }

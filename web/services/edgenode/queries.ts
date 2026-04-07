@@ -14,6 +14,7 @@ export function useAgentList(
     queryKey: agentQueryKeys.list(),
     queryFn: api.getList,
     staleTime: 10 * 1000,
+    refetchIntervalInBackground: true,
     ...options,
   });
 }

@@ -249,10 +249,27 @@ public:
         // 验证并构建网络配置
         const auto& interfaces = data["interfaces"];
         Json::Value networkConfig(Json::arrayValue);
+        Json::Value dispatchConfig(Json::arrayValue);
         if (interfaces.isArray()) {
+            bool hasUpserts = false;
+            std::vector<std::string> deleteNames;
+
             for (const auto& iface : interfaces) {
                 const auto name = iface.get("name", "").asString();
                 if (name.empty()) continue;
+
+                const auto action = iface.get("action", "").asString();
+                if (action == "delete") {
+                    deleteNames.push_back(name);
+
+                    Json::Value item(Json::objectValue);
+                    item["name"] = name;
+                    item["action"] = action;
+                    item["type"] = iface.get("type", "ethernet").asString();
+                    dispatchConfig.append(item);
+                    continue;
+                }
+                hasUpserts = true;
 
                 const auto mode = iface.get("mode", "dhcp").asString();
                 const auto type = iface.get("type", "ethernet").asString();
@@ -283,6 +300,30 @@ public:
                 }
 
                 networkConfig.append(item);
+                dispatchConfig.append(item);
+            }
+
+            if (!hasUpserts && !deleteNames.empty()) {
+                auto currentResult = co_await db.execSqlCoro(R"(
+                    SELECT network_config
+                    FROM agent_node
+                    WHERE id = ? AND deleted_at IS NULL
+                )", {std::to_string(id)});
+
+                Json::Value currentConfig(Json::arrayValue);
+                if (!currentResult.empty()) {
+                    currentConfig = parseJsonField(currentResult[0]["network_config"], Json::Value(Json::arrayValue));
+                }
+
+                Json::Value nextConfig(Json::arrayValue);
+                for (const auto& item : currentConfig) {
+                    const auto currentName = item.get("name", "").asString();
+                    if (std::find(deleteNames.begin(), deleteNames.end(), currentName) != deleteNames.end()) {
+                        continue;
+                    }
+                    nextConfig.append(item);
+                }
+                networkConfig = nextConfig;
             }
         }
 
@@ -298,8 +339,8 @@ public:
         });
 
         // 即时下发给在线 Agent
-        if (!networkConfig.empty()) {
-            response.dispatched = AgentBridgeManager::instance().sendNetworkConfig(id, networkConfig);
+        if (!dispatchConfig.empty()) {
+            response.dispatched = AgentBridgeManager::instance().sendNetworkConfig(id, dispatchConfig);
         }
 
         ResourceVersion::instance().incrementVersion("agent");

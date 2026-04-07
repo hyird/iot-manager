@@ -366,7 +366,7 @@ private:
         lastInterfacesFingerprint_ = computeInterfacesFingerprint();
     }
 
-    void sendHeartbeat(bool includeCapabilities = false) {
+    void sendHeartbeat(bool includeCapabilities = true) {
         if (!connected_) {
             return;
         }
@@ -600,6 +600,37 @@ private:
             const auto name = iface.get("name", "").asString();
             const auto type = iface.get("type", "ethernet").asString();
             const auto mode = iface.get("mode", "dhcp").asString();
+            const auto action = iface.get("action", "").asString();
+
+            if (action == "delete") {
+                std::cout << "[Agent] deleting network config for interface: " << name
+                          << ", type=" << type << std::endl;
+
+                if (type == "bridge") {
+                    auto error = AgentNetworkConfigurator::deleteBridge(name);
+                    if (!error.empty()) {
+                        std::cout << "[ERROR] " << "[Agent] delete bridge " << name << ": " << error << std::endl;
+                        sendNetworkConfigFailed(name, error, interfaces);
+                        return;
+                    }
+                } else {
+                    auto error = AgentNetworkConfigurator::clearInterfaceAddress(name);
+                    if (!error.empty()) {
+                        std::cout << "[ERROR] " << "[Agent] clear interface address " << name << ": " << error << std::endl;
+                        sendNetworkConfigFailed(name, error, interfaces);
+                        return;
+                    }
+                    error = AgentNetworkConfigurator::clearDefaultGateway(name);
+                    if (!error.empty()) {
+                        std::cout << "[ERROR] " << "[Agent] clear interface gateway " << name << ": " << error << std::endl;
+                        sendNetworkConfigFailed(name, error, interfaces);
+                        return;
+                    }
+                }
+
+                std::cout << "[Agent] network config deleted for " << name << std::endl;
+                continue;
+            }
 
             // ========== 桥接配置 ==========
             if (type == "bridge") {
