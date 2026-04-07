@@ -18,10 +18,10 @@ export const getDefaultTimeRange = () => [
 
 /**
  * 判断设备在线状态
- * 保留旧接口兼容：只要设备是在线或处于同步中，都视为“在线展示态”。
+ * 保留旧接口兼容：只要设备不是明确离线，都视为在线展示态。
  */
 export const isOnline = (connected?: boolean, reportTime?: string, onlineTimeout?: number) => {
-  return getDeviceConnectionState(connected, reportTime, onlineTimeout) === "online";
+  return getDeviceConnectionState(connected, reportTime, onlineTimeout) !== "offline";
 };
 
 /**

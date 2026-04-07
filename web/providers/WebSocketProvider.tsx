@@ -241,7 +241,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        // device:offline → 清空离线设备的 reportTime，即时反映离线状态
+        // device:offline → 直接标记离线设备为离线态，即时反映状态变化
         if (msg.type === "device:offline") {
           const payload = msg.data as { deviceIds?: number[] } | undefined;
           if (payload?.deviceIds?.length) {
@@ -251,9 +251,14 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
             if (existing?.list?.length) {
               let hasChanges = false;
               const mergedList = existing.list.map((device) => {
-                if (!offlineSet.has(device.id) || !device.reportTime) return device;
+                if (!offlineSet.has(device.id)) return device;
                 hasChanges = true;
-                return { ...device, reportTime: null };
+                return {
+                  ...device,
+                  reportTime: null,
+                  connected: false,
+                  connectionState: "offline",
+                };
               });
               if (hasChanges) {
                 queryClient.setQueryData(queryKey, { list: mergedList });
