@@ -186,7 +186,7 @@ export interface DeviceRealtimeData {
   /** 设备是否在线（基于实际 TCP 连接状态） */
   connected?: boolean;
   /** 设备连接状态（后端统一口径） */
-  connectionState?: "online" | "offline" | "syncing";
+  connectionState?: "online" | "offline";
   elements?: DeviceElement[];
   image?: { data: string };
 }
@@ -280,7 +280,7 @@ export interface DeviceRealTimeData extends DeviceStaticData {
   /** 设备是否在线（基于实际 TCP 连接状态） */
   connected?: boolean;
   /** 设备连接状态（后端统一口径） */
-  connectionState?: "online" | "offline" | "syncing";
+  connectionState?: "online" | "offline";
   reportTime?: string;
   elements?: DeviceElement[];
   image?: { data: string };
@@ -350,7 +350,7 @@ export interface HistoryDataQuery {
 
 /** 设备模块命名空间 */
 export namespace Device {
-  export type ConnectionState = "online" | "offline" | "syncing";
+  export type ConnectionState = "online" | "offline";
   export type Status = DeviceStatus;
   export type ModbusMode = import("./device").ModbusMode;
   export type Item = DeviceItem;

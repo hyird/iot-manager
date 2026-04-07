@@ -78,7 +78,6 @@ interface DeviceProtocolStats {
   total: number;
   online: number;
   offline: number;
-  syncing: number;
   enabled: number;
 }
 
@@ -86,7 +85,6 @@ interface DeviceStats {
   total: number;
   online: number;
   offline: number;
-  syncing: number;
   enabled: number;
   byProtocol: Record<string, DeviceProtocolStats>;
 }
@@ -95,7 +93,6 @@ const createEmptyDeviceStats = (): DeviceStats => ({
   total: 0,
   online: 0,
   offline: 0,
-  syncing: 0,
   enabled: 0,
   byProtocol: {},
 });
@@ -104,7 +101,6 @@ interface DeviceGroupStats {
   total: number;
   online: number;
   offline: number;
-  syncing: number;
   enabled: number;
 }
 
@@ -112,12 +108,11 @@ const createEmptyDeviceGroupStats = (): DeviceGroupStats => ({
   total: 0,
   online: 0,
   offline: 0,
-  syncing: 0,
   enabled: 0,
 });
 
 const accumulateDeviceStats = <
-  T extends { total: number; online: number; offline: number; syncing: number; enabled: number },
+  T extends { total: number; online: number; offline: number; enabled: number },
 >(
   stats: T,
   device: Device.RealTimeData
@@ -131,10 +126,8 @@ const accumulateDeviceStats = <
   stats.total++;
   if (state === "online") {
     stats.online++;
-  } else if (state === "offline") {
-    stats.offline++;
   } else {
-    stats.syncing++;
+    stats.offline++;
   }
   if (device.status === "enabled") {
     stats.enabled++;
@@ -148,7 +141,7 @@ const buildDeviceStats = (devices: Device.RealTimeData[]): DeviceStats => {
     accumulateDeviceStats(stats, device);
     const protocolName = device.protocol_type || device.protocol_name || "未知";
     if (!stats.byProtocol[protocolName]) {
-      stats.byProtocol[protocolName] = { total: 0, online: 0, offline: 0, syncing: 0, enabled: 0 };
+      stats.byProtocol[protocolName] = { total: 0, online: 0, offline: 0, enabled: 0 };
     }
     accumulateDeviceStats(stats.byProtocol[protocolName], device);
   }
@@ -431,9 +424,7 @@ const DeviceGridItem = memo(
                         ? "该设备已禁止远控"
                         : connectionState === "online"
                           ? "下发指令"
-                          : connectionState === "syncing"
-                            ? "设备同步中（点击后将提示）"
-                            : "设备离线（点击后将提示）"
+                          : "设备离线（点击后将提示）"
                     }
                   >
                     <Button
@@ -747,7 +738,6 @@ const DevicePage = () => {
       <Tag color="blue">{sectionStats.total} 个</Tag>
       {sectionStats.online > 0 && <Tag color="green">{sectionStats.online} 在线</Tag>}
       {sectionStats.offline > 0 && <Tag color="red">{sectionStats.offline} 离线</Tag>}
-      {sectionStats.syncing > 0 && <Tag color="processing">{sectionStats.syncing} 同步中</Tag>}
       {sectionStats.enabled > 0 && <Tag color="purple">{sectionStats.enabled} 已启用</Tag>}
     </Space>
   );
@@ -943,26 +933,6 @@ const DevicePage = () => {
             {protocolStatsEntries.map(([protocol, data]) => (
               <Tag key={protocol} color="red" className="!m-0 !px-3 !py-1 !text-sm !leading-5">
                 {protocol}: {data.offline}/{data.total}
-              </Tag>
-            ))}
-          </Flex>
-        </Card>
-        <Card
-          size="small"
-          className="flex-1 min-w-[140px]"
-          styles={{ body: { padding: "12px 16px" } }}
-        >
-          <Flex justify="space-between" align="center" className="mb-2.5">
-            <span className="text-gray-500 text-[13px]">同步中</span>
-            <span className="text-lg font-semibold text-[#1677ff]">
-              {stats.syncing}
-              <span className="text-[13px] text-gray-400 font-normal"> / {stats.total}</span>
-            </span>
-          </Flex>
-          <Flex gap={6} wrap="wrap">
-            {protocolStatsEntries.map(([protocol, data]) => (
-              <Tag key={protocol} color="processing" className="!m-0 !px-3 !py-1 !text-sm !leading-5">
-                {protocol}: {data.syncing}/{data.total}
               </Tag>
             ))}
           </Flex>

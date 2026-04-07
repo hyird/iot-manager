@@ -6,7 +6,7 @@ import { Alert, App, Button, Checkbox, Flex, Input } from "antd";
 import { useCallback, useState } from "react";
 import { useDeviceCommand } from "@/services";
 import type { Device } from "@/types";
-import { getDeviceConnectionState, getDeviceStatusBadge } from "./utils";
+import { getDeviceConnectionState } from "./utils";
 
 interface CommandElement {
   _key: string;
@@ -142,18 +142,13 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
       device.connectionState
     );
     if (connectionState !== "online") {
-      const statusBadge = getDeviceStatusBadge(connectionState);
       return new Promise((resolve) => {
         modal.confirm({
-          title: connectionState === "syncing" ? "设备数据同步中" : "设备当前离线",
+          title: "设备当前离线",
           content: (
             <Alert
-              message={
-                connectionState === "syncing"
-                  ? "设备正在同步最新数据，建议稍后再下发指令"
-                  : "设备离线，指令可能无法送达"
-              }
-              type={statusBadge.color === "processing" ? "info" : "warning"}
+              message="设备离线，指令可能无法送达"
+              type="warning"
               showIcon
               className="!mt-2"
             />
