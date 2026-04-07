@@ -73,6 +73,10 @@ export interface AgentRecentEvent {
   detail?: {
     configVersion?: number;
     managedDeviceCount?: number;
+    backend?: string;
+    interfaceName?: string;
+    requestedInterfaceCount?: number;
+    reportedInterfaceCount?: number;
     error?: string;
     version?: string;
     code?: string;
@@ -103,6 +107,8 @@ export interface AgentRuntime {
   arch?: string;
   platform?: string;
   lastAppliedConfigVersion?: number;
+  networkBackend?: string;
+  networkInterfaceCount?: number;
 }
 
 export interface AgentNetworkConfigItem {

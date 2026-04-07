@@ -1265,6 +1265,14 @@ export default function EdgeNodePage() {
                       {event.detail.managedDeviceCount ? (
                         <span>托管设备数: {event.detail.managedDeviceCount}</span>
                       ) : null}
+                      {event.detail.backend ? <span>后端: {event.detail.backend}</span> : null}
+                      {event.detail.interfaceName ? <span>接口: {event.detail.interfaceName}</span> : null}
+                      {event.detail.requestedInterfaceCount ? (
+                        <span>请求接口数: {event.detail.requestedInterfaceCount}</span>
+                      ) : null}
+                      {event.detail.reportedInterfaceCount ? (
+                        <span>上报接口数: {event.detail.reportedInterfaceCount}</span>
+                      ) : null}
                       {event.detail.version ? <span>版本: {event.detail.version}</span> : null}
                       {event.detail.code ? <span>编码: {event.detail.code}</span> : null}
                     </div>

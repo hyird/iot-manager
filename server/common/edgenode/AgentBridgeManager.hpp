@@ -685,31 +685,40 @@ public:
     Task<void> handleNetworkConfigApplied(const std::string& agentCode,
                                            const Json::Value& data) {
         int agentId = resolveAgentIdByCode(agentCode);
+        const auto capabilities = data.get("capabilities", Json::Value(Json::objectValue));
+        const auto runtime = data.get("runtime", Json::Value(Json::objectValue));
 
         // 更新 capabilities（刷新接口列表）
-        if (data.isMember("capabilities") && data["capabilities"].isObject()) {
+        if (capabilities.isObject() && !capabilities.empty()) {
             std::unique_lock lock(mutex_);
             auto it = sessionsByCode_.find(agentCode);
             if (it != sessionsByCode_.end() && it->second) {
-                it->second->capabilities = data["capabilities"];
+                it->second->capabilities = capabilities;
             }
         }
 
-        // 更新数据库中的 capabilities
-        if (agentId > 0 && data.isMember("capabilities")) {
+        // 更新数据库中的 capabilities / runtime
+        if (agentId > 0) {
             DatabaseService db;
             co_await db.execSqlCoro(R"(
                 UPDATE agent_node
                 SET capabilities = ?::jsonb,
+                    runtime = ?::jsonb,
+                    last_seen = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND deleted_at IS NULL
             )", {
-                JsonHelper::serialize(data["capabilities"]),
+                JsonHelper::serialize(capabilities.isObject() ? capabilities : Json::Value(Json::objectValue)),
+                JsonHelper::serialize(runtime.isObject() ? runtime : Json::Value(Json::objectValue)),
                 std::to_string(agentId)
             });
         }
 
-        appendRecentEvent(agentId, "network_config_applied", "success", "网络配置应用成功");
+        Json::Value detail(Json::objectValue);
+        detail["backend"] = data.get("backend", "").asString();
+        detail["requestedInterfaceCount"] = data.get("requestedInterfaceCount", 0).asInt();
+        detail["reportedInterfaceCount"] = data.get("reportedInterfaceCount", 0).asInt();
+        appendRecentEvent(agentId, "network_config_applied", "success", "网络配置应用成功", detail);
         ResourceVersion::instance().incrementVersion("agent");
     }
 
@@ -720,10 +729,33 @@ public:
         int agentId = resolveAgentIdByCode(agentCode);
         const auto ifName = data.get("interfaceName", "").asString();
         const auto error = data.get("error", "未知错误").asString();
+        const auto capabilities = data.get("capabilities", Json::Value(Json::objectValue));
+        const auto runtime = data.get("runtime", Json::Value(Json::objectValue));
+
+        if (agentId > 0) {
+            drogon::async_run([agentId, capabilities, runtime]() -> Task<> {
+                DatabaseService db;
+                co_await db.execSqlCoro(R"(
+                    UPDATE agent_node
+                    SET capabilities = ?::jsonb,
+                        runtime = ?::jsonb,
+                        last_seen = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND deleted_at IS NULL
+                )", {
+                    JsonHelper::serialize(capabilities.isObject() ? capabilities : Json::Value(Json::objectValue)),
+                    JsonHelper::serialize(runtime.isObject() ? runtime : Json::Value(Json::objectValue)),
+                    std::to_string(agentId)
+                });
+            });
+        }
 
         Json::Value detail(Json::objectValue);
         detail["interfaceName"] = ifName;
         detail["error"] = error;
+        detail["backend"] = data.get("backend", "").asString();
+        detail["requestedInterfaceCount"] = data.get("requestedInterfaceCount", 0).asInt();
+        detail["reportedInterfaceCount"] = data.get("reportedInterfaceCount", 0).asInt();
         appendRecentEvent(agentId, "network_config_failed", "error",
             "网络配置失败: " + error, detail);
 

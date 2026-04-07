@@ -400,6 +400,22 @@ private:
         sendMessage(agent::MESSAGE_ENDPOINT_STATUS, data);
     }
 
+    Json::Value buildNetworkConfigReport(const Json::Value& requestedInterfaces) const {
+        Json::Value report(Json::objectValue);
+        const auto backend = AgentNetworkConfigurator::detectBackend();
+        const auto capabilities = AgentCapabilitiesCollector::collectCapabilities();
+
+        report["backend"] = AgentNetworkConfigurator::backendName(backend);
+        report["runtime"] = buildRuntimePayload();
+        report["capabilities"] = capabilities;
+        report["requestedInterfaces"] = requestedInterfaces;
+        report["requestedInterfaceCount"] = requestedInterfaces.isArray()
+            ? static_cast<Json::Int>(requestedInterfaces.size())
+            : 0;
+        report["reportedInterfaceCount"] = capabilities.get("interfaces", Json::Value(Json::arrayValue)).size();
+        return report;
+    }
+
     // ==================== 配置同步 ====================
 
     std::string applyConfigSync(const Json::Value& endpoints) {
@@ -575,7 +591,7 @@ private:
             auto cleanupError = AgentNetworkConfigurator::cleanupManagedConfigs(targetInterfaces);
             if (!cleanupError.empty()) {
                 std::cout << "[ERROR] " << "[Agent] cleanup old network config failed: " << cleanupError << std::endl;
-                sendNetworkConfigFailed("cleanup", cleanupError);
+                sendNetworkConfigFailed("cleanup", cleanupError, interfaces);
                 return;
             }
         }
@@ -599,7 +615,7 @@ private:
                     auto error = AgentNetworkConfigurator::deleteBridge(name);
                     if (!error.empty()) {
                         std::cout << "[ERROR] " << "[Agent] delete bridge " << name << ": " << error << std::endl;
-                        sendNetworkConfigFailed(name, error);
+                        sendNetworkConfigFailed(name, error, interfaces);
                         return;
                     }
                     std::cout << "[Agent] bridge " << name << " deleted" << std::endl;
@@ -614,7 +630,7 @@ private:
                     auto error = AgentNetworkConfigurator::createBridge(name, ports);
                     if (!error.empty()) {
                         std::cout << "[ERROR] " << "[Agent] create bridge " << name << ": " << error << std::endl;
-                        sendNetworkConfigFailed(name, error);
+                        sendNetworkConfigFailed(name, error, interfaces);
                         return;
                     }
                 } else if (!ports.empty()) {
@@ -623,7 +639,7 @@ private:
                     auto error = AgentNetworkConfigurator::setBridgePorts(name, ports);
                     if (!error.empty()) {
                         std::cout << "[ERROR] " << "[Agent] set bridge ports " << name << ": " << error << std::endl;
-                        sendNetworkConfigFailed(name, error);
+                        sendNetworkConfigFailed(name, error, interfaces);
                         return;
                     }
                 }
@@ -643,7 +659,7 @@ private:
                 auto error = AgentNetworkConfigurator::applyDhcp(name);
                 if (!error.empty()) {
                     std::cout << "[ERROR] " << "[Agent] DHCP failed on " << name << ": " << error << std::endl;
-                    sendNetworkConfigFailed(name, error);
+                    sendNetworkConfigFailed(name, error, interfaces);
                     return;
                 }
             } else if (mode == "static") {
@@ -658,7 +674,7 @@ private:
                 auto error = AgentNetworkConfigurator::applyInterfaceAddress(name, ip, prefixLength);
                 if (!error.empty()) {
                     std::cout << "[ERROR] " << "[Agent] failed to configure " << name << ": " << error << std::endl;
-                    sendNetworkConfigFailed(name, error);
+                    sendNetworkConfigFailed(name, error, interfaces);
                     return;
                 }
 
@@ -666,7 +682,7 @@ private:
                     error = AgentNetworkConfigurator::applyDefaultGateway(name, gateway);
                     if (!error.empty()) {
                         std::cout << "[ERROR] " << "[Agent] failed to set gateway on " << name << ": " << error << std::endl;
-                        sendNetworkConfigFailed(name, error);
+                        sendNetworkConfigFailed(name, error, interfaces);
                         return;
                     }
                 }
@@ -676,17 +692,24 @@ private:
         }
 
         // 配置成功，刷新 capabilities 并回报
-        Json::Value ackData(Json::objectValue);
-        ackData["capabilities"] = AgentCapabilitiesCollector::collectCapabilities();
-        sendMessage(agent::MESSAGE_NETWORK_CONFIG_APPLIED, ackData);
+        sendMessage(agent::MESSAGE_NETWORK_CONFIG_APPLIED, buildNetworkConfigReport(interfaces));
 
         std::cout << "[Agent] network config applied successfully" << std::endl;
     }
 
-    void sendNetworkConfigFailed(const std::string& interfaceName, const std::string& error) {
+    void sendNetworkConfigFailed(const std::string& interfaceName,
+                                 const std::string& error,
+                                 const Json::Value& requestedInterfaces) {
         Json::Value data(Json::objectValue);
         data["interfaceName"] = interfaceName;
         data["error"] = error;
+        const auto report = buildNetworkConfigReport(requestedInterfaces);
+        data["backend"] = report["backend"];
+        data["requestedInterfaces"] = report["requestedInterfaces"];
+        data["requestedInterfaceCount"] = report["requestedInterfaceCount"];
+        data["reportedInterfaceCount"] = report["reportedInterfaceCount"];
+        data["capabilities"] = report["capabilities"];
+        data["runtime"] = report["runtime"];
         sendMessage(agent::MESSAGE_NETWORK_CONFIG_FAILED, data);
     }
 
