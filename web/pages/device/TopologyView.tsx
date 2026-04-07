@@ -69,10 +69,10 @@ const TopologyView = ({ open, onClose }: TopologyViewProps) => {
         name: device.name,
         value: statusBadge.label,
         itemStyle: {
-          color: online ? "#f6ffed" : connectionState === "syncing" ? "#f0f5ff" : "#fff2f0",
-          borderColor: online ? "#52c41a" : connectionState === "syncing" ? "#1677ff" : "#ff4d4f",
+          color: online ? "#f6ffed" : "#fff2f0",
+          borderColor: online ? "#52c41a" : "#ff4d4f",
         },
-        label: { color: online ? "#389e0d" : connectionState === "syncing" ? "#1677ff" : "#cf1322" },
+        label: { color: online ? "#389e0d" : "#cf1322" },
       };
     };
 

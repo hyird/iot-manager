@@ -181,6 +181,8 @@ export function useDeviceRealtime(
         list: mergeRealtimeSnapshots(current.list, fetched.list ?? []),
       };
     },
+    staleTime: 0,
+    refetchOnMount: "always",
     refetchInterval: pollingInterval,
     refetchIntervalInBackground: false,
     ...queryOptions,

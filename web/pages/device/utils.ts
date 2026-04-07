@@ -8,7 +8,7 @@ import type { Device } from "@/types";
 /** 默认在线超时时间（秒） */
 export const DEFAULT_ONLINE_TIMEOUT = 300;
 
-export type DeviceConnectionState = "online" | "offline" | "syncing";
+export type DeviceConnectionState = "online" | "offline";
 
 export type DeviceStatusBadge = {
   label: string;
@@ -40,7 +40,6 @@ const getReportTimeMs = (reportTime?: string) => {
  *
  * - online: 实际连接在线
  * - offline: 明确离线或上报已超时
- * - syncing: 首次加载/缓存补齐中，尚无有效上报时间
  */
 export const getDeviceConnectionState = (
   connected?: boolean,
@@ -56,17 +55,13 @@ export const getDeviceConnectionState = (
 
   if (connectionState) return connectionState;
   if (connected === true) return "online";
-  if (connected === false) return "syncing";
-  return "syncing";
+  return "offline";
 };
 
 /** 获取设备状态徽标 */
 export const getDeviceStatusBadge = (connectionState: DeviceConnectionState): DeviceStatusBadge => {
   if (connectionState === "online") {
     return { label: "在线", color: "success" };
-  }
-  if (connectionState === "syncing") {
-    return { label: "同步中", color: "processing" };
   }
   return { label: "离线", color: "error" };
 };
