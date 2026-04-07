@@ -7,7 +7,7 @@ import ReactEChartsCore from "echarts-for-react/lib/core";
 import { useMemo } from "react";
 import { useDeviceGroupTreeWithCount, useDeviceList } from "@/services";
 import type { Device, DeviceGroup } from "@/types";
-import { getDeviceConnectionState } from "./utils";
+import { getDeviceConnectionState, getDeviceStatusBadge } from "./utils";
 
 echarts.use([TreeChart, TooltipComponent, CanvasRenderer]);
 const EMPTY_DEVICE_LIST: Device.RealTimeData[] = [];
@@ -63,15 +63,11 @@ const TopologyView = ({ open, onClose }: TopologyViewProps) => {
         device.online_timeout,
         device.connectionState
       );
+      const statusBadge = getDeviceStatusBadge(connectionState);
       const online = connectionState === "online";
       return {
         name: device.name,
-        value:
-          connectionState === "syncing"
-            ? "同步中"
-            : online
-              ? "在线"
-              : "离线",
+        value: statusBadge.label,
         itemStyle: {
           color: online ? "#f6ffed" : connectionState === "syncing" ? "#f0f5ff" : "#fff2f0",
           borderColor: online ? "#52c41a" : connectionState === "syncing" ? "#1677ff" : "#ff4d4f",

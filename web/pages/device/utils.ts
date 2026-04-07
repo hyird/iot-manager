@@ -10,6 +10,11 @@ export const DEFAULT_ONLINE_TIMEOUT = 300;
 
 export type DeviceConnectionState = "online" | "offline" | "syncing";
 
+export type DeviceStatusBadge = {
+  label: string;
+  color: "success" | "processing" | "error";
+};
+
 /** 获取默认时间范围（最近一周） */
 export const getDefaultTimeRange = () => [
   dayjs().subtract(7, "day").startOf("day"),
@@ -49,6 +54,17 @@ export const getDeviceConnectionState = (
 
   const threshold = (onlineTimeout || DEFAULT_ONLINE_TIMEOUT) * 1000;
   return Date.now() - reportTs < threshold ? "online" : "offline";
+};
+
+/** 获取设备状态徽标 */
+export const getDeviceStatusBadge = (connectionState: DeviceConnectionState): DeviceStatusBadge => {
+  if (connectionState === "online") {
+    return { label: "在线", color: "success" };
+  }
+  if (connectionState === "syncing") {
+    return { label: "同步中", color: "processing" };
+  }
+  return { label: "离线", color: "error" };
 };
 
 /** 格式化上报时间 */

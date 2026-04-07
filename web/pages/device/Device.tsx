@@ -61,6 +61,7 @@ import {
   formatElementValue,
   formatReportTime,
   getDeviceConnectionState,
+  getDeviceStatusBadge,
   parseBitMapping,
   separatorClass,
 } from "./utils";
@@ -318,12 +319,7 @@ const DeviceGridItem = memo(
         ),
       [device.connected, device.connectionState, device.online_timeout, device.reportTime]
     );
-    const statusTag =
-      connectionState === "online"
-        ? { label: "在线", color: "success" as const }
-        : connectionState === "syncing"
-          ? { label: "同步中", color: "processing" as const }
-          : { label: "离线", color: "error" as const };
+    const statusTag = getDeviceStatusBadge(connectionState);
     const items = useMemo(() => buildDeviceCardItems(device.elements), [device.elements]);
     const canRemoteControl = device.remote_control !== false;
     const commandOps = device.commandOperations ?? EMPTY_COMMAND_OPS;
