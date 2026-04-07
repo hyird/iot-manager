@@ -541,6 +541,7 @@ private:
         }
 
         Json::Value aggregatedData(Json::objectValue);
+        bool anyAreaSucceeded = false;
         for (const auto& area : runtime.areas) {
             std::vector<std::uint8_t> buffer(static_cast<std::size_t>(std::max(1, area.size)), 0);
             const int rc = runtime.client->readArea(
@@ -552,15 +553,20 @@ private:
                 buffer.data());
 
             if (rc != s7::kS7Ok) {
-                std::cout << "[WARN] [EdgeNodeS7Poller] read failed, force reconnect: device="
+                std::cout << "[WARN] [EdgeNodeS7Poller] read failed, skip area and continue: device="
                           << runtime.deviceId << ", area=" << area.area
                           << ", start=" << area.start << ", size=" << area.size
                           << ", rc=" << rc << std::endl;
-                disconnect(runtime);  // 关键策略：遇错断开，下一轮重连
-                return std::nullopt;
+                continue;
             }
 
             aggregatedData[area.id] = buildReadElement(area, buffer);
+            anyAreaSucceeded = true;
+        }
+
+        if (!anyAreaSucceeded) {
+            disconnect(runtime);  // 全失败时再重连，避免一直使用坏连接
+            return std::nullopt;
         }
 
         if (aggregatedData.empty()) {

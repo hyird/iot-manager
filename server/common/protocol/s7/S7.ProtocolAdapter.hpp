@@ -2412,6 +2412,7 @@ private:
         Json::Value aggregatedData(Json::objectValue);
         const std::string reportTime = makeUtcNowString();
         bool pollFailed = false;
+        bool anyBlockSucceeded = false;
 
         for (const auto& block : readBlocks) {
             std::vector<uint8_t> buffer(block.byteSize, 0);
@@ -2421,7 +2422,6 @@ private:
                 rc = readBlock(*runtime, block, buffer);
             }
             if (rc != 0) {
-                bool shouldResetClient = false;
                 {
                     std::lock_guard runtimeLock(runtime->mutex);
                     if (runtime->bridgeMode && !runtime->bridgeBound) {
@@ -2452,14 +2452,9 @@ private:
                                  << ", bridge=" << (runtime->bridgeMode ? "yes" : "no")
                                  << ", bound=" << (runtime->bridgeBound ? "yes" : "no");
                     }
-                    shouldResetClient = !runtime->bridgeMode || runtime->bridgeBound;
-                }
-                if (shouldResetClient) {
-                    std::lock_guard clientLock(runtime->clientMutex);
-                    runtime->resetClient();
                 }
                 pollFailed = true;
-                break;
+                continue;
             }
 
             LOG_TRACE << "[S7][Adapter] Read block OK: deviceId=" << deviceId
@@ -2484,17 +2479,19 @@ private:
                     buffer.begin() + static_cast<std::ptrdiff_t>(member.offsetBytes),
                     buffer.begin() + static_cast<std::ptrdiff_t>(member.offsetBytes + member.area->size));
                 aggregatedData[member.area->id] = buildReadElement(*member.area, areaBuffer);
-            }
-
-            if (pollFailed) {
-                break;
+                anyBlockSucceeded = true;
             }
         }
 
-        if (!pollFailed && aggregatedData.isObject() && !aggregatedData.empty()) {
+        if (pollFailed && !anyBlockSucceeded) {
+            std::lock_guard clientLock(runtime->clientMutex);
+            runtime->resetClient();
+        }
+
+        if (aggregatedData.isObject() && !aggregatedData.empty()) {
             results.push_back(buildPollReadResult(deviceId, linkId, std::move(aggregatedData), reportTime));
         }
-        return !pollFailed;
+        return anyBlockSucceeded;
     }
 
     int readBlock(const S7DeviceRuntime& runtime, const S7ReadBlockPlan& block,

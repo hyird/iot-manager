@@ -493,7 +493,10 @@ private:
     void driveDiscovery() {
         if (!sessionEngine_ || !sessionManager_) return;
 
-        sessionEngine_->processTimeouts();
+        auto timeoutResult = sessionEngine_->processTimeouts();
+        if (!timeoutResult.parsedResults.empty() && runtimeContext_.submitParsedResults) {
+            runtimeContext_.submitParsedResults(std::move(timeoutResult.parsedResults));
+        }
 
         auto sessions = sessionManager_->listSessions();
         std::set<int> pendingLinks;

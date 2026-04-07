@@ -104,7 +104,7 @@ public:
     bool triggerDiscovery(int linkId, const std::string& clientAddr);
 
     /** 处理 session 内请求超时 */
-    void processTimeouts();
+    ProcessResult processTimeouts();
 
     /** 清除所有设备的 poll cycle 聚合数据（配置热重载时调用） */
     void clearAllPollCycles();
@@ -821,7 +821,23 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onPayload(
                      << ",slave=" << static_cast<int>(response.slaveId)
                      << ") fc=" << static_cast<int>(response.functionCode)
                      << " code=" << static_cast<int>(response.exceptionCode);
-            if (inflightOpt->job.kind != ModbusJobKind::WriteRegisters && readCompletionCallback_) {
+            if (inflightOpt->job.kind == ModbusJobKind::PollRead) {
+                // 单个读组异常时，不中断整轮轮询；
+                // 允许已成功读取的其他寄存器继续保留并在最后一组结束时落库。
+                if (inflightOpt->job.readGroupIndex + 1 >= deviceOpt->readGroups.size()) {
+                    auto cycleResult = finishPollCycle(*deviceOpt);
+                    if (cycleResult) {
+                        output.parsedResults.push_back(std::move(*cycleResult));
+                    }
+                }
+                if (readCompletionCallback_) {
+                    readCompletionCallback_(
+                        inflightOpt->job.deviceId,
+                        inflightOpt->job.readGroupIndex,
+                        true
+                    );
+                }
+            } else if (readCompletionCallback_) {
                 clearPollCycle(inflightOpt->job.deviceId);
                 readCompletionCallback_(inflightOpt->job.deviceId, inflightOpt->job.readGroupIndex, false);
             }
@@ -1037,7 +1053,8 @@ inline void ModbusSessionEngine::cancelDiscovery(int linkId, const std::string& 
     }
 }
 
-inline void ModbusSessionEngine::processTimeouts() {
+inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::processTimeouts() {
+    ProcessResult output;
     const auto now = std::chrono::steady_clock::now();
     auto sessions = sessions_.listSessions();
 
@@ -1074,17 +1091,35 @@ inline void ModbusSessionEngine::processTimeouts() {
                 commandCompletionCallback_(timedOut->job.commandKey, FUNC_WRITE, false, 0, timedOut->job.deviceId);
             }
         } else if (timedOut->job.kind == ModbusJobKind::PollRead) {
-            clearPollCycle(timedOut->job.deviceId);
-            if (readCompletionCallback_) {
-                readCompletionCallback_(
-                    timedOut->job.deviceId,
-                    timedOut->job.readGroupIndex,
-                    false);
+            auto deviceOpt = registry_.findDevice(timedOut->job.deviceId);
+            if (deviceOpt) {
+                if (timedOut->job.readGroupIndex + 1 >= deviceOpt->readGroups.size()) {
+                    auto cycleResult = finishPollCycle(*deviceOpt);
+                    if (cycleResult) {
+                        output.parsedResults.push_back(std::move(*cycleResult));
+                    }
+                }
+                if (readCompletionCallback_) {
+                    readCompletionCallback_(
+                        timedOut->job.deviceId,
+                        timedOut->job.readGroupIndex,
+                        true);
+                }
+            } else {
+                clearPollCycle(timedOut->job.deviceId);
+                if (readCompletionCallback_) {
+                    readCompletionCallback_(
+                        timedOut->job.deviceId,
+                        timedOut->job.readGroupIndex,
+                        false);
+                }
             }
         }
 
         tryDispatchNext(sessionSnapshot.linkId, sessionSnapshot.clientAddr);
     }
+
+    return output;
 }
 
 inline std::optional<ModbusSessionEngine::PreparedWrite> ModbusSessionEngine::prepareWrite(
