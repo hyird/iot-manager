@@ -220,7 +220,8 @@ private:
         const ModbusResponse& response);
     bool tryDispatchNext(int linkId, const std::string& clientAddr);
     std::optional<ModbusJob> buildDiscoveryJob(
-        const DtuDefinition& dtu,
+        const ModbusDeviceDef& device,
+        size_t readGroupIndex,
         uint16_t transactionId) const;
     bool triggerDiscoveryForSession(const DtuSession& sessionSnapshot);
     std::vector<ModbusJob> buildWriteJobs(
@@ -699,17 +700,14 @@ inline void ModbusSessionEngine::onDisconnected(int linkId, const std::string& c
 }
 
 inline std::optional<ModbusJob> ModbusSessionEngine::buildDiscoveryJob(
-    const DtuDefinition& dtu,
+    const ModbusDeviceDef& device,
+    size_t readGroupIndex,
     uint16_t transactionId) const {
-    if (!dtu.discoveryPlan.enabled) return std::nullopt;
+    if (readGroupIndex >= device.readGroups.size()) return std::nullopt;
 
-    auto deviceOpt = registry_.findDevice(dtu.discoveryPlan.deviceId);
-    if (!deviceOpt) return std::nullopt;
-    if (dtu.discoveryPlan.readGroupIndex >= deviceOpt->readGroups.size()) return std::nullopt;
-
-    const auto& group = deviceOpt->readGroups[dtu.discoveryPlan.readGroupIndex];
+    const auto& group = device.readGroups[readGroupIndex];
     ModbusRequest request;
-    request.slaveId = deviceOpt->slaveId;
+    request.slaveId = device.slaveId;
     request.functionCode = group.functionCode;
     request.startAddress = group.startAddress;
     request.quantity = group.totalQuantity;
@@ -717,10 +715,10 @@ inline std::optional<ModbusJob> ModbusSessionEngine::buildDiscoveryJob(
 
     ModbusJob job;
     job.kind = ModbusJobKind::DiscoveryRead;
-    job.deviceId = deviceOpt->deviceId;
-    job.slaveId = deviceOpt->slaveId;
-    job.readGroupIndex = dtu.discoveryPlan.readGroupIndex;
-    job.requestFrame = ModbusUtils::buildRequest(deviceOpt->frameMode, request);
+    job.deviceId = device.deviceId;
+    job.slaveId = device.slaveId;
+    job.readGroupIndex = readGroupIndex;
+    job.requestFrame = ModbusUtils::buildRequest(device.frameMode, request);
     job.requestFunctionCode = request.functionCode;
     job.transactionId = request.transactionId;
     return job;
@@ -974,12 +972,18 @@ inline bool ModbusSessionEngine::triggerDiscoveryForSession(const DtuSession& se
         return false;
     }
 
+    struct DiscoveryCandidate {
+        int deviceId = 0;
+        size_t readGroupIndex = 0;
+    };
+
     auto definitions = registry_.getDefinitionsByLink(sessionSnapshot.linkId);
-    std::vector<DtuDefinition> candidates;
-    candidates.reserve(definitions.size());
+    std::vector<DiscoveryCandidate> candidates;
     for (const auto& dtu : definitions) {
-        if (dtu.discoveryPlan.enabled) {
-            candidates.push_back(dtu);
+        for (const auto& [slaveId, device] : dtu.devicesBySlave) {
+            (void)slaveId;
+            if (device.readGroups.empty()) continue;
+            candidates.push_back({device.deviceId, 0});
         }
     }
     if (candidates.empty()) return false;
@@ -989,8 +993,11 @@ inline bool ModbusSessionEngine::triggerDiscoveryForSession(const DtuSession& se
     size_t nextCursor = startIndex;
     for (size_t offset = 0; offset < candidates.size(); ++offset) {
         const size_t idx = (startIndex + offset) % candidates.size();
+        auto deviceOpt = registry_.findDevice(candidates[idx].deviceId);
+        if (!deviceOpt) continue;
         discoveryJob = buildDiscoveryJob(
-            candidates[idx],
+            *deviceOpt,
+            candidates[idx].readGroupIndex,
             transactionCounter_.fetch_add(1, std::memory_order_relaxed));
         if (discoveryJob) {
             nextCursor = (idx + 1) % candidates.size();
@@ -1093,26 +1100,17 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::processTimeouts()
         } else if (timedOut->job.kind == ModbusJobKind::PollRead) {
             auto deviceOpt = registry_.findDevice(timedOut->job.deviceId);
             if (deviceOpt) {
-                if (timedOut->job.readGroupIndex + 1 >= deviceOpt->readGroups.size()) {
-                    auto cycleResult = finishPollCycle(*deviceOpt);
-                    if (cycleResult) {
-                        output.parsedResults.push_back(std::move(*cycleResult));
-                    }
-                }
-                if (readCompletionCallback_) {
-                    readCompletionCallback_(
-                        timedOut->job.deviceId,
-                        timedOut->job.readGroupIndex,
-                        true);
-                }
-            } else {
-                clearPollCycle(timedOut->job.deviceId);
-                if (readCompletionCallback_) {
-                    readCompletionCallback_(
-                        timedOut->job.deviceId,
-                        timedOut->job.readGroupIndex,
-                        false);
-                }
+                LOG_WARN << "[Modbus][查询] Timeout " << deviceOpt->deviceName
+                         << "(id=" << deviceOpt->deviceId
+                         << ",slave=" << static_cast<int>(deviceOpt->slaveId)
+                         << ") after " << REQUEST_TIMEOUT.count() << "ms";
+            }
+            clearPollCycle(timedOut->job.deviceId);
+            if (readCompletionCallback_) {
+                readCompletionCallback_(
+                    timedOut->job.deviceId,
+                    timedOut->job.readGroupIndex,
+                    false);
             }
         }
 
