@@ -278,6 +278,7 @@ interface DeviceGridItemProps {
   device: Device.RealTimeData;
   canEdit: boolean;
   canDelete: boolean;
+  canCommand: boolean;
   isCommandPopoverOpen: boolean;
   activeCommandFunc: Device.CommandOperation | null;
   onImageClick: (imageOp: Device.ImageOperation) => void;
@@ -293,6 +294,7 @@ const DeviceGridItem = memo(
     device,
     canEdit,
     canDelete,
+    canCommand,
     isCommandPopoverOpen,
     activeCommandFunc,
     onImageClick,
@@ -397,11 +399,7 @@ const DeviceGridItem = memo(
                 placement="bottomRight"
                 content={
                   isCommandPopoverOpen && activeCommandFunc ? (
-                    <CommandPopover
-                      device={device}
-                      func={activeCommandFunc}
-                      onClose={onCloseCommandPopover}
-                    />
+                    <CommandPopover device={device} func={activeCommandFunc} onClose={onCloseCommandPopover} />
                   ) : null
                 }
                 onOpenChange={(open) => {
@@ -409,18 +407,20 @@ const DeviceGridItem = memo(
                 }}
               >
                 <Dropdown
-                  disabled={!commandOps.length || !canRemoteControl}
+                  disabled={!canCommand || !commandOps.length || !canRemoteControl}
                   menu={{
                     items: downMenuItems,
                     onClick: ({ key }) => {
                       const op = commandOps[Number(key)];
-                      if (op) onOpenCommandPopover(device, op);
+                      if (op && canCommand) onOpenCommandPopover(device, op);
                     },
                   }}
                 >
                   <Tooltip
                     title={
-                      !canRemoteControl
+                      !canCommand
+                        ? "当前账号没有设备下发权限"
+                        : !canRemoteControl
                         ? "该设备已禁止远控"
                         : connectionState === "online"
                           ? "下发指令"
@@ -431,7 +431,7 @@ const DeviceGridItem = memo(
                       type="text"
                       size="small"
                       icon={<SendOutlined />}
-                      disabled={!commandOps.length || !canRemoteControl}
+                      disabled={!canCommand || !commandOps.length || !canRemoteControl}
                     />
                   </Tooltip>
                 </Dropdown>
@@ -496,6 +496,7 @@ const DevicePage = () => {
   const canEdit = hasPermission("iot:device:edit");
   const canDelete = hasPermission("iot:device:delete");
   const canManageGroup = hasPermission("iot:device-group:edit");
+  const canCommand = hasPermission("iot:device:command");
 
   // 搜索
   const [keyword, setKeyword] = useState("");
@@ -694,11 +695,12 @@ const DevicePage = () => {
 
   const openCommandPopover = useCallback(
     (device: Device.RealTimeData, func: Device.CommandOperation) => {
+      if (!canCommand) return;
       setCommandDevice(device);
       setCommandFunc(func);
       setCommandPopoverOpen(true);
     },
-    []
+    [canCommand]
   );
 
   // ========== 历史数据 ==========
@@ -720,6 +722,7 @@ const DevicePage = () => {
           device={device}
           canEdit={canEdit}
           canDelete={canDelete}
+          canCommand={canCommand}
           isCommandPopoverOpen={commandPopoverOpen && commandDevice?.id === device.id}
           activeCommandFunc={commandDevice?.id === device.id ? commandFunc : null}
           onImageClick={handleImageClick}

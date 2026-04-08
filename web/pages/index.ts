@@ -171,6 +171,7 @@ registerPage({
     { code: "iot:device:add", name: "新增设备", action: "add" },
     { code: "iot:device:edit", name: "编辑设备", action: "edit" },
     { code: "iot:device:delete", name: "删除设备", action: "delete" },
+    { code: "iot:device:command", name: "设备下发控制", action: "command" },
     { code: "iot:device-group:query", name: "查询分组", action: "query" },
     { code: "iot:device-group:add", name: "新增分组", action: "add" },
     { code: "iot:device-group:edit", name: "编辑分组", action: "edit" },
