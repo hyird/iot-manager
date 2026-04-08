@@ -13,6 +13,7 @@ namespace s7 {
 
 class DtuSessionManager {
 public:
+    using SessionMutator = std::function<void(S7DtuSession&)>;
     using OldSessionDisplacedCallback = std::function<void(int linkId, const std::string& clientAddr)>;
 
     void setOldSessionDisplacedCallback(OldSessionDisplacedCallback cb) {
@@ -25,9 +26,15 @@ public:
 
     std::optional<S7DtuSession> getSession(int linkId, const std::string& clientAddr) const;
     std::optional<S7DtuSession> getBoundSessionByDtuKey(const std::string& dtuKey) const;
+    std::optional<S7DtuSession> getProbingSessionByDevice(int deviceId) const;
     std::vector<S7DtuSession> listSessions() const;
 
     bool bindSession(int linkId, const std::string& clientAddr, const S7DtuDefinition& dtu);
+    std::optional<S7DtuSession> acquireProbingSession(
+        int linkId,
+        int deviceId,
+        const std::vector<int>& discoveryOrder);
+    bool releaseProbingSession(int deviceId, bool advanceCursor);
     std::optional<S7OnlineRoute> getOnlineRoute(int linkId, const std::string& clientAddr) const;
     std::optional<S7OnlineRoute> getOnlineRouteByDevice(int deviceId) const;
     void clearAllSessions();
@@ -66,6 +73,8 @@ inline void DtuSessionManager::onConnected(int linkId, const std::string& client
             session.bindState = SessionBindState::Unknown;
             session.dtuKey.clear();
             session.deviceId = 0;
+            session.probingDeviceId = 0;
+            session.discoveryCursor = 0;
         }
     }
 
@@ -144,6 +153,20 @@ inline std::optional<S7DtuSession> DtuSessionManager::getBoundSessionByDtuKey(
     return sessionIt->second;
 }
 
+inline std::optional<S7DtuSession> DtuSessionManager::getProbingSessionByDevice(int deviceId) const {
+    if (deviceId <= 0) return std::nullopt;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [sessionKey, session] : sessions_) {
+        (void)sessionKey;
+        if (session.bindState == SessionBindState::Probing
+            && session.probingDeviceId == deviceId) {
+            return session;
+        }
+    }
+    return std::nullopt;
+}
+
 inline std::vector<S7DtuSession> DtuSessionManager::listSessions() const {
     std::vector<S7DtuSession> result;
 
@@ -178,6 +201,8 @@ inline bool DtuSessionManager::bindSession(
                 oldSessionIt->second.bindState = SessionBindState::Unknown;
                 oldSessionIt->second.dtuKey.clear();
                 oldSessionIt->second.deviceId = 0;
+                oldSessionIt->second.probingDeviceId = 0;
+                oldSessionIt->second.discoveryCursor = 0;
             }
 
             for (auto routeIt = routeBySessionKey_.begin(); routeIt != routeBySessionKey_.end();) {
@@ -210,6 +235,8 @@ inline bool DtuSessionManager::bindSession(
         session.bindState = SessionBindState::Bound;
         session.dtuKey = dtu.dtuKey;
         session.deviceId = dtu.deviceId;
+        session.probingDeviceId = 0;
+        session.discoveryCursor = 0;
         session.lastSeen = std::chrono::steady_clock::now();
 
         S7OnlineRoute route;
@@ -237,6 +264,90 @@ inline bool DtuSessionManager::bindSession(
     }
 
     return true;
+}
+
+inline std::optional<S7DtuSession> DtuSessionManager::acquireProbingSession(
+    int linkId,
+    int deviceId,
+    const std::vector<int>& discoveryOrder) {
+    if (linkId <= 0 || deviceId <= 0 || discoveryOrder.empty()) {
+        return std::nullopt;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    for (auto& [sessionKey, session] : sessions_) {
+        (void)sessionKey;
+        if (session.linkId != linkId) continue;
+        if (session.bindState == SessionBindState::Probing
+            && session.probingDeviceId == deviceId) {
+            return session;
+        }
+    }
+
+    for (auto& [sessionKey, session] : sessions_) {
+        (void)sessionKey;
+        if (session.linkId != linkId) continue;
+        if (session.clientAddr.empty()) continue;
+        if (session.bindState == SessionBindState::Bound) continue;
+        if (session.bindState == SessionBindState::Probing) continue;
+
+        const std::size_t startIndex = session.discoveryCursor % discoveryOrder.size();
+        std::optional<std::size_t> selectedIndex;
+        for (std::size_t offset = 0; offset < discoveryOrder.size(); ++offset) {
+            const std::size_t idx = (startIndex + offset) % discoveryOrder.size();
+            const int candidateDeviceId = discoveryOrder[idx];
+
+            bool busy = false;
+            for (const auto& [busySessionKey, busySession] : sessions_) {
+                (void)busySessionKey;
+                if (busySession.bindState == SessionBindState::Probing
+                    && busySession.probingDeviceId == candidateDeviceId) {
+                    busy = true;
+                    break;
+                }
+            }
+            if (busy) {
+                continue;
+            }
+
+            selectedIndex = idx;
+            break;
+        }
+        if (!selectedIndex || discoveryOrder[*selectedIndex] != deviceId) continue;
+
+        session.bindState = SessionBindState::Probing;
+        session.probingDeviceId = deviceId;
+        session.discoveryCursor = *selectedIndex;
+        session.lastSeen = std::chrono::steady_clock::now();
+        return session;
+    }
+
+    return std::nullopt;
+}
+
+inline bool DtuSessionManager::releaseProbingSession(int deviceId, bool advanceCursor) {
+    if (deviceId <= 0) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [sessionKey, session] : sessions_) {
+        (void)sessionKey;
+        if (session.bindState != SessionBindState::Probing
+            || session.probingDeviceId != deviceId) {
+            continue;
+        }
+
+        session.probingDeviceId = 0;
+        if (advanceCursor) {
+            ++session.discoveryCursor;
+        }
+        if (session.bindState != SessionBindState::Bound) {
+            session.bindState = SessionBindState::Unknown;
+        }
+        return true;
+    }
+
+    return false;
 }
 
 inline std::optional<S7OnlineRoute> DtuSessionManager::getOnlineRoute(

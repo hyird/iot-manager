@@ -21,7 +21,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -256,9 +255,17 @@ public:
             }
         }
 
-        if (!connected && previousSession && previousSession->bindState == SessionBindState::Bound
-            && previousSession->deviceId > 0) {
-            closeRuntimeClient(previousSession->deviceId);
+        if (!connected && previousSession) {
+            if (previousSession->bindState == SessionBindState::Bound
+                && previousSession->deviceId > 0) {
+                closeRuntimeClient(previousSession->deviceId);
+            } else if (previousSession->bindState == SessionBindState::Probing
+                       && previousSession->probingDeviceId > 0) {
+                closeRuntimeClient(previousSession->probingDeviceId);
+            }
+        }
+        if (connected) {
+            triggerLinkDiscoveryNow(linkId);
         }
     }
 
@@ -511,6 +518,7 @@ public:
 
 private:
     inline static constexpr const char* FUNC_READ = "S7_READ";
+    inline static constexpr std::size_t kMaxPendingSessionFrames = 64;
 
     static std::string toUpper(std::string value) {
         std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
@@ -1704,6 +1712,28 @@ private:
         return runtime;
     }
 
+    void triggerLinkDiscoveryNow(int linkId) {
+        if (!pollScheduler_ || linkId <= 0) {
+            return;
+        }
+
+        auto runtimes = snapshotRuntimesLocked();
+        for (const auto& runtime : runtimes) {
+            bool shouldTrigger = false;
+            int deviceId = 0;
+            {
+                std::lock_guard runtimeLock(runtime->mutex);
+                deviceId = runtime->deviceId;
+                shouldTrigger = runtime->tcpServerMode
+                    && runtime->linkId == linkId
+                    && !runtime->sessionBound;
+            }
+            if (shouldTrigger && deviceId > 0) {
+                pollScheduler_->triggerNow(deviceId);
+            }
+        }
+    }
+
     /**
      * @brief 清理当前 session binding 绑定和底层连接
      */
@@ -1957,6 +1987,28 @@ private:
             if (!preserveTimedOutTransport) {
                 destroyClient(client);
             }
+            if (tcpServerMode) {
+                bool advanceCursor = false;
+                std::size_t droppedQueuedFrames = 0;
+                {
+                    std::lock_guard runtimeLock(runtime->mutex);
+                    if (!runtime->sessionBound) {
+                        advanceCursor = runtime->sessionDiscoveryInFlight;
+                        droppedQueuedFrames = runtime->pendingSessionToDtu.size();
+                        runtime->pendingSessionToDtu.clear();
+                        runtime->sessionDiscoveryInFlight = false;
+                        runtime->sessionDiscoveryStartedAt = {};
+                    }
+                }
+                if (advanceCursor && sessionManager_) {
+                    sessionManager_->releaseProbingSession(deviceId, true);
+                }
+                if (droppedQueuedFrames > 0) {
+                    LOG_DEBUG << "[S7][Adapter] Dropping stale queued session payloads after connect failure: "
+                              << "deviceId=" << deviceId
+                              << ", queued=" << droppedQueuedFrames;
+                }
+            }
             markConnectFailed(runtime);
             return false;
         }
@@ -2064,6 +2116,76 @@ private:
         return runtime->sessionTransportOpen;
     }
 
+    static std::size_t queuePendingSessionPayload(const std::shared_ptr<S7DeviceRuntime>& runtime,
+                                                  std::vector<uint8_t> bytes,
+                                                  bool& droppedOldest) {
+        droppedOldest = false;
+        if (!runtime) {
+            return 0;
+        }
+
+        std::lock_guard runtimeLock(runtime->mutex);
+        if (runtime->pendingSessionToDtu.size() >= kMaxPendingSessionFrames) {
+            runtime->pendingSessionToDtu.pop_front();
+            droppedOldest = true;
+        }
+        runtime->pendingSessionToDtu.push_back(std::move(bytes));
+        return runtime->pendingSessionToDtu.size();
+    }
+
+    std::vector<int> buildDiscoveryOrder(int linkId) const {
+        std::vector<int> order;
+        if (!sessionRegistry_ || linkId <= 0) {
+            return order;
+        }
+
+        auto definitions = sessionRegistry_->getDefinitionsByLink(linkId);
+        order.reserve(definitions.size());
+        for (const auto& definition : definitions) {
+            if (definition.deviceId > 0) {
+                order.push_back(definition.deviceId);
+            }
+        }
+        return order;
+    }
+
+    std::optional<S7DtuSession> acquireDiscoverySession(int linkId, int deviceId) {
+        if (!sessionManager_ || linkId <= 0 || deviceId <= 0) {
+            return std::nullopt;
+        }
+
+        auto probingSession = sessionManager_->getProbingSessionByDevice(deviceId);
+        if (probingSession
+            && probingSession->linkId == linkId
+            && !probingSession->clientAddr.empty()) {
+            return probingSession;
+        }
+
+        const auto discoveryOrder = buildDiscoveryOrder(linkId);
+        if (discoveryOrder.empty()) {
+            return std::nullopt;
+        }
+        return sessionManager_->acquireProbingSession(linkId, deviceId, discoveryOrder);
+    }
+
+    void clearDiscoveryState(const std::shared_ptr<S7DeviceRuntime>& runtime, bool advanceCursor) {
+        if (!runtime) {
+            return;
+        }
+
+        int deviceId = 0;
+        {
+            std::lock_guard runtimeLock(runtime->mutex);
+            deviceId = runtime->deviceId;
+            runtime->sessionDiscoveryInFlight = false;
+            runtime->sessionDiscoveryStartedAt = {};
+        }
+
+        if (sessionManager_ && deviceId > 0) {
+            sessionManager_->releaseProbingSession(deviceId, advanceCursor);
+        }
+    }
+
     int sendSessionPayload(const std::shared_ptr<S7DeviceRuntime>& runtime,
                           const std::uint8_t* data,
                           std::size_t size) {
@@ -2079,10 +2201,9 @@ private:
 
         int deviceId = 0;
         int requestLinkId = 0;
+        bool sessionBound = false;
         std::string sessionClientAddr;
         int sessionLinkId = 0;
-        bool shouldBroadcast = false;
-        std::set<std::string> excludeAddrs;
 
         {
             std::lock_guard runtimeLock(runtime->mutex);
@@ -2092,62 +2213,69 @@ private:
 
             deviceId = runtime->deviceId;
             requestLinkId = runtime->linkId;
+            sessionBound = runtime->sessionBound;
             sessionClientAddr = runtime->sessionClientAddr;
             sessionLinkId = runtime->sessionLinkId;
-
-            if (!runtime->sessionBound || sessionClientAddr.empty() || sessionLinkId <= 0) {
-                if (!runtime->sessionDiscoveryInFlight) {
-                    runtime->sessionDiscoveryInFlight = true;
-                    runtime->sessionDiscoveryStartedAt = std::chrono::steady_clock::now();
-                    shouldBroadcast = true;
-                } else {
-                    runtime->pendingSessionToDtu.push_back(std::move(bytes));
-                    LOG_DEBUG << "[S7][Direct] Queue payload while discovery is in flight: deviceId="
-                              << deviceId
-                              << ", bytes=" << runtime->pendingSessionToDtu.back().size()
-                              << ", pendingToDtu=" << runtime->pendingSessionToDtu.size();
-                    return kS7Ok;
-                }
-            }
         }
 
-        if (shouldBroadcast) {
-            if (sessionManager_) {
-                for (const auto& session : sessionManager_->listSessions()) {
-                    if (session.linkId == requestLinkId
-                        && session.bindState == SessionBindState::Bound
-                        && !session.clientAddr.empty()) {
-                        excludeAddrs.insert(session.clientAddr);
-                    }
+        if (!sessionBound || sessionClientAddr.empty() || sessionLinkId <= 0) {
+            auto probingSession = acquireDiscoverySession(requestLinkId, deviceId);
+            if (!probingSession || probingSession->clientAddr.empty() || probingSession->linkId <= 0) {
+                clearDiscoveryState(runtime, false);
+
+                bool droppedOldest = false;
+                const std::size_t pendingToDtu = queuePendingSessionPayload(runtime, std::move(bytes), droppedOldest);
+                if (droppedOldest) {
+                    LOG_WARN << "[S7][Direct] Pending session payload queue reached limit while waiting "
+                             << "for an eligible probing session: deviceId=" << deviceId
+                             << ", linkId=" << requestLinkId
+                             << ", limit=" << kMaxPendingSessionFrames;
                 }
-            }
-
-            LOG_DEBUG << "[S7][Adapter] TX probe to session linkId=" << requestLinkId
-                      << ", deviceId=" << deviceId
-                      << ", bytes=" << bytes.size()
-                      << ", excluded=" << excludeAddrs.size()
-                      << ", hex=" << bytesToHex(bytes);
-            const bool sent = excludeAddrs.empty()
-                ? LinkTransportFacade::instance().sendData(requestLinkId, payload)
-                : LinkTransportFacade::instance().sendDataExcluding(requestLinkId, payload, excludeAddrs);
-
-            if (sent) {
-                LOG_INFO << "[S7][Direct] Broadcast discovery probe: deviceId=" << deviceId
-                         << ", linkId=" << requestLinkId
-                         << ", bytes=" << bytes.size()
-                         << ", excluded=" << excludeAddrs.size();
+                LOG_DEBUG << "[S7][Direct] Discovery probe has no eligible session yet; queued payload: deviceId="
+                          << deviceId
+                          << ", linkId=" << requestLinkId
+                          << ", pendingToDtu=" << pendingToDtu;
                 return kS7Ok;
             }
 
-            LinkTransportFacade::instance().disconnectServerClients(requestLinkId);
-            std::lock_guard runtimeLock(runtime->mutex);
-            runtime->sessionDiscoveryInFlight = false;
-            runtime->sessionDiscoveryStartedAt = {};
-            runtime->pendingSessionToDtu.clear();
-            LOG_WARN << "[S7][Direct] Failed to forward discovery payload, session binding closed: deviceId="
-                     << deviceId << ", linkId=" << requestLinkId
-                     << ", bytes=" << bytes.size()
-                     << ", pendingToDtu=0";
+            {
+                std::lock_guard runtimeLock(runtime->mutex);
+                runtime->sessionDiscoveryInFlight = true;
+                runtime->sessionDiscoveryStartedAt = std::chrono::steady_clock::now();
+            }
+
+            sessionLinkId = probingSession->linkId;
+            sessionClientAddr = probingSession->clientAddr;
+
+            LOG_DEBUG << "[S7][Adapter] TX probe to session linkId=" << sessionLinkId
+                      << ", client=" << sessionClientAddr
+                      << ", deviceId=" << deviceId
+                      << ", bytes=" << bytes.size()
+                      << ", hex=" << bytesToHex(bytes);
+            if (LinkTransportFacade::instance().sendToClient(sessionLinkId, sessionClientAddr, payload)) {
+                LOG_INFO << "[S7][Direct] Targeted discovery probe: deviceId=" << deviceId
+                         << ", linkId=" << sessionLinkId
+                         << ", client=" << sessionClientAddr
+                         << ", bytes=" << bytes.size();
+                return kS7Ok;
+            }
+
+            LinkTransportFacade::instance().forceDisconnectServerClient(sessionLinkId, sessionClientAddr);
+            clearDiscoveryState(runtime, true);
+
+            bool droppedOldest = false;
+            const std::size_t pendingToDtu = queuePendingSessionPayload(runtime, std::move(bytes), droppedOldest);
+            if (droppedOldest) {
+                LOG_WARN << "[S7][Direct] Pending session payload queue reached limit after discovery send failure: "
+                         << "deviceId=" << deviceId
+                         << ", linkId=" << requestLinkId
+                         << ", limit=" << kMaxPendingSessionFrames;
+            }
+            LOG_WARN << "[S7][Direct] Failed to forward discovery payload to probing session: deviceId="
+                     << deviceId
+                     << ", linkId=" << sessionLinkId
+                     << ", client=" << sessionClientAddr
+                     << ", pendingToDtu=" << pendingToDtu;
             return kS7Ok;
         }
 
@@ -2468,9 +2596,11 @@ private:
                 rc = readBlock(*runtime, block, buffer);
             }
             if (rc != 0) {
+                bool advanceCursor = false;
                 {
                     std::lock_guard runtimeLock(runtime->mutex);
                     if (runtime->tcpServerMode && !runtime->sessionBound) {
+                        const std::size_t droppedQueuedFrames = runtime->pendingSessionToDtu.size();
                         LOG_DEBUG << "[S7][Adapter] Read block pending session bind: deviceId="
                                   << runtime->deviceId
                                   << ", area=" << block.area
@@ -2483,6 +2613,13 @@ private:
                                       << runtime->deviceId
                                       << ", area=" << block.area
                                       << ", start=" << block.start;
+                            advanceCursor = true;
+                        }
+                        if (droppedQueuedFrames > 0) {
+                            LOG_DEBUG << "[S7][Adapter] Dropping stale queued session payloads after read failure: "
+                                      << "deviceId=" << runtime->deviceId
+                                      << ", queued=" << droppedQueuedFrames;
+                            runtime->pendingSessionToDtu.clear();
                         }
                         runtime->sessionDiscoveryInFlight = false;
                         runtime->sessionDiscoveryStartedAt = {};
@@ -2498,6 +2635,9 @@ private:
                                  << ", session=" << (runtime->tcpServerMode ? "yes" : "no")
                                  << ", bound=" << (runtime->sessionBound ? "yes" : "no");
                     }
+                }
+                if (advanceCursor && sessionManager_) {
+                    sessionManager_->releaseProbingSession(deviceId, true);
                 }
                 pollFailed = true;
                 continue;

@@ -20,6 +20,7 @@ struct S7DtuDefinition {
 
 enum class SessionBindState {
     Unknown,
+    Probing,
     Bound
 };
 
@@ -53,6 +54,8 @@ struct S7DtuSession {
     SessionBindState bindState = SessionBindState::Unknown;
     std::string dtuKey;
     int deviceId = 0;
+    int probingDeviceId = 0;
+    std::size_t discoveryCursor = 0;
     std::chrono::steady_clock::time_point lastSeen;
 };
 
