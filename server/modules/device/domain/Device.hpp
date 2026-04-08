@@ -8,6 +8,7 @@
 #include "common/utils/Pagination.hpp"
 #include "common/utils/JsonHelper.hpp"
 #include "common/utils/LinkHelper.hpp"
+#include "common/utils/DeviceConnectionStateHelper.hpp"
 
 /**
  * @brief 设备聚合根
@@ -415,7 +416,10 @@ public:
 
         // 协议参数展开为顶层字段（API 兼容）
         json["device_code"] = deviceCode();
-        json["online_timeout"] = onlineTimeout();
+        json["online_timeout"] = DeviceConnectionStateHelper::resolveEffectiveTimeout(
+            DeviceConnectionStateHelper::resolveProtocolIntervalSec(protocolType_, protocolParams_),
+            onlineTimeout()
+        );
         json["remote_control"] = remoteControl();
         json["timezone"] = timezone();
         auto mm = modbusMode();

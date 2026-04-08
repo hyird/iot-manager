@@ -3,6 +3,10 @@
 #include "common/database/DatabaseService.hpp"
 #include "common/utils/Constants.hpp"
 #include "common/utils/FieldHelper.hpp"
+#include "common/utils/DeviceConnectionStateHelper.hpp"
+
+#include <algorithm>
+#include <optional>
 
 /**
  * @brief 设备缓存服务
@@ -188,6 +192,14 @@ public:
                 std::istringstream iss(configStr);
                 Json::parseFromStream(readerBuilder, iss, &device.protocolConfig, &errs);
             }
+
+            device.onlineTimeout = DeviceConnectionStateHelper::resolveEffectiveTimeout(
+                DeviceConnectionStateHelper::resolveProtocolIntervalSec(
+                    device.protocolType,
+                    device.protocolConfig
+                ),
+                device.onlineTimeout
+            );
 
             newDevices.push_back(std::move(device));
         }

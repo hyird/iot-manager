@@ -729,7 +729,7 @@ public:
             const auto& data = dataIt != deviceDataMap.end() ? dataIt->second : emptyData;
             std::string latestTime = timeIt != latestTimeMap.end() ? timeIt->second : "";
             items.append(DeviceDataTransformer::buildRealtimeItem(
-                device, data, latestTime, connChecker, device.onlineTimeout));
+                device, data, latestTime, connChecker));
         }
 
         co_return items;
@@ -1259,7 +1259,7 @@ public:
             const auto& data = dataIt != deviceDataMap.end() ? dataIt->second : emptyData;
             std::string latestTime = timeIt != latestTimeMap.end() ? timeIt->second : "";
             items.append(DeviceDataTransformer::buildOpenApiRealtimeItem(
-                device, data, latestTime, connChecker, device.onlineTimeout));
+                device, data, latestTime, connChecker));
         }
 
         co_return items;
