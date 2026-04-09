@@ -114,7 +114,7 @@ inline DtuRegistry::Task<void> DtuRegistry::reload() {
         deviceToDtuKey_ = std::move(newDeviceToDtuKey);
     }
 
-    LOG_INFO << "[S7][DtuRegistry] Loaded " << dtuCount << " DTU definition(s)";
+    LOG_INFO << "[S7][DtuRegistry] Loaded registry: dtuCount=" << dtuCount;
 }
 
 inline bool DtuRegistry::empty() const {

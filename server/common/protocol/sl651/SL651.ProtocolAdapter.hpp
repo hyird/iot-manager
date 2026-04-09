@@ -127,9 +127,13 @@ public:
         try {
             auto configOpt = configProvider_.buildFromCache(req.linkId, req.deviceCode);
             if (!configOpt) {
-                LOG_ERROR << "[SL651] Device not found: code=" << req.deviceCode;
+                LOG_ERROR << "[SL651][Adapter] Device not found: code=" << req.deviceCode;
                 co_return CommandResult::error("设备不存在");
             }
+
+            const std::string deviceLabel = configOpt->deviceName.empty()
+                ? (configOpt->deviceCode.empty() ? req.deviceCode : configOpt->deviceCode)
+                : configOpt->deviceName;
 
             std::string funcName;
             auto funcNameIt = configOpt->funcNames.find(req.funcCode);
@@ -166,7 +170,9 @@ public:
                             || responseFuncCode == FuncCodes::ACK_OK
                             || responseFuncCode == FuncCodes::ACK_ERR;
                     })) {
-                LOG_WARN << "[SL651] Device " << req.deviceCode << " already has an in-flight command";
+                LOG_WARN << "[SL651][Adapter] Device " << deviceLabel
+                         << "(id=" << configOpt->deviceId << ",code=" << req.deviceCode << ")"
+                         << " already has an in-flight command";
                 co_await saveFailedCommand(
                     configOpt->deviceId, req.linkId, Constants::PROTOCOL_SL651,
                     req.funcCode, funcName, toHexString(data), req.userId,
@@ -190,7 +196,10 @@ public:
                 co_return CommandResult::sendFailed("TCP发送失败");
             }
 
-            LOG_DEBUG << "[SL651] Command sent to " << connOpt->clientAddr;
+            LOG_DEBUG << "[SL651][Adapter] TX command: " << deviceLabel
+                      << "(id=" << configOpt->deviceId << ",code=" << req.deviceCode << ")"
+                      << " -> " << connOpt->clientAddr
+                      << ", funcCode=" << req.funcCode;
 
             co_return co_await awaitCommandResponse(req.deviceCode, req.timeoutMs, downCommandId);
 

@@ -732,8 +732,8 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onBytes(
     ProcessResult output;
     auto normalized = normalizer_.normalize(linkId, clientAddr, bytes);
     if (normalized.kind == RegistrationMatchKind::Conflict) {
-        LOG_WARN << "[Modbus][SessionEngine] Registration conflict on link "
-                 << linkId << " client=" << clientAddr;
+        LOG_WARN << "[Modbus][SessionEngine] Registration conflict: linkId="
+                 << linkId << ", client=" << clientAddr;
         return output;
     }
 
@@ -753,16 +753,20 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onPayload(
 
     auto sessionOpt = sessions_.getSession(linkId, clientAddr);
     if (!sessionOpt || sessionOpt->bindState != SessionBindState::Bound) {
-        LOG_DEBUG << "[Modbus][SessionEngine] Dropping payload from unbound session "
-                  << clientAddr << " size=" << payload.size();
+        LOG_DEBUG << "[Modbus][SessionEngine] Drop payload from unbound session: "
+                  << "linkId=" << linkId
+                  << ", client=" << clientAddr
+                  << ", bytes=" << payload.size();
         return output;
     }
 
     auto modeOpt = getSessionFrameMode(*sessionOpt);
     if (!modeOpt) {
-        LOG_WARN << "[Modbus][SessionEngine] No frame mode for session "
-                 << clientAddr << " dtuKey=" << sessionOpt->dtuKey
-                 << ", dropping " << payload.size() << "B payload";
+        LOG_WARN << "[Modbus][SessionEngine] No frame mode for session: "
+                 << "linkId=" << linkId
+                 << ", client=" << clientAddr
+                 << ", dtuKey=" << sessionOpt->dtuKey
+                 << ", bytes=" << payload.size();
         return output;
     }
 
@@ -801,11 +805,11 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onPayload(
             bool success = !response.isException;
             char fcHex[8];
             snprintf(fcHex, sizeof(fcHex), "0x%02X", response.functionCode);
-            LOG_DEBUG << "[Modbus][控制] RX " << deviceOpt->deviceName
+            LOG_DEBUG << "[Modbus][SessionEngine] RX frame: " << deviceOpt->deviceName
                       << "(id=" << deviceOpt->deviceId
                       << ",slave=" << static_cast<int>(response.slaveId)
-                      << ") FC=" << fcHex
-                      << (success ? " SUCCESS" : " EXCEPTION");
+                      << ") fc=" << fcHex
+                      << ", status=" << (success ? "SUCCESS" : "EXCEPTION");
             if (commandCompletionCallback_) {
                 commandCompletionCallback_(inflightOpt->job.commandKey, FUNC_WRITE, success, 0, inflightOpt->job.deviceId);
             }
@@ -814,11 +818,11 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onPayload(
         }
 
         if (response.isException) {
-            LOG_WARN << "[Modbus][查询] RX exception " << deviceOpt->deviceName
+            LOG_WARN << "[Modbus][SessionEngine] RX frame exception: " << deviceOpt->deviceName
                      << "(id=" << deviceOpt->deviceId
                      << ",slave=" << static_cast<int>(response.slaveId)
                      << ") fc=" << static_cast<int>(response.functionCode)
-                     << " code=" << static_cast<int>(response.exceptionCode);
+                     << ", code=" << static_cast<int>(response.exceptionCode);
             if (inflightOpt->job.kind == ModbusJobKind::PollRead) {
                 // 单个读组异常时，不中断整轮轮询；
                 // 允许已成功读取的其他寄存器继续保留并在最后一组结束时落库。
@@ -864,11 +868,11 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onPayload(
                 char fcHex2[8];
                 snprintf(fcHex2, sizeof(fcHex2), "0x%02X", response.functionCode);
                 std::ostringstream oss;
-                oss << "[Modbus][查询] RX " << deviceOpt->deviceName
+                oss << "[Modbus][SessionEngine] RX frame: " << deviceOpt->deviceName
                     << "(id=" << deviceOpt->deviceId
                     << ",slave=" << static_cast<int>(response.slaveId)
-                    << ") FC=" << fcHex2
-                    << " latency=" << elapsed << "ms |";
+                    << ") fc=" << fcHex2
+                    << ", latency=" << elapsed << "ms |";
                 for (const auto& [key, elem] : values) {
                     oss << " " << elem.get("name", key).asString() << "=";
                     const auto& v = elem["value"];
@@ -1099,12 +1103,12 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::processTimeouts()
             }
         } else if (timedOut->job.kind == ModbusJobKind::PollRead) {
             auto deviceOpt = registry_.findDevice(timedOut->job.deviceId);
-            if (deviceOpt) {
-                LOG_WARN << "[Modbus][查询] Timeout " << deviceOpt->deviceName
-                         << "(id=" << deviceOpt->deviceId
-                         << ",slave=" << static_cast<int>(deviceOpt->slaveId)
-                         << ") after " << REQUEST_TIMEOUT.count() << "ms";
-            }
+        if (deviceOpt) {
+            LOG_WARN << "[Modbus][SessionEngine] Timeout waiting for frame: " << deviceOpt->deviceName
+                     << "(id=" << deviceOpt->deviceId
+                     << ",slave=" << static_cast<int>(deviceOpt->slaveId)
+                     << ") after " << REQUEST_TIMEOUT.count() << "ms";
+        }
             clearPollCycle(timedOut->job.deviceId);
             if (readCompletionCallback_) {
                 readCompletionCallback_(

@@ -16,6 +16,7 @@ class S7PollScheduler {
 public:
     struct DeviceConfig {
         int deviceId = 0;
+        std::string deviceName;
         int readIntervalSec = 5;
         bool enabled = true;
     };
@@ -43,6 +44,7 @@ private:
 
     struct PollEntry {
         int deviceId = 0;
+        std::string deviceName;
         int readIntervalSec = 5;
         bool enabled = true;
         bool cycleInProgress = false;
@@ -129,11 +131,12 @@ inline void S7PollScheduler::reload(const std::vector<DeviceConfig>& devices) {
 
         std::map<int, PollEntry> rebuilt;
         for (const auto& device : devices) {
-            PollEntry entry;
-            entry.deviceId = device.deviceId;
-            entry.readIntervalSec = (std::max)(1, device.readIntervalSec);
-            entry.enabled = device.enabled;
-            entry.nextDueTime = now;
+                PollEntry entry;
+                entry.deviceId = device.deviceId;
+                entry.deviceName = device.deviceName;
+                entry.readIntervalSec = (std::max)(1, device.readIntervalSec);
+                entry.enabled = device.enabled;
+                entry.nextDueTime = now;
 
             auto oldIt = pollEntries_.find(device.deviceId);
             if (oldIt != pollEntries_.end()) {
@@ -196,21 +199,23 @@ inline void S7PollScheduler::onPollCompleted(int deviceId, bool success) {
         int intervalSec = entry.readIntervalSec;
         if (entry.consecutiveFailures >= DEGRADE_THRESHOLD
             && entry.readIntervalSec < DEGRADE_INTERVAL_SEC) {
-            intervalSec = DEGRADE_INTERVAL_SEC;
-            if (entry.consecutiveFailures == DEGRADE_THRESHOLD) {
-                LOG_WARN << "[S7][PollScheduler] Device " << deviceId
-                         << " degraded after " << DEGRADE_THRESHOLD
-                         << " consecutive failures, interval=" << intervalSec << "s";
+                intervalSec = DEGRADE_INTERVAL_SEC;
+                if (entry.consecutiveFailures == DEGRADE_THRESHOLD) {
+                    LOG_WARN << "[S7][PollScheduler] Device " << (entry.deviceName.empty() ? "S7-unknown" : entry.deviceName)
+                             << "(id=" << deviceId << ")"
+                             << " degraded after " << DEGRADE_THRESHOLD
+                             << " consecutive failures, interval=" << intervalSec << "s";
+                }
             }
+            entry.nextDueTime = now + std::chrono::seconds(intervalSec);
+            return;
         }
-        entry.nextDueTime = now + std::chrono::seconds(intervalSec);
-        return;
-    }
 
-    if (entry.consecutiveFailures >= DEGRADE_THRESHOLD) {
-        LOG_INFO << "[S7][PollScheduler] Device " << deviceId
-                 << " recovered from degraded state";
-    }
+        if (entry.consecutiveFailures >= DEGRADE_THRESHOLD) {
+            LOG_INFO << "[S7][PollScheduler] Device " << (entry.deviceName.empty() ? "S7-unknown" : entry.deviceName)
+                     << "(id=" << deviceId << ")"
+                     << " recovered from degraded state";
+        }
     entry.consecutiveFailures = 0;
     entry.cycleInProgress = false;
     entry.nextDueTime = now + std::chrono::seconds(entry.readIntervalSec);

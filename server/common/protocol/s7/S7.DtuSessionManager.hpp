@@ -251,15 +251,22 @@ inline bool DtuSessionManager::bindSession(
         dtuToSessionKey_[dtu.dtuKey] = sessionKey;
     }
 
-    LOG_INFO << "[S7][DtuSessionManager] Bound DTU " << dtu.dtuKey
-             << " to linkId=" << linkId
+    LOG_INFO << "[S7][DtuSessionManager] Bound session: "
+             << (dtu.name.empty() ? "<unnamed>" : dtu.name)
+             << " (dtuKey=" << dtu.dtuKey
+             << ", deviceId=" << dtu.deviceId
+             << ", linkId=" << linkId
              << ", client=" << clientAddr
-             << ", deviceId=" << dtu.deviceId;
+             << ")";
 
     if (displacedLinkId > 0 && !displacedClientAddr.empty() && oldSessionDisplacedCallback_) {
-        LOG_INFO << "[S7][DtuSessionManager] DTU " << dtu.dtuKey
-                 << " rebound from " << displacedClientAddr
-                 << " to " << clientAddr << ", closing old connection";
+        LOG_INFO << "[S7][DtuSessionManager] Rebound session: "
+                 << (dtu.name.empty() ? "<unnamed>" : dtu.name)
+                 << " (dtuKey=" << dtu.dtuKey
+                 << ", deviceId=" << dtu.deviceId
+                 << ", from=" << displacedClientAddr
+                 << ", to=" << clientAddr
+                 << ")";
         oldSessionDisplacedCallback_(displacedLinkId, displacedClientAddr);
     }
 
@@ -381,8 +388,8 @@ inline void DtuSessionManager::clearAllSessions() {
     }
 
     if (sessionCount > 0 || routeCount > 0) {
-        LOG_INFO << "[S7][DtuSessionManager] Cleared " << sessionCount
-                 << " session(s) and " << routeCount << " route(s)";
+        LOG_INFO << "[S7][DtuSessionManager] Cleared sessions: sessionCount=" << sessionCount
+                 << ", routeCount=" << routeCount;
     }
 }
 

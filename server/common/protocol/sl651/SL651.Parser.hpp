@@ -115,7 +115,7 @@ public:
                 auto& linkBuffer = buffers_[linkId];
                 linkBuffer.insert(linkBuffer.end(), data.begin(), data.end());
                 if (linkBuffer.size() > MAX_BUFFER_SIZE) {
-                    LOG_WARN << "[SL651] Buffer overflow for linkId=" << linkId
+                    LOG_WARN << "[SL651][Parser] Buffer overflow for linkId=" << linkId
                              << ", size=" << linkBuffer.size() << ", clearing";
                     linkBuffer.clear();
                     co_return;
@@ -183,7 +183,7 @@ public:
 
         } catch (const std::exception& e) {
             totalParseErrors_.fetch_add(1, std::memory_order_relaxed);
-            LOG_ERROR << "[SL651] handleData error: " << e.what();
+            LOG_ERROR << "[SL651][Parser] handleData error: " << e.what();
         }
     }
 
@@ -251,7 +251,7 @@ public:
         } catch (const ValidationException&) {
             throw;  // 校验异常直接传播，由上层返回给用户
         } catch (const std::exception& e) {
-            LOG_ERROR << "[SL651] buildCommand error: " << e.what();
+            LOG_ERROR << "[SL651][Parser] buildCommand error: " << e.what();
             return "";
         }
     }
@@ -273,7 +273,7 @@ public:
                 auto& linkBuffer = buffers_[linkId];
                 linkBuffer.insert(linkBuffer.end(), data.begin(), data.end());
                 if (linkBuffer.size() > MAX_BUFFER_SIZE) {
-                    LOG_WARN << "[SL651] Buffer overflow (sync) for linkId=" << linkId
+                    LOG_WARN << "[SL651][Parser] Buffer overflow (sync) for linkId=" << linkId
                              << ", size=" << linkBuffer.size() << ", clearing";
                     linkBuffer.clear();
                     return results;
@@ -333,7 +333,7 @@ public:
 
         } catch (const std::exception& e) {
             totalParseErrors_.fetch_add(1, std::memory_order_relaxed);
-            LOG_ERROR << "[SL651] parseDataSync error: " << e.what();
+            LOG_ERROR << "[SL651][Parser] parseDataSync error: " << e.what();
         }
         return results;
     }
@@ -420,7 +420,7 @@ private:
             parsed.isLastPacket = isLastPacket;
             parsed.serialNumber = serialNumber;
 
-            LOG_DEBUG << "[SL651] 帧: " << parsed.remoteCode << " | " << parsed.funcCode
+            LOG_DEBUG << "[SL651][Parser] RX frame: " << parsed.remoteCode << " | " << parsed.funcCode
                      << " | CRC:" << (parsed.crcValid ? "OK" : "FAIL")
                      << (isMultiPacket ? " | 多包" + std::to_string(parsed.seqPk) + "/" + std::to_string(parsed.totalPk) : "");
 
@@ -448,7 +448,7 @@ private:
 
         } catch (const std::exception& e) {
             totalParseErrors_.fetch_add(1, std::memory_order_relaxed);
-            LOG_ERROR << "[SL651] parseFrameSync error: " << e.what();
+            LOG_ERROR << "[SL651][Parser] parseFrameSync error: " << e.what();
         }
         return results;
     }
@@ -459,7 +459,7 @@ private:
     std::optional<ParsedBody> parseBodySync(const Sl651Frame& frame,
                                              const std::optional<DeviceConfig>& configOpt) {
         if (!configOpt) {
-            LOG_WARN << "[SL651] parseBodySync: 无设备配置, code=" << frame.remoteCode;
+            LOG_WARN << "[SL651][Parser] parseBodySync: no device config, code=" << frame.remoteCode;
             return std::nullopt;
         }
 
@@ -468,16 +468,18 @@ private:
         if (frame.direction == Direction::UP && isDownFunc(*configOpt, frame.funcCode)) {
             auto responseElements = getResponseElements(*configOpt, frame.funcCode);
             if (!responseElements.empty()) {
-                LOG_DEBUG << "[SL651] 下行功能码 " << frame.funcCode << " 的上行应答，使用 responseElements 解析";
+                LOG_DEBUG << "[SL651][Parser] Upstream response for down funcCode " << frame.funcCode
+                          << ", parsing with responseElements";
                 elements = responseElements;
             } else if (elements.empty()) {
-                LOG_DEBUG << "[SL651] 下行功能码 " << frame.funcCode << " 的上行应答，无应答要素配置，不解析";
+                LOG_DEBUG << "[SL651][Parser] Upstream response for down funcCode " << frame.funcCode
+                          << ", no responseElements configured, skipping parse";
                 return ParsedBody{};
             }
         }
 
         if (elements.empty()) {
-            LOG_WARN << "[SL651] 未找到功能码要素定义: funcCode=" << frame.funcCode;
+            LOG_WARN << "[SL651][Parser] No element definition for funcCode=" << frame.funcCode;
             return ParsedBody{};
         }
 
@@ -502,7 +504,7 @@ private:
             }
 
             if (offset + elem.length > frame.body.size()) {
-                LOG_WARN << "[SL651] 数据长度不足: " << elem.name;
+                LOG_WARN << "[SL651][Parser] Data too short: " << elem.name;
                 break;
             }
 
@@ -608,8 +610,8 @@ private:
             auto it = multiPacketSessions_.find(sessionKey);
             if (it == multiPacketSessions_.end() || it->second.totalPk != frame.totalPk) {
                 if (it == multiPacketSessions_.end() && multiPacketSessions_.size() >= MAX_SESSION_COUNT) {
-                    LOG_WARN << "[SL651] Session limit reached (" << MAX_SESSION_COUNT
-                             << "), dropping: " << sessionKey;
+                    LOG_WARN << "[SL651][Parser] Session limit reached (" << MAX_SESSION_COUNT
+                             << "), dropping session: " << sessionKey;
                     return {};
                 }
                 MultiPacketSession newSession;
@@ -624,7 +626,8 @@ private:
             session.packets[frame.seqPk] = frame.body;
             session.rawFrames[frame.seqPk] = frame.raw;
 
-            LOG_DEBUG << "[SL651] 多包缓存: " << sessionKey << " (" << session.receivedPk.size() << "/" << session.totalPk << ")";
+            LOG_DEBUG << "[SL651][Parser] Multi-packet cache: " << sessionKey
+                      << " (" << session.receivedPk.size() << "/" << session.totalPk << ")";
 
             if (static_cast<int>(session.receivedPk.size()) == session.totalPk) {
                 complete = true;
@@ -635,7 +638,8 @@ private:
 
         if (complete) {
             totalMultiPacketCompleted_.fetch_add(1, std::memory_order_relaxed);
-            LOG_DEBUG << "[SL651] 多包完成: " << sessionKey << " (" << completedSession.totalPk << "包)";
+            LOG_DEBUG << "[SL651][Parser] Multi-packet complete: " << sessionKey
+                      << " (" << completedSession.totalPk << " packets)";
             auto result = mergeAndBuildMultiPacketResult(linkId, completedSession, frame, getConfigSync);
             if (result) {
                 totalFramesParsed_.fetch_add(1, std::memory_order_relaxed);
@@ -730,7 +734,7 @@ private:
             return result;
 
         } catch (const std::exception& e) {
-            LOG_ERROR << "[SL651] mergeAndBuildMultiPacketResult error: " << e.what();
+            LOG_ERROR << "[SL651][Parser] mergeAndBuildMultiPacketResult error: " << e.what();
             return std::nullopt;
         }
     }
@@ -840,7 +844,7 @@ private:
             parsed.serialNumber = serialNumber;
 
             // 打印解析结果（精简版）
-            LOG_DEBUG << "[SL651] 帧: " << parsed.remoteCode << " | " << parsed.funcCode
+            LOG_DEBUG << "[SL651][Parser] RX frame: " << parsed.remoteCode << " | " << parsed.funcCode
                      << " | CRC:" << (parsed.crcValid ? "OK" : "FAIL")
                      << (isMultiPacket ? " | 多包" + std::to_string(parsed.seqPk) + "/" + std::to_string(parsed.totalPk) : "");
 
@@ -858,7 +862,7 @@ private:
 
         } catch (const std::exception& e) {
             totalParseErrors_.fetch_add(1, std::memory_order_relaxed);
-            LOG_ERROR << "[SL651] parseFrame error: " << e.what();
+            LOG_ERROR << "[SL651][Parser] parseFrame error: " << e.what();
         }
     }
 
@@ -902,8 +906,8 @@ private:
             auto it = multiPacketSessions_.find(sessionKey);
             if (it == multiPacketSessions_.end() || it->second.totalPk != frame.totalPk) {
                 if (it == multiPacketSessions_.end() && multiPacketSessions_.size() >= MAX_SESSION_COUNT) {
-                    LOG_WARN << "[SL651] Session limit reached (" << MAX_SESSION_COUNT
-                             << "), dropping: " << sessionKey;
+                    LOG_WARN << "[SL651][Parser] Session limit reached (" << MAX_SESSION_COUNT
+                             << "), dropping session: " << sessionKey;
                     co_return;
                 }
                 MultiPacketSession newSession;
@@ -918,7 +922,8 @@ private:
             session.packets[frame.seqPk] = frame.body;
             session.rawFrames[frame.seqPk] = frame.raw;
 
-            LOG_DEBUG << "[SL651] 多包缓存: " << sessionKey << " (" << session.receivedPk.size() << "/" << session.totalPk << ")";
+            LOG_DEBUG << "[SL651][Parser] Multi-packet cache: " << sessionKey
+                      << " (" << session.receivedPk.size() << "/" << session.totalPk << ")";
 
             if (static_cast<int>(session.receivedPk.size()) == session.totalPk) {
                 complete = true;
@@ -930,7 +935,8 @@ private:
         if (complete) {
             totalMultiPacketCompleted_.fetch_add(1, std::memory_order_relaxed);
             totalFramesParsed_.fetch_add(1, std::memory_order_relaxed);
-            LOG_DEBUG << "[SL651] 多包完成: " << sessionKey << " (" << completedSession.totalPk << "包)";
+            LOG_DEBUG << "[SL651][Parser] Multi-packet complete: " << sessionKey
+                      << " (" << completedSession.totalPk << " packets)";
             co_await mergeAndParseMultiPacket(linkId, completedSession, frame);
         }
     }
@@ -941,7 +947,7 @@ private:
     Task<std::optional<ParsedBody>> parseBody(int linkId, const Sl651Frame& frame) {
         auto configOpt = co_await getDeviceConfig_(linkId, frame.remoteCode);
         if (!configOpt) {
-            LOG_WARN << "[SL651] 未找到设备配置: linkId=" << linkId << ", code=" << frame.remoteCode;
+            LOG_WARN << "[SL651][Parser] No device config: linkId=" << linkId << ", code=" << frame.remoteCode;
             co_return std::nullopt;
         }
 
@@ -951,17 +957,19 @@ private:
         if (frame.direction == Direction::UP && isDownFunc(*configOpt, frame.funcCode)) {
             auto responseElements = getResponseElements(*configOpt, frame.funcCode);
             if (!responseElements.empty()) {
-                LOG_DEBUG << "[SL651] 下行功能码 " << frame.funcCode << " 的上行应答，使用 responseElements 解析";
+                LOG_DEBUG << "[SL651][Parser] Upstream response for down funcCode " << frame.funcCode
+                          << ", parsing with responseElements";
                 elements = responseElements;
             } else if (elements.empty()) {
                 // 没有配置 responseElements 且没有 elements，不解析要素
-                LOG_DEBUG << "[SL651] 下行功能码 " << frame.funcCode << " 的上行应答，无应答要素配置，不解析";
+                LOG_DEBUG << "[SL651][Parser] Upstream response for down funcCode " << frame.funcCode
+                          << ", no responseElements configured, skipping parse";
                 co_return ParsedBody{};
             }
         }
 
         if (elements.empty()) {
-            LOG_WARN << "[SL651] 未找到功能码要素定义: funcCode=" << frame.funcCode;
+            LOG_WARN << "[SL651][Parser] No element definition for funcCode=" << frame.funcCode;
             co_return ParsedBody{};
         }
 
@@ -995,7 +1003,7 @@ private:
 
             // 定长要素
             if (offset + elem.length > frame.body.size()) {
-                LOG_WARN << "[SL651] 数据长度不足: " << elem.name;
+                LOG_WARN << "[SL651][Parser] Data too short: " << elem.name;
                 break;
             }
 
@@ -1058,12 +1066,12 @@ private:
      */
     void printParsedBody(const ParsedBody& parsedBody) {
         if (parsedBody.data.empty()) {
-            LOG_DEBUG << "[SL651] 正文解析: 无要素数据";
+            LOG_DEBUG << "[SL651][Parser] Parsed body: no elements";
             return;
         }
 
         std::ostringstream oss;
-        oss << "[SL651] 正文解析 (" << parsedBody.data.size() << "个要素): ";
+        oss << "[SL651][Parser] Parsed body (" << parsedBody.data.size() << " elements): ";
         for (size_t i = 0; i < parsedBody.data.size(); ++i) {
             const auto& elem = parsedBody.data[i];
             if (i > 0) oss << ", ";
@@ -1073,7 +1081,7 @@ private:
         LOG_DEBUG << oss.str();
 
         if (!parsedBody.unparsed.empty()) {
-            LOG_DEBUG << "[SL651] 未解析数据: " << parsedBody.unparsed.size() << " 字节";
+            LOG_DEBUG << "[SL651][Parser] Unparsed data: " << parsedBody.unparsed.size() << " bytes";
         }
     }
 
@@ -1088,11 +1096,14 @@ private:
             // 获取设备配置（用于获取 funcName）
             auto configOpt = co_await getDeviceConfig_(linkId, frame.remoteCode);
             if (!configOpt) {
-                LOG_WARN << "[SL651] 未找到设备: " << frame.remoteCode;
+                LOG_WARN << "[SL651][Parser] No device found: " << frame.remoteCode;
                 co_return 0;
             }
 
             int deviceId = configOpt->deviceId;
+            const std::string deviceName = configOpt->deviceName.empty()
+                ? (configOpt->deviceCode.empty() ? frame.remoteCode : configOpt->deviceCode)
+                : configOpt->deviceName;
 
             // 拼接设备时区，确保 TIMESTAMPTZ 正确存储
             if (!reportTime.empty()) {
@@ -1169,11 +1180,13 @@ private:
             // 更新资源版本号，让前端知道有新数据（历史数据、设备列表等都会刷新）
             ResourceVersion::instance().incrementVersion("device");
 
-            LOG_DEBUG << "[SL651] 已保存: id=" << id << ", device=" << deviceId << ", 要素=" << elements.size();
+            LOG_DEBUG << "[SL651][Parser] Saved frame: " << deviceName
+                      << "(id=" << deviceId << ",code=" << configOpt->deviceCode << ")"
+                      << ", 要素=" << elements.size();
             co_return id;
 
         } catch (const std::exception& e) {
-            LOG_ERROR << "[SL651] 保存数据失败: " << e.what();
+            LOG_ERROR << "[SL651][Parser] Save frame failed: " << e.what();
             co_return 0;
         }
     }
@@ -1209,11 +1222,14 @@ private:
             std::string reportTime = extractReportTime(mergedBody);
             auto configOpt = co_await getDeviceConfig_(linkId, session.remoteCode);
             if (!configOpt) {
-                LOG_WARN << "[SL651] 未找到设备: " << session.remoteCode;
+                LOG_WARN << "[SL651][Parser] No device found: " << session.remoteCode;
                 co_return;
             }
 
             int deviceId = configOpt->deviceId;
+            const std::string deviceName = configOpt->deviceName.empty()
+                ? (configOpt->deviceCode.empty() ? session.remoteCode : configOpt->deviceCode)
+                : configOpt->deviceName;
 
             // 拼接设备时区，确保 TIMESTAMPTZ 正确存储
             if (!reportTime.empty()) {
@@ -1286,10 +1302,12 @@ private:
             // 更新资源版本号，让前端知道有新数据
             ResourceVersion::instance().incrementVersion("device");
 
-            LOG_DEBUG << "[SL651] 多包数据已保存: device=" << deviceId << ", 总包数=" << session.totalPk;
+            LOG_DEBUG << "[SL651][Parser] Saved multi-packet frame: " << deviceName
+                      << "(id=" << deviceId << ",code=" << configOpt->deviceCode << ")"
+                      << ", 总包数=" << session.totalPk;
 
         } catch (const std::exception& e) {
-            LOG_ERROR << "[SL651] 保存多包数据失败: " << e.what();
+            LOG_ERROR << "[SL651][Parser] Save multi-packet frame failed: " << e.what();
         }
     }
 
@@ -1319,7 +1337,7 @@ private:
         for (auto it = multiPacketSessions_.begin(); it != multiPacketSessions_.end(); ) {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.startTime).count();
             if (elapsed > SESSION_TIMEOUT_MS) {
-                LOG_WARN << "[SL651] Multi-packet session expired: " << it->first
+                LOG_WARN << "[SL651][Parser] Multi-packet session expired: " << it->first
                          << " (received " << it->second.receivedPk.size()
                          << "/" << it->second.totalPk << " packets in "
                          << elapsed << "ms)";

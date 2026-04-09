@@ -274,9 +274,12 @@ inline bool DtuSessionManager::bindSession(
 
     // 在锁外关闭旧连接，避免死锁
     if (displacedLinkId > 0 && !displacedClientAddr.empty() && oldSessionDisplacedCallback_) {
-        LOG_INFO << "[DtuSessionManager] DTU " << dtu.dtuKey
-                 << " rebound from " << displacedClientAddr
-                 << " to " << clientAddr << ", closing old connection";
+        LOG_INFO << "[Modbus][DtuSessionManager] Rebound session: "
+                 << (dtu.name.empty() ? "<unnamed>" : dtu.name)
+                 << " (dtuKey=" << dtu.dtuKey
+                 << ", from=" << displacedClientAddr
+                 << ", to=" << clientAddr
+                 << ")";
         oldSessionDisplacedCallback_(displacedLinkId, displacedClientAddr);
     }
 

@@ -243,8 +243,8 @@ inline DtuRegistry::Task<void> DtuRegistry::reload() {
         devicesById_ = std::move(newDevicesById);
     }
 
-    LOG_INFO << "[Modbus][DtuRegistry] Loaded " << dtuCount
-             << " DTU definition(s), devices=" << deviceCount;
+    LOG_INFO << "[Modbus][DtuRegistry] Loaded registry: dtuCount=" << dtuCount
+             << ", deviceCount=" << deviceCount;
 }
 
 inline bool DtuRegistry::empty() const {

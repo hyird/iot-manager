@@ -21,16 +21,24 @@ public:
     Result preprocess(int linkId, const std::string& clientAddr, std::vector<uint8_t> bytes) const {
         auto devices = DeviceCache::instance().getDevicesByLinkIdSync(linkId);
 
+        auto deviceLabel = [](const DeviceCache::CachedDevice& dev) {
+            if (!dev.name.empty()) return dev.name;
+            if (!dev.deviceCode.empty()) return dev.deviceCode;
+            return std::string{"<unknown>"};
+        };
+
         auto registerDevice = [&](const DeviceCache::CachedDevice& dev, bool logInfo, const char* matchType) {
             if (!dev.deviceCode.empty()) {
                 DeviceConnectionCache::instance().registerConnection(dev.deviceCode, linkId, clientAddr);
             }
             if (logInfo) {
-                LOG_INFO << "[Link " << linkId << "] " << matchType << " matched device "
-                         << (dev.deviceCode.empty() ? dev.name : dev.deviceCode) << " from " << clientAddr;
+                LOG_INFO << "[SL651][LinkIngress] " << matchType << " matched "
+                         << deviceLabel(dev) << "(id=" << dev.id << ",code=" << dev.deviceCode << ")"
+                         << " from " << clientAddr;
             } else {
-                LOG_DEBUG << "[Link " << linkId << "] " << matchType << " matched device "
-                          << (dev.deviceCode.empty() ? dev.name : dev.deviceCode) << " from " << clientAddr;
+                LOG_DEBUG << "[SL651][LinkIngress] " << matchType << " matched "
+                          << deviceLabel(dev) << "(id=" << dev.id << ",code=" << dev.deviceCode << ")"
+                          << " from " << clientAddr;
             }
         };
 
@@ -73,9 +81,9 @@ public:
 
             if (DeviceConnectionCache::instance().isClientRegistered(linkId, clientAddr)) {
                 DeviceConnectionCache::instance().refreshClient(linkId, clientAddr);
-                LOG_DEBUG << "[Link " << linkId << "] Heartbeat from " << clientAddr;
+                LOG_DEBUG << "[SL651][LinkIngress] Heartbeat from " << clientAddr;
             } else {
-                LOG_DEBUG << "[Link " << linkId << "] Heartbeat from unregistered "
+                LOG_DEBUG << "[SL651][LinkIngress] Heartbeat from unregistered "
                           << clientAddr << ", ignoring";
             }
             return {};
@@ -83,7 +91,7 @@ public:
 
         if (requiresRegistration
             && !DeviceConnectionCache::instance().isClientRegistered(linkId, clientAddr)) {
-            LOG_WARN << "[Link " << linkId << "] Unregistered client " << clientAddr
+            LOG_WARN << "[SL651][LinkIngress] Unregistered client " << clientAddr
                      << ", dropping " << bytes.size() << "B";
             return {};
         }

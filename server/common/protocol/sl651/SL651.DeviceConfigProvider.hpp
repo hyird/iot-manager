@@ -73,7 +73,7 @@ public:
 
             co_return config;
         } catch (const std::exception& e) {
-            LOG_ERROR << "[SL651][ConfigProvider] 获取设备配置失败: " << e.what();
+            LOG_ERROR << "[SL651][ConfigProvider] Device config load failed: " << e.what();
             co_return std::nullopt;
         }
     }
@@ -182,7 +182,7 @@ private:
                     parseElementArray(func, "responseElements", funcCode);
             }
         } catch (const std::exception& e) {
-            LOG_ERROR << "[SL651][ConfigProvider] Failed to compile protocol config: " << e.what();
+            LOG_ERROR << "[SL651][ConfigProvider] Protocol config compile failed: " << e.what();
             return nullptr;
         }
 
@@ -197,7 +197,7 @@ private:
         std::string errs;
         std::istringstream iss(json);
         if (!Json::parseFromStream(builder, iss, &root, &errs)) {
-            LOG_ERROR << "[SL651][ConfigProvider] Failed to parse config JSON: " << errs;
+            LOG_ERROR << "[SL651][ConfigProvider] Config JSON parse failed: " << errs;
             return std::nullopt;
         }
         return root;

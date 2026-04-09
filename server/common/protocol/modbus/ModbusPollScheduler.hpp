@@ -58,6 +58,7 @@ private:
 
     struct PollEntry {
         int deviceId = 0;
+        std::string deviceName;
         std::string dtuKey;
         int linkId = 0;
         size_t nextGroupIndex = 0;
@@ -150,6 +151,7 @@ inline void ModbusPollScheduler::reload(const DtuRegistry& registry) {
 
                 PollEntry entry;
                 entry.deviceId = device.deviceId;
+                entry.deviceName = device.deviceName;
                 entry.dtuKey = dtu.dtuKey;
                 entry.linkId = device.linkId;
                 entry.readIntervalSec = (std::max)(1, device.readInterval);
@@ -264,7 +266,9 @@ inline void ModbusPollScheduler::onReadCompleted(int deviceId, size_t readGroupI
                 && entry.readIntervalSec < DEGRADE_INTERVAL_SEC) {
                 intervalSec = DEGRADE_INTERVAL_SEC;
                 if (entry.consecutiveFailures == DEGRADE_THRESHOLD) {
-                    LOG_WARN << "[Modbus][PollScheduler] Device " << deviceId
+                    LOG_WARN << "[Modbus][PollScheduler] Device "
+                             << (entry.deviceName.empty() ? "Modbus-unknown" : entry.deviceName)
+                             << "(id=" << deviceId << ")"
                              << " degraded after " << DEGRADE_THRESHOLD
                              << " consecutive failures, interval=" << intervalSec << "s";
                 }
@@ -272,7 +276,9 @@ inline void ModbusPollScheduler::onReadCompleted(int deviceId, size_t readGroupI
             entry.nextDueTime = now + std::chrono::seconds(intervalSec);
         } else if (readGroupIndex + 1 < entry.readGroupCount) {
             if (entry.consecutiveFailures >= DEGRADE_THRESHOLD) {
-                LOG_INFO << "[Modbus][PollScheduler] Device " << deviceId
+                LOG_INFO << "[Modbus][PollScheduler] Device "
+                         << (entry.deviceName.empty() ? "Modbus-unknown" : entry.deviceName)
+                         << "(id=" << deviceId << ")"
                          << " recovered from degraded state";
             }
             entry.consecutiveFailures = 0;
@@ -281,7 +287,9 @@ inline void ModbusPollScheduler::onReadCompleted(int deviceId, size_t readGroupI
             immediateReads.emplace_back(deviceId, entry.nextGroupIndex);
         } else {
             if (entry.consecutiveFailures >= DEGRADE_THRESHOLD) {
-                LOG_INFO << "[Modbus][PollScheduler] Device " << deviceId
+                LOG_INFO << "[Modbus][PollScheduler] Device "
+                         << (entry.deviceName.empty() ? "Modbus-unknown" : entry.deviceName)
+                         << "(id=" << deviceId << ")"
                          << " recovered from degraded state";
             }
             entry.consecutiveFailures = 0;

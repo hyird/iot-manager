@@ -363,7 +363,7 @@ public:
                     co_return CommandResult::sendFailed("Agent 命令发送失败");
                 }
 
-                LOG_INFO << "[Modbus][Adapter] Command forwarded to Agent " << agentId
+                LOG_INFO << "[Modbus][Adapter] TX command to Agent " << agentId
                          << " for device " << deviceId;
 
                 co_return co_await awaitCommandResponse(pendingKey, req.timeoutMs, downCommandId);
