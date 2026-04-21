@@ -77,15 +77,22 @@ public:
 
         // ETag 检查（HTTP 缓存层，属于 Controller 职责）
         auto& rv = ResourceVersion::instance();
-        std::string userVersion = rv.getVersion("auth:user:" + std::to_string(userId));
-        std::string roleVersion = rv.getVersion("role");
-        std::string menuVersion = rv.getVersion("menu");
-        std::string etag = "\"" + userVersion + "-" + roleVersion + "-" + menuVersion + "\"";
+        const auto normalizeVersion = [](const std::string& version) -> std::string {
+            return version.empty() ? "0" : version;
+        };
+        std::string userVersion = normalizeVersion(rv.getVersion("auth:user:" + std::to_string(userId)));
+        std::string roleVersion = normalizeVersion(rv.getVersion("role"));
+        std::string menuVersion = normalizeVersion(rv.getVersion("menu"));
+        // 关键：将 userId 纳入 ETag，避免不同用户在版本未初始化时命中相同 ETag。
+        std::string etag = "\"" + std::to_string(userId) + "-" + userVersion + "-" + roleVersion + "-" + menuVersion + "\"";
 
         std::string ifNoneMatch = req->getHeader("If-None-Match");
         if (!ifNoneMatch.empty() && ifNoneMatch == etag) {
             auto resp = drogon::HttpResponse::newHttpResponse();
             resp->setStatusCode(drogon::k304NotModified);
+            resp->addHeader("ETag", etag);
+            resp->addHeader("Vary", "Authorization");
+            resp->addHeader("Cache-Control", "private, no-cache");
             co_return resp;
         }
 
@@ -93,6 +100,8 @@ public:
 
         auto resp = Response::ok(userInfo, "获取成功");
         resp->addHeader("ETag", etag);
+        resp->addHeader("Vary", "Authorization");
+        resp->addHeader("Cache-Control", "private, no-cache");
         co_return resp;
     }
 };
