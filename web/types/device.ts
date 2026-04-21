@@ -216,6 +216,12 @@ export interface DeviceRealtimeData {
   connectionState?: "online" | "offline";
   elements?: DeviceElement[];
   image?: { data: string };
+  // 资源权限（realtime 接口同样返回）
+  can_edit?: boolean;
+  can_delete?: boolean;
+  can_share?: boolean;
+  can_command?: boolean;
+  access_level?: DeviceAccessLevel;
 }
 
 // ========== 实时数据相关类型 ==========
@@ -315,9 +321,13 @@ export interface DeviceRealTimeData extends DeviceStaticData {
 
 /** 设备分享条目 */
 export interface DeviceShareItem {
-  user_id: number;
-  username: string;
+  target_type: "user" | "department";
+  target_id: number;
+  user_id?: number;
+  username?: string;
   nickname?: string;
+  department_id?: number;
+  department_name?: string;
   permission: DeviceSharePermission;
   created_at?: string;
   updated_at?: string;

@@ -52,8 +52,8 @@ export function useDeviceShareSave() {
 /** 删除设备分享权限 Mutation */
 export function useDeviceShareDelete() {
   return useMutationWithFeedback({
-    mutationFn: (data: { deviceId: number; userId: number }) =>
-      deviceApi.removeShare(data.deviceId, data.userId),
+    mutationFn: (data: { deviceId: number; targetType: string; targetId: number }) =>
+      deviceApi.removeShare(data.deviceId, data.targetType, data.targetId),
     successMessage: "已取消分享",
     invalidateKeys: [deviceKeys.all],
   });

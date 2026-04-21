@@ -14,7 +14,8 @@ const ENDPOINTS = {
   HISTORY: "/api/device/history",
   COMMAND: (linkId: number) => `/api/device/command/${linkId}`,
   SHARES: (id: number) => `/api/device/${id}/shares`,
-  SHARE_DETAIL: (id: number, userId: number) => `/api/device/${id}/shares/${userId}`,
+  SHARE_DETAIL: (id: number, targetType: string, targetId: number) =>
+    `/api/device/${id}/shares/${targetType}/${targetId}`,
 } as const;
 
 /** 获取设备详情 */
@@ -83,6 +84,6 @@ export function upsertShare(deviceId: number, payload: Device.ShareUpsertDto) {
 }
 
 /** 删除设备分享 */
-export function removeShare(deviceId: number, userId: number) {
-  return request.delete<void>(ENDPOINTS.SHARE_DETAIL(deviceId, userId));
+export function removeShare(deviceId: number, targetType: string, targetId: number) {
+  return request.delete<void>(ENDPOINTS.SHARE_DETAIL(deviceId, targetType, targetId));
 }

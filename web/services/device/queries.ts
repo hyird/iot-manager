@@ -51,6 +51,11 @@ const areRealtimeEntriesEqual = (previous?: Device.Realtime, current?: Device.Re
     previous.reportTime === current.reportTime &&
     previous.connected === current.connected &&
     previous.connectionState === current.connectionState &&
+    previous.can_edit === current.can_edit &&
+    previous.can_delete === current.can_delete &&
+    previous.can_share === current.can_share &&
+    previous.can_command === current.can_command &&
+    previous.access_level === current.access_level &&
     areImagesEqual(previous.image, current.image) &&
     areElementsEqual(previous.elements, current.elements)
   );
@@ -208,7 +213,12 @@ export function useDeviceList(options?: {
   const mergedCacheRef = useRef<Map<number, MergedCacheEntry>>(new Map());
   const mergedListRef = useRef<Device.RealTimeData[]>([]);
 
-  const staticQuery = useDeviceStatic({ enabled });
+  const staticQuery = useDeviceStatic({
+    enabled,
+    // 周期性回源（配合 ETag 304），确保跨账号分享/部门人员变更能自动生效
+    refetchInterval: 15 * 1000,
+    refetchIntervalInBackground: false,
+  });
   const realtimeQuery = useDeviceRealtime({
     pollingInterval,
     enabled,
@@ -252,6 +262,12 @@ export function useDeviceList(options?: {
         connectionState: realtime?.connectionState,
         elements: realtime?.elements,
         image: realtime?.image,
+        // 权限字段以实时数据为准（分享权限变更后可被轮询及时刷新）
+        can_edit: realtime?.can_edit ?? device.can_edit,
+        can_delete: realtime?.can_delete ?? device.can_delete,
+        can_share: realtime?.can_share ?? device.can_share,
+        can_command: realtime?.can_command ?? device.can_command,
+        access_level: realtime?.access_level ?? device.access_level,
       } as Device.RealTimeData;
 
       nextCache.set(device.id, {

@@ -515,7 +515,6 @@ const DevicePage = () => {
   const canEdit = hasPermission("iot:device:edit");
   const canDelete = hasPermission("iot:device:delete");
   const canManageGroup = hasPermission("iot:device-group:edit");
-  const canCommand = hasPermission("iot:device:command");
 
   // 搜索
   const [keyword, setKeyword] = useState("");
@@ -716,12 +715,11 @@ const DevicePage = () => {
 
   const openCommandPopover = useCallback(
     (device: Device.RealTimeData, func: Device.CommandOperation) => {
-      if (!canCommand) return;
       setCommandDevice(device);
       setCommandFunc(func);
       setCommandPopoverOpen(true);
     },
-    [canCommand]
+    []
   );
 
   // ========== 历史数据 ==========
@@ -748,7 +746,7 @@ const DevicePage = () => {
           device={device}
           canEdit={canEdit && device.can_edit !== false}
           canDelete={canDelete && device.can_delete !== false}
-          canCommand={canCommand && device.can_command !== false}
+          canCommand={device.can_command === true}
           canShare={canEdit && device.can_share === true}
           isCommandPopoverOpen={commandPopoverOpen && commandDevice?.id === device.id}
           activeCommandFunc={commandDevice?.id === device.id ? commandFunc : null}

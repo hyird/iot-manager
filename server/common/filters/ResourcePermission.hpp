@@ -103,18 +103,49 @@ public:
 
         auto [placeholders, idParams] = SqlHelper::buildParameterizedIn(deviceIds);
         std::vector<std::string> params;
-        params.reserve(1 + idParams.size());
+        params.reserve(2 + idParams.size());
+        params.push_back(std::to_string(userId));
         params.push_back(std::to_string(userId));
         params.insert(params.end(), idParams.begin(), idParams.end());
 
         DatabaseService db;
-        auto rows = co_await db.execSqlCoro(
-            "SELECT device_id, permission FROM device_share WHERE user_id = ? AND device_id IN (" + placeholders + ")",
-            params
-        );
+        std::string sql = R"(
+            SELECT ds.device_id,
+                   COALESCE((ds.permission->>'control')::boolean, false) AS can_control
+            FROM device_share ds
+            LEFT JOIN sys_user su ON su.id = ? AND su.deleted_at IS NULL
+            WHERE ds.device_id IN (
+        )";
+        sql += placeholders;
+        sql += R"(
+            )
+              AND (
+                (
+                    ds.target_type = 'user'
+                    AND ds.target_id = ?
+                )
+                OR (
+                    ds.target_type = 'department'
+                    AND su.department_id IS NOT NULL
+                    AND ds.target_id = su.department_id
+                )
+              )
+        )";
+
+        auto rows = co_await db.execSqlCoro(sql, params);
 
         for (const auto& row : rows) {
-            permissions[FieldHelper::getInt(row["device_id"])] = FieldHelper::getString(row["permission"], "view");
+            int deviceId = FieldHelper::getInt(row["device_id"]);
+            std::string permission = FieldHelper::getBool(row["can_control"], false) ? "control" : "view";
+            auto it = permissions.find(deviceId);
+            if (it == permissions.end()) {
+                permissions[deviceId] = permission;
+                continue;
+            }
+            // 同时命中用户级和部门级时，取更高权限 control
+            if (it->second != "control" && permission == "control") {
+                it->second = "control";
+            }
         }
         co_return permissions;
     }
@@ -122,13 +153,39 @@ public:
     static Task<std::string> getSingleDeviceSharePermission(int deviceId, int userId) {
         DatabaseService db;
         auto rows = co_await db.execSqlCoro(
-            "SELECT permission FROM device_share WHERE device_id = ? AND user_id = ? LIMIT 1",
-            {std::to_string(deviceId), std::to_string(userId)}
+            R"(
+                SELECT COALESCE((ds.permission->>'control')::boolean, false) AS can_control
+                FROM device_share ds
+                LEFT JOIN sys_user su ON su.id = ? AND su.deleted_at IS NULL
+                WHERE ds.device_id = ?
+                  AND (
+                    (
+                        ds.target_type = 'user'
+                        AND ds.target_id = ?
+                    )
+                    OR (
+                        ds.target_type = 'department'
+                        AND su.department_id IS NOT NULL
+                        AND ds.target_id = su.department_id
+                    )
+                  )
+            )",
+            {std::to_string(userId), std::to_string(deviceId), std::to_string(userId)}
         );
         if (rows.empty()) {
             co_return "";
         }
-        co_return FieldHelper::getString(rows[0]["permission"], "");
+        std::string effective;
+        for (const auto& row : rows) {
+            const bool canControl = FieldHelper::getBool(row["can_control"], false);
+            if (canControl) {
+                co_return "control";
+            }
+            if (effective.empty()) {
+                effective = "view";
+            }
+        }
+        co_return effective;
     }
 
 private:

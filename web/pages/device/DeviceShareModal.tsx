@@ -76,14 +76,22 @@ const DeviceShareModal = ({ open, device, onClose }: DeviceShareModalProps) => {
   const columns = useMemo<ColumnsType<Device.ShareItem>>(
     () => [
       {
-        title: "用户名",
-        dataIndex: "username",
-        width: 180,
+        title: "类型",
+        dataIndex: "target_type",
+        width: 100,
+        render: (value: Device.ShareItem["target_type"]) =>
+          value === "department" ? <Tag color="purple">部门</Tag> : <Tag color="blue">用户</Tag>,
       },
       {
-        title: "昵称",
-        dataIndex: "nickname",
-        render: (value?: string) => value || "-",
+        title: "分享对象",
+        key: "target",
+        render: (_, record) => {
+          if (record.target_type === "department") {
+            return record.department_name || `(部门 #${record.target_id})`;
+          }
+          const username = record.username || `用户 #${record.target_id}`;
+          return record.nickname ? `${record.nickname} (${username})` : username;
+        },
       },
       {
         title: "权限",
@@ -104,13 +112,20 @@ const DeviceShareModal = ({ open, device, onClose }: DeviceShareModalProps) => {
         width: 110,
         render: (_, record) => (
           <Popconfirm
-            title={`取消用户「${record.username}」的设备分享？`}
+            title={`取消${record.target_type === "department" ? "部门" : "用户"}「${
+              record.target_type === "department"
+                ? record.department_name || `#${record.target_id}`
+                : record.nickname
+                  ? `${record.nickname} (${record.username || `#${record.target_id}`})`
+                  : record.username || `#${record.target_id}`
+            }」的设备分享？`}
             okText="确认"
             cancelText="取消"
             onConfirm={() =>
               deleteMutation.mutate({
                 deviceId,
-                userId: record.user_id,
+                targetType: record.target_type,
+                targetId: record.target_id,
               })
             }
           >
@@ -184,11 +199,11 @@ const DeviceShareModal = ({ open, device, onClose }: DeviceShareModalProps) => {
 
         <Form<ShareFormValues>
           form={form}
-          layout="inline"
+          layout="vertical"
           initialValues={{ department_ids: [], user_ids: [], permission: "view" }}
           className="w-full"
         >
-          <Form.Item name="department_ids" className="flex-1 min-w-[260px]">
+          <Form.Item label="部门" name="department_ids" className="w-full">
             <Select
               mode="multiple"
               allowClear
@@ -196,9 +211,10 @@ const DeviceShareModal = ({ open, device, onClose }: DeviceShareModalProps) => {
               placeholder="选择部门（可多选）"
               options={departmentOptions}
               optionFilterProp="label"
+              className="w-full"
             />
           </Form.Item>
-          <Form.Item name="user_ids" className="flex-1 min-w-[320px]">
+          <Form.Item label="用户" name="user_ids" className="w-full">
             <Select
               mode="multiple"
               allowClear
@@ -206,25 +222,27 @@ const DeviceShareModal = ({ open, device, onClose }: DeviceShareModalProps) => {
               placeholder="选择用户（可多选）"
               options={userOptions}
               optionFilterProp="label"
+              className="w-full"
             />
           </Form.Item>
-          <Form.Item name="permission" className="min-w-[120px]">
+          <Form.Item label="权限" name="permission" className="w-full">
             <Select
               options={[
                 { label: "只读", value: "view" },
                 { label: "读写", value: "control" },
               ]}
+              className="w-full"
             />
           </Form.Item>
-          <Form.Item>
-            <Button type="primary" onClick={handleSubmit} loading={saveMutation.isPending}>
+          <Form.Item className="w-full !mb-0">
+            <Button type="primary" block onClick={handleSubmit} loading={saveMutation.isPending}>
               添加/更新
             </Button>
           </Form.Item>
         </Form>
 
         <Table<Device.ShareItem>
-          rowKey={(record) => record.user_id}
+          rowKey={(record) => `${record.target_type}-${record.target_id}`}
           columns={columns}
           dataSource={shares}
           loading={isLoading}

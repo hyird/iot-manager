@@ -33,7 +33,7 @@ public:
     ADD_METHOD_TO(DeviceController::command, "/api/device/command/{linkId}", Post, "AuthFilter");
     ADD_METHOD_TO(DeviceController::shares, "/api/device/{id}/shares", Get, "AuthFilter");
     ADD_METHOD_TO(DeviceController::shareUpsert, "/api/device/{id}/shares", Post, "AuthFilter");
-    ADD_METHOD_TO(DeviceController::shareRemove, "/api/device/{id}/shares/{targetUserId}", Delete, "AuthFilter");
+    ADD_METHOD_TO(DeviceController::shareRemove, "/api/device/{id}/shares/{targetType}/{targetId}", Delete, "AuthFilter");
     METHOD_LIST_END
 
     /**
@@ -211,7 +211,6 @@ public:
      */
     Task<HttpResponsePtr> command(HttpRequestPtr req, int linkId) {
         int userId = ControllerUtils::getUserId(req);
-        co_await PermissionChecker::checkPermission(userId, {"iot:device:command"});
 
         auto json = ControllerUtils::requireJson(req);
 
@@ -256,14 +255,14 @@ public:
     /**
      * @brief 删除设备分享
      */
-    Task<HttpResponsePtr> shareRemove(HttpRequestPtr req, int id, int targetUserId) {
+    Task<HttpResponsePtr> shareRemove(HttpRequestPtr req, int id, std::string targetType, int targetId) {
         ControllerUtils::requirePositiveId(id);
-        ControllerUtils::requirePositiveId(targetUserId, "目标用户ID无效");
+        ControllerUtils::requirePositiveId(targetId, "分享目标ID无效");
 
         int userId = ControllerUtils::getUserId(req);
         co_await PermissionChecker::checkPermission(userId, {"iot:device:edit"});
 
-        co_await service_.removeShare(id, targetUserId, userId);
+        co_await service_.removeShare(id, targetType, targetId, userId);
         co_return Response::deleted("已取消分享");
     }
 
