@@ -326,7 +326,9 @@ export interface DeviceShareItem {
 /** 设备分享更新参数 */
 export interface DeviceShareUpsertDto {
   user_id?: number;
+  user_ids?: number[];
   username?: string;
+  department_ids?: number[];
   permission: DeviceSharePermission;
 }
 

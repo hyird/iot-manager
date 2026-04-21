@@ -21,6 +21,7 @@
 #include <cmath>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
 // 类型别名，简化代码
 using ElementData = DeviceDataTransformer::ElementData;
@@ -785,68 +786,122 @@ public:
     Task<void> upsertShare(int deviceId, int operatorId, const Json::Value& data) {
         co_await ResourcePermission::ensureDeviceOwnerOrSuperAdmin(deviceId, operatorId);
 
-        int targetUserId = data.get("user_id", 0).asInt();
-        std::string username = trimCopy(data.get("username", "").asString());
         std::string permission = trimCopy(data.get("permission", "view").asString());
-        if (permission.empty()) {
-            permission = "view";
-        }
+        if (permission.empty()) permission = "view";
         std::transform(permission.begin(), permission.end(), permission.begin(), [](unsigned char ch) {
             return static_cast<char>(std::tolower(ch));
         });
+
+        // 权限语义兼容：
+        // - view / readonly / 只读 -> view
+        // - control / readwrite / 读写 -> control
+        if (permission == "readonly" || permission == "只读") {
+            permission = "view";
+        } else if (permission == "readwrite" || permission == "读写") {
+            permission = "control";
+        }
         if (permission != "view" && permission != "control") {
-            throw ValidationException("分享权限仅支持 view 或 control");
+            throw ValidationException("分享权限仅支持 只读(view) 或 读写(control)");
         }
 
-        if (targetUserId <= 0 && username.empty()) {
-            throw ValidationException("请提供分享目标用户ID或用户名");
+        std::unordered_set<int> targetUserSet;
+
+        if (data.isMember("user_ids") && data["user_ids"].isArray()) {
+            for (const auto& v : data["user_ids"]) {
+                int uid = v.asInt();
+                if (uid > 0) {
+                    targetUserSet.insert(uid);
+                }
+            }
+        }
+        if (data.isMember("department_ids") && data["department_ids"].isArray()) {
+            std::vector<int> departmentIds;
+            for (const auto& v : data["department_ids"]) {
+                int did = v.asInt();
+                if (did > 0) {
+                    departmentIds.push_back(did);
+                }
+            }
+            if (!departmentIds.empty()) {
+                auto [deptPlaceholders, deptParams] = SqlHelper::buildParameterizedIn(departmentIds);
+                auto usersInDept = co_await dbService_.execSqlCoro(
+                    "SELECT id FROM sys_user WHERE deleted_at IS NULL AND status = 'enabled' "
+                    "AND department_id IN (" + deptPlaceholders + ")",
+                    deptParams
+                );
+                for (const auto& row : usersInDept) {
+                    targetUserSet.insert(FieldHelper::getInt(row["id"]));
+                }
+            }
         }
 
-        if (targetUserId <= 0) {
+        // 兼容旧入参（单用户）
+        int targetUserId = data.get("user_id", 0).asInt();
+        std::string username = trimCopy(data.get("username", "").asString());
+        if (targetUserId > 0) {
+            targetUserSet.insert(targetUserId);
+        }
+        if (!username.empty()) {
             auto userResult = co_await dbService_.execSqlCoro(
-                "SELECT id FROM sys_user WHERE username = ? AND deleted_at IS NULL LIMIT 1",
+                "SELECT id FROM sys_user WHERE username = ? AND deleted_at IS NULL AND status = 'enabled' LIMIT 1",
                 {username}
             );
             if (userResult.empty()) {
-                throw NotFoundException("分享目标用户不存在");
+                throw NotFoundException("分享目标用户不存在或未启用");
             }
-            targetUserId = FieldHelper::getInt(userResult[0]["id"]);
-        } else {
-            auto userResult = co_await dbService_.execSqlCoro(
-                "SELECT id FROM sys_user WHERE id = ? AND deleted_at IS NULL LIMIT 1",
-                {std::to_string(targetUserId)}
-            );
-            if (userResult.empty()) {
-                throw NotFoundException("分享目标用户不存在");
-            }
+            targetUserSet.insert(FieldHelper::getInt(userResult[0]["id"]));
+        }
+
+        if (targetUserSet.empty()) {
+            throw ValidationException("请至少选择一个部门或用户");
         }
 
         auto creatorResult = co_await dbService_.execSqlCoro(
             "SELECT created_by FROM device WHERE id = ? AND deleted_at IS NULL LIMIT 1",
             {std::to_string(deviceId)}
         );
+        int creatorId = 0;
         if (!creatorResult.empty()) {
-            int creatorId = creatorResult[0]["created_by"].isNull()
+            creatorId = creatorResult[0]["created_by"].isNull()
                 ? 0
                 : FieldHelper::getInt(creatorResult[0]["created_by"]);
-            if (creatorId > 0 && targetUserId == creatorId) {
-                throw ValidationException("创建者默认拥有设备全部权限，无需分享");
-            }
+        }
+        if (creatorId > 0) {
+            targetUserSet.erase(creatorId);
+        }
+        if (targetUserSet.empty()) {
+            throw ValidationException("所选对象均为设备创建者，无需分享");
         }
 
-        co_await dbService_.execSqlCoro(R"(
-            INSERT INTO device_share (device_id, user_id, permission, created_by)
-            VALUES (?, ?, ?, NULLIF(?, '0')::INT)
-            ON CONFLICT (device_id, user_id)
-            DO UPDATE SET
-                permission = EXCLUDED.permission,
-                updated_at = CURRENT_TIMESTAMP
-        )", {
-            std::to_string(deviceId),
-            std::to_string(targetUserId),
-            permission,
-            std::to_string(operatorId)
-        });
+        // 二次校验：仅保留存在且启用的用户
+        std::vector<int> targetUserIds(targetUserSet.begin(), targetUserSet.end());
+        auto [userPlaceholders, userParams] = SqlHelper::buildParameterizedIn(targetUserIds);
+        auto validUsers = co_await dbService_.execSqlCoro(
+            "SELECT id FROM sys_user WHERE deleted_at IS NULL AND status = 'enabled' "
+            "AND id IN (" + userPlaceholders + ")",
+            userParams
+        );
+
+        if (validUsers.empty()) {
+            throw NotFoundException("未找到可分享的有效用户");
+        }
+
+        for (const auto& row : validUsers) {
+            int uid = FieldHelper::getInt(row["id"]);
+            co_await dbService_.execSqlCoro(R"(
+                INSERT INTO device_share (device_id, user_id, permission, created_by)
+                VALUES (?, ?, ?, NULLIF(?, '0')::INT)
+                ON CONFLICT (device_id, user_id)
+                DO UPDATE SET
+                    permission = EXCLUDED.permission,
+                    updated_at = CURRENT_TIMESTAMP
+            )", {
+                std::to_string(deviceId),
+                std::to_string(uid),
+                permission,
+                std::to_string(operatorId)
+            });
+        }
 
         ResourceVersion::instance().incrementVersion("device");
     }
