@@ -150,6 +150,17 @@ namespace ETagUtils {
     using drogon::Get;
 
     /**
+     * @brief 为需要鉴权的 ETag 响应追加安全缓存头
+     *
+     * - Vary: Authorization，避免不同认证身份复用同一缓存条目
+     * - Cache-Control: private, no-cache，允许客户端重验证但禁止共享缓存直接复用
+     */
+    inline void addAuthAwareCacheHeaders(const HttpResponsePtr& resp) {
+        resp->addHeader("Vary", "Authorization");
+        resp->addHeader("Cache-Control", "private, no-cache");
+    }
+
+    /**
      * @brief 生成参数化 ETag
      * @param resourceKey 资源 key
      * @param params 查询参数（会被哈希）
@@ -173,6 +184,8 @@ namespace ETagUtils {
             LOG_DEBUG << "[ETag] 304 for " << req->path();
             auto resp = HttpResponse::newHttpResponse();
             resp->setStatusCode(k304NotModified);
+            resp->addHeader("ETag", ResourceVersion::instance().makeETag(resourceKey));
+            addAuthAwareCacheHeaders(resp);
             return resp;
         }
         return nullptr;
@@ -200,6 +213,8 @@ namespace ETagUtils {
             LOG_DEBUG << "[ETag] 304 for " << req->path() << " (combined)";
             auto resp = HttpResponse::newHttpResponse();
             resp->setStatusCode(k304NotModified);
+            resp->addHeader("ETag", etag);
+            addAuthAwareCacheHeaders(resp);
             return resp;
         }
         return nullptr;
@@ -225,6 +240,8 @@ namespace ETagUtils {
             LOG_DEBUG << "[ETag] 304 for " << req->path() << " (parameterized)";
             auto resp = HttpResponse::newHttpResponse();
             resp->setStatusCode(k304NotModified);
+            resp->addHeader("ETag", etag);
+            addAuthAwareCacheHeaders(resp);
             return resp;
         }
         return nullptr;
@@ -235,6 +252,7 @@ namespace ETagUtils {
      */
     inline void addETag(const HttpResponsePtr& resp, const std::string& resourceKey) {
         resp->addHeader("ETag", ResourceVersion::instance().makeETag(resourceKey));
+        addAuthAwareCacheHeaders(resp);
     }
 
     /**
@@ -248,6 +266,7 @@ namespace ETagUtils {
             combined += ResourceVersion::instance().getVersion(key);
         }
         resp->addHeader("ETag", "\"" + combined + "\"");
+        addAuthAwareCacheHeaders(resp);
     }
 
     /**
@@ -257,5 +276,6 @@ namespace ETagUtils {
                              const std::string& resourceKey,
                              const std::string& params) {
         resp->addHeader("ETag", makeParamETag(resourceKey, params));
+        addAuthAwareCacheHeaders(resp);
     }
 }
