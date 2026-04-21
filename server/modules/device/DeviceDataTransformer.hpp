@@ -243,6 +243,7 @@ public:
         item["protocol_config_id"] = device.protocolConfigId;
         item["group_id"] = device.groupId > 0 ? Json::Value(device.groupId) : Json::Value::null;
         item["status"] = device.status;
+        item["created_by"] = device.createdBy > 0 ? Json::Value(device.createdBy) : Json::Value::null;
         // 默认口径：3 个轮询周期未收到最新数据则视为离线
         item["online_timeout"] = resolveEffectiveOnlineTimeout(device);
         item["remote_control"] = device.remoteControl;

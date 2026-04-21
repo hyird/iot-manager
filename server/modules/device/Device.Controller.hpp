@@ -6,6 +6,7 @@
 #include "common/utils/ControllerMacros.hpp"
 #include "common/utils/ValidatorHelper.hpp"
 #include "common/filters/PermissionFilter.hpp"
+#include "common/filters/ResourcePermission.hpp"
 
 /**
  * @brief 设备管理控制器
@@ -30,23 +31,28 @@ public:
     ADD_METHOD_TO(DeviceController::options, "/api/device/options", Get, "AuthFilter");
     ADD_METHOD_TO(DeviceController::history, "/api/device/history", Get, "AuthFilter");
     ADD_METHOD_TO(DeviceController::command, "/api/device/command/{linkId}", Post, "AuthFilter");
+    ADD_METHOD_TO(DeviceController::shares, "/api/device/{id}/shares", Get, "AuthFilter");
+    ADD_METHOD_TO(DeviceController::shareUpsert, "/api/device/{id}/shares", Post, "AuthFilter");
+    ADD_METHOD_TO(DeviceController::shareRemove, "/api/device/{id}/shares/{targetUserId}", Delete, "AuthFilter");
     METHOD_LIST_END
 
     /**
      * @brief 获取设备静态数据列表（支持 ETag 缓存 + 可选分页）
      */
     Task<HttpResponsePtr> list(HttpRequestPtr req) {
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:query"});
 
         auto page = Pagination::fromRequest(req);
 
         // 参数化 ETag 检查
-        std::string params = std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        std::string params = std::to_string(userId) + ":" +
+                             std::to_string(page.page) + ":" + std::to_string(page.pageSize);
         if (auto notModified = ETagUtils::checkParamETag(req, "device", params)) {
             co_return notModified;
         }
 
-        auto items = co_await service_.listStatic();
+        auto items = co_await service_.listStatic(userId);
         auto [pagedItems, total] = Pagination::paginate(items, page);
         auto resp = Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
         ETagUtils::addParamETag(resp, "device", params);
@@ -57,10 +63,11 @@ public:
      * @brief 获取设备实时数据（不缓存，用于轮询，支持可选分页）
      */
     Task<HttpResponsePtr> realtime(HttpRequestPtr req) {
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:query"});
 
         auto page = Pagination::fromRequest(req);
-        auto items = co_await service_.listRealtime();
+        auto items = co_await service_.listRealtime(userId);
         auto [pagedItems, total] = Pagination::paginate(items, page);
         co_return Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
     }
@@ -70,15 +77,17 @@ public:
      */
     Task<HttpResponsePtr> detail(HttpRequestPtr req, int id) {
         ControllerUtils::requirePositiveId(id);
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
-        co_return Response::ok(co_await service_.detail(id));
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:query"});
+        co_return Response::ok(co_await service_.detail(id, userId));
     }
 
     /**
      * @brief 创建设备
      */
     Task<HttpResponsePtr> create(HttpRequestPtr req) {
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:add"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:add"});
 
         auto json = ControllerUtils::requireJson(req);
 
@@ -94,7 +103,7 @@ public:
             ValidatorHelper::requirePositiveInt(*json, "agent_endpoint_id", "接入端点").throwIfInvalid();
         }
 
-        co_await service_.create(*json);
+        co_await service_.create(*json, userId);
         co_return Response::created("创建成功");
     }
 
@@ -103,7 +112,9 @@ public:
      */
     Task<HttpResponsePtr> update(HttpRequestPtr req, int id) {
         ControllerUtils::requirePositiveId(id);
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:edit"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:edit"});
+        co_await ResourcePermission::ensureDeviceOwnerOrSuperAdmin(id, userId);
 
         auto json = ControllerUtils::requireJson(req);
 
@@ -116,7 +127,9 @@ public:
      */
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
         ControllerUtils::requirePositiveId(id);
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:delete"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:delete"});
+        co_await ResourcePermission::ensureDeviceOwnerOrSuperAdmin(id, userId);
         co_await service_.remove(id);
         co_return Response::deleted("删除成功");
     }
@@ -125,16 +138,18 @@ public:
      * @brief 获取设备选项（下拉列表，支持 ETag 缓存 + 可选分页）
      */
     Task<HttpResponsePtr> options(HttpRequestPtr req) {
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:query"});
 
         auto page = Pagination::fromRequest(req);
 
-        std::string params = std::to_string(page.page) + ":" + std::to_string(page.pageSize);
+        std::string params = std::to_string(userId) + ":" +
+                             std::to_string(page.page) + ":" + std::to_string(page.pageSize);
         if (auto notModified = ETagUtils::checkParamETag(req, "device", params)) {
             co_return notModified;
         }
 
-        auto items = co_await service_.options();
+        auto items = co_await service_.options(userId);
         auto [pagedItems, total] = Pagination::paginate(items, page);
         auto resp = Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
         ETagUtils::addParamETag(resp, "device", params);
@@ -145,7 +160,8 @@ public:
      * @brief 查询设备历史数据（支持 ETag 缓存 + 可选分页）
      */
     Task<HttpResponsePtr> history(HttpRequestPtr req) {
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:device:query"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:query"});
 
         // 获取查询参数（协议无关：deviceId + dataType + 时间范围）
         int deviceId = ValidatorHelper::getIntParam(req, "deviceId", 0);
@@ -160,10 +176,11 @@ public:
 
         // 验证时间范围必填，不允许查询全部数据
         ControllerUtils::requireTimeRange(startTime, endTime);
+        co_await ResourcePermission::ensureDeviceViewPermission(deviceId, userId);
 
         // 参数化 ETag 检查
         std::string deviceIdStr = std::to_string(deviceId);
-        std::string params = deviceIdStr + ":" + dataType + ":" +
+        std::string params = std::to_string(userId) + ":" + deviceIdStr + ":" + dataType + ":" +
                              startTime + ":" + endTime + ":" +
                              std::to_string(page.page) + ":" + std::to_string(page.pageSize);
         if (auto notModified = ETagUtils::checkParamETag(req, "device", params)) {
@@ -173,7 +190,7 @@ public:
         // 非分页要素查询：Raw JSONB 透传（图表场景，零 JSON 解析）
         if (!page.isPaged() && dataType != "IMAGE") {
             auto rawBody = co_await service_.queryHistoryRaw(
-                startTime, endTime, deviceId
+                startTime, endTime, deviceId, userId
             );
             auto resp = Response::rawJson(std::move(rawBody));
             ETagUtils::addParamETag(resp, "device", params);
@@ -181,7 +198,7 @@ public:
         }
 
         auto [items, total] = co_await service_.queryHistory(
-            dataType, startTime, endTime, page.page, page.pageSize, deviceId
+            dataType, startTime, endTime, page.page, page.pageSize, deviceId, userId
         );
 
         auto resp = Pagination::buildResponse(items, total, page.page, page.pageSize);
@@ -211,6 +228,43 @@ public:
             co_return Response::message(result.message);
         }
         throw result.toException();
+    }
+
+    /**
+     * @brief 获取设备分享列表
+     */
+    Task<HttpResponsePtr> shares(HttpRequestPtr req, int id) {
+        ControllerUtils::requirePositiveId(id);
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:query"});
+        co_return Response::ok(co_await service_.listShares(id, userId));
+    }
+
+    /**
+     * @brief 新增或更新设备分享
+     */
+    Task<HttpResponsePtr> shareUpsert(HttpRequestPtr req, int id) {
+        ControllerUtils::requirePositiveId(id);
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:edit"});
+
+        auto json = ControllerUtils::requireJson(req);
+        co_await service_.upsertShare(id, userId, *json);
+        co_return Response::updated("分享权限已更新");
+    }
+
+    /**
+     * @brief 删除设备分享
+     */
+    Task<HttpResponsePtr> shareRemove(HttpRequestPtr req, int id, int targetUserId) {
+        ControllerUtils::requirePositiveId(id);
+        ControllerUtils::requirePositiveId(targetUserId, "目标用户ID无效");
+
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:device:edit"});
+
+        co_await service_.removeShare(id, targetUserId, userId);
+        co_return Response::deleted("已取消分享");
     }
 
 };

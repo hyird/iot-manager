@@ -326,3 +326,16 @@ export function useDeviceHistoryData(
     ...options,
   });
 }
+
+/** 设备分享列表 Query */
+export function useDeviceShares(
+  deviceId: number,
+  options?: Omit<UseQueryOptions<Device.ShareItem[]>, "queryKey" | "queryFn">
+) {
+  return useQuery({
+    queryKey: deviceKeys.shares(deviceId),
+    queryFn: () => deviceApi.getShares(deviceId),
+    enabled: deviceId > 0,
+    ...options,
+  });
+}

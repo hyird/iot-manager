@@ -6,6 +6,7 @@
 #include "common/utils/ControllerMacros.hpp"
 #include "common/cache/ResourceVersion.hpp"
 #include "common/filters/PermissionFilter.hpp"
+#include "common/filters/ResourcePermission.hpp"
 
 #include <string>
 
@@ -68,11 +69,12 @@ public:
      * @brief 创建配置
      */
     Task<HttpResponsePtr> create(HttpRequestPtr req) {
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:protocol:add"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:protocol:add"});
 
         auto json = ControllerUtils::requireJson(req);
 
-        co_await service_.create(*json);
+        co_await service_.create(*json, userId);
         co_return Response::created("创建成功");
     }
 
@@ -81,7 +83,9 @@ public:
      */
     Task<HttpResponsePtr> update(HttpRequestPtr req, int id) {
         ControllerUtils::requirePositiveId(id);
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:protocol:edit"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:protocol:edit"});
+        co_await ResourcePermission::ensureProtocolOwnerOrSuperAdmin(id, userId);
 
         auto json = ControllerUtils::requireJson(req);
         co_await service_.update(id, *json);
@@ -93,7 +97,9 @@ public:
      */
     Task<HttpResponsePtr> remove(HttpRequestPtr req, int id) {
         ControllerUtils::requirePositiveId(id);
-        co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:protocol:delete"});
+        int userId = ControllerUtils::getUserId(req);
+        co_await PermissionChecker::checkPermission(userId, {"iot:protocol:delete"});
+        co_await ResourcePermission::ensureProtocolOwnerOrSuperAdmin(id, userId);
         co_await service_.remove(id);
         co_return Response::deleted("删除成功");
     }

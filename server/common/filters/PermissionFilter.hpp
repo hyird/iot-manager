@@ -13,6 +13,28 @@
 class PermissionChecker {
 public:
     template<typename T = void> using Task = drogon::Task<T>;
+
+    /**
+     * @brief 检查用户是否为超级管理员
+     */
+    static Task<bool> isSuperAdmin(int userId) {
+        DatabaseService dbService;
+        auto result = co_await dbService.execSqlCoro(
+            R"(
+                SELECT 1
+                FROM sys_user_role ur
+                INNER JOIN sys_role r ON ur.role_id = r.id
+                WHERE ur.user_id = ?
+                  AND r.code = ?
+                  AND r.status = 'enabled'
+                  AND r.deleted_at IS NULL
+                LIMIT 1
+            )",
+            {std::to_string(userId), Constants::ROLE_SUPERADMIN}
+        );
+        co_return !result.empty();
+    }
+
     /**
      * @brief 检查用户是否有指定权限
      *

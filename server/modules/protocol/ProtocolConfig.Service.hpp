@@ -49,8 +49,10 @@ public:
     /**
      * @brief 创建配置
      */
-    Task<void> create(const Json::Value& data) {
-        auto config = ProtocolConfig::create(data);
+    Task<void> create(const Json::Value& data, int creatorId) {
+        Json::Value payload = data;
+        payload["created_by"] = creatorId;
+        auto config = ProtocolConfig::create(payload);
         ProtocolConfigValidator::requireSupportedProtocol(config.protocol());
 
         if (data.isMember("config") && data["config"].isObject()) {

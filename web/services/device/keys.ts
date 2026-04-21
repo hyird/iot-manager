@@ -13,4 +13,5 @@ export const deviceKeys = {
   static: () => [...deviceBaseKeys.all, "static"] as const,
   realtime: () => [...deviceBaseKeys.all, "realtime"] as const,
   history: (params?: Device.HistoryQuery) => [...deviceBaseKeys.all, "history", params] as const,
+  shares: (deviceId: number) => [...deviceBaseKeys.all, "shares", deviceId] as const,
 };

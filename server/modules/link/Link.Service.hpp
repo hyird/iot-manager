@@ -52,8 +52,10 @@ public:
     /**
      * @brief 创建链路（事件处理器自动启动 TCP 连接）
      */
-    Task<void> create(const Json::Value& data) {
-        auto link = Link::create(data);
+    Task<void> create(const Json::Value& data, int creatorId) {
+        Json::Value payload = data;
+        payload["created_by"] = creatorId;
+        auto link = Link::create(payload);
 
         link.require(Link::notReserved)
             .require(Link::nameUnique)

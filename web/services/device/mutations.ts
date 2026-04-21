@@ -38,3 +38,23 @@ export function useDeviceCommand() {
     successMessage: "指令下发成功，设备已应答",
   });
 }
+
+/** 新增或更新设备分享权限 Mutation */
+export function useDeviceShareSave() {
+  return useMutationWithFeedback({
+    mutationFn: (data: { deviceId: number; payload: Device.ShareUpsertDto }) =>
+      deviceApi.upsertShare(data.deviceId, data.payload),
+    successMessage: "分享权限已更新",
+    invalidateKeys: [deviceKeys.all],
+  });
+}
+
+/** 删除设备分享权限 Mutation */
+export function useDeviceShareDelete() {
+  return useMutationWithFeedback({
+    mutationFn: (data: { deviceId: number; userId: number }) =>
+      deviceApi.removeShare(data.deviceId, data.userId),
+    successMessage: "已取消分享",
+    invalidateKeys: [deviceKeys.all],
+  });
+}

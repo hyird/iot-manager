@@ -11,6 +11,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
   SendOutlined,
+  ShareAltOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
 import {
@@ -54,6 +55,7 @@ import type { Device, DeviceGroup } from "@/types";
 import CommandPopover from "./CommandPopover";
 import DeviceFormModal, { type DeviceFormValues } from "./DeviceFormModal";
 import DeviceGroupPanel from "./DeviceGroupPanel";
+import DeviceShareModal from "./DeviceShareModal";
 import HistoryDataModal from "./HistoryDataModal";
 import TopologyView from "./TopologyView";
 import {
@@ -279,6 +281,7 @@ interface DeviceGridItemProps {
   canEdit: boolean;
   canDelete: boolean;
   canCommand: boolean;
+  canShare: boolean;
   isCommandPopoverOpen: boolean;
   activeCommandFunc: Device.CommandOperation | null;
   onImageClick: (imageOp: Device.ImageOperation) => void;
@@ -287,6 +290,7 @@ interface DeviceGridItemProps {
   onOpenHistoryModal: (device: Device.RealTimeData) => void;
   onOpenEditModal: (device: Device.RealTimeData) => void;
   onDeleteDevice: (device: Device.RealTimeData) => void;
+  onOpenShareModal: (device: Device.RealTimeData) => void;
 }
 
 const DeviceGridItem = memo(
@@ -295,6 +299,7 @@ const DeviceGridItem = memo(
     canEdit,
     canDelete,
     canCommand,
+    canShare,
     isCommandPopoverOpen,
     activeCommandFunc,
     onImageClick,
@@ -303,6 +308,7 @@ const DeviceGridItem = memo(
     onOpenHistoryModal,
     onOpenEditModal,
     onDeleteDevice,
+    onOpenShareModal,
   }: DeviceGridItemProps) => {
     const connectionState = useMemo(
       () =>
@@ -448,7 +454,20 @@ const DeviceGridItem = memo(
                 />
               </Tooltip>
 
-              <span className={separatorClass} />
+              {(canShare || canEdit) && <span className={separatorClass} />}
+
+              {canShare && (
+                <Tooltip title="分享设备">
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<ShareAltOutlined />}
+                    onClick={() => onOpenShareModal(device)}
+                  />
+                </Tooltip>
+              )}
+
+              {canShare && canEdit && <span className={separatorClass} />}
 
               {canEdit && (
                 <Tooltip title="编辑设备">
@@ -514,6 +533,8 @@ const DevicePage = () => {
   // 历史数据弹窗
   const [historyModalVisible, setHistoryModalVisible] = useState(false);
   const [historyDevice, setHistoryDevice] = useState<Device.RealTimeData | null>(null);
+  const [shareModalVisible, setShareModalVisible] = useState(false);
+  const [shareDevice, setShareDevice] = useState<Device.RealTimeData | null>(null);
 
   // 指令下发
   const [commandPopoverOpen, setCommandPopoverOpen] = useState(false);
@@ -714,15 +735,21 @@ const DevicePage = () => {
     setHistoryModalVisible(true);
   }, []);
 
+  const openShareModal = useCallback((device: Device.RealTimeData) => {
+    setShareDevice(device);
+    setShareModalVisible(true);
+  }, []);
+
   const renderDeviceCards = (devices: Device.RealTimeData[]) => (
     <div className="mt-4 grid gap-3" style={DEVICE_CARD_GRID_STYLE}>
       {devices.map((device) => (
         <DeviceGridItem
           key={device.id}
           device={device}
-          canEdit={canEdit}
-          canDelete={canDelete}
-          canCommand={canCommand}
+          canEdit={canEdit && device.can_edit !== false}
+          canDelete={canDelete && device.can_delete !== false}
+          canCommand={canCommand && device.can_command !== false}
+          canShare={canEdit && device.can_share === true}
           isCommandPopoverOpen={commandPopoverOpen && commandDevice?.id === device.id}
           activeCommandFunc={commandDevice?.id === device.id ? commandFunc : null}
           onImageClick={handleImageClick}
@@ -731,6 +758,7 @@ const DevicePage = () => {
           onOpenHistoryModal={openHistoryModal}
           onOpenEditModal={openEditModal}
           onDeleteDevice={onDeleteDevice}
+          onOpenShareModal={openShareModal}
         />
       ))}
     </div>
@@ -1015,6 +1043,16 @@ const DevicePage = () => {
         onClose={() => {
           setHistoryModalVisible(false);
           setHistoryDevice(null);
+        }}
+      />
+
+      {/* 设备分享弹窗 */}
+      <DeviceShareModal
+        open={shareModalVisible}
+        device={shareDevice}
+        onClose={() => {
+          setShareModalVisible(false);
+          setShareDevice(null);
         }}
       />
 

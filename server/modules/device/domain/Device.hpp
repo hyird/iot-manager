@@ -380,6 +380,7 @@ public:
     int linkId() const { return linkId_; }
     int protocolConfigId() const { return protocolConfigId_; }
     int groupId() const { return groupId_; }
+    int createdBy() const { return createdBy_; }
     const std::string& status() const { return status_; }
     const std::string& remark() const { return remark_; }
     const Json::Value& protocolParams() const { return protocolParams_; }
@@ -411,6 +412,7 @@ public:
         json["group_id"] = groupId_ > 0 ? Json::Value(groupId_) : Json::Value::null;
         json["status"] = status_;
         json["remark"] = remark_;
+        json["created_by"] = createdBy_ > 0 ? Json::Value(createdBy_) : Json::Value::null;
         json["created_at"] = createdAt_;
         json["updated_at"] = updatedAt_;
 
@@ -471,6 +473,7 @@ private:
     int linkId_ = 0;
     int protocolConfigId_ = 0;
     int groupId_ = 0;
+    int createdBy_ = 0;
     std::string status_ = Constants::USER_STATUS_ENABLED;
     Json::Value protocolParams_ = Json::objectValue;  // 协议特有参数 (JSONB)
     std::string remark_;
@@ -491,6 +494,7 @@ private:
         protocolConfigId_ = data.get("protocol_config_id", 0).asInt();
         groupId_ = (data.isMember("group_id") && !data["group_id"].isNull())
             ? data["group_id"].asInt() : 0;
+        createdBy_ = data.get("created_by", 0).asInt();
         status_ = data.get("status", Constants::USER_STATUS_ENABLED).asString();
         remark_ = data.get("remark", "").asString();
 
@@ -539,6 +543,7 @@ private:
         linkId_ = FieldHelper::getInt(row["link_id"]);
         protocolConfigId_ = FieldHelper::getInt(row["protocol_config_id"]);
         groupId_ = row["group_id"].isNull() ? 0 : FieldHelper::getInt(row["group_id"]);
+        createdBy_ = row["created_by"].isNull() ? 0 : FieldHelper::getInt(row["created_by"]);
         status_ = FieldHelper::getString(row["status"], Constants::USER_STATUS_ENABLED);
         remark_ = FieldHelper::getString(row["remark"], "");
         createdAt_ = FieldHelper::getString(row["created_at"], "");
@@ -568,12 +573,12 @@ private:
 
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO device (name, link_id, protocol_config_id, group_id,
-                               status, protocol_params, remark, created_at)
-            VALUES (?, ?, ?, NULLIF(?, '0')::INT, ?, ?::jsonb, ?, ?) RETURNING id
+                               status, protocol_params, remark, created_by, created_at)
+            VALUES (?, ?, ?, NULLIF(?, '0')::INT, ?, ?::jsonb, ?, NULLIF(?, '0')::INT, ?) RETURNING id
         )", {
             name_, std::to_string(linkId_), std::to_string(protocolConfigId_),
             std::to_string(groupId_),
-            status_, ppJson, remark_, TimestampHelper::now()
+            status_, ppJson, remark_, std::to_string(createdBy_), TimestampHelper::now()
         });
 
         setId(FieldHelper::getInt(result[0]["id"]));

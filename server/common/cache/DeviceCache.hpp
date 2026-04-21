@@ -23,6 +23,7 @@ public:
         int id;
         std::string name;
         std::string deviceCode;
+        int createdBy = 0;
         int linkId;
         int protocolConfigId;
         std::string status;
@@ -109,7 +110,7 @@ public:
         DatabaseService dbService;
 
         std::string sql = R"(
-            SELECT d.id, d.name, d.link_id, d.protocol_config_id, d.group_id,
+            SELECT d.id, d.name, d.created_by, d.link_id, d.protocol_config_id, d.group_id,
                    d.status, d.protocol_params, d.remark, d.created_at,
                    p.name as protocol_name, p.protocol as protocol_type, p.config as protocol_config,
                    l.name as link_name, l.mode as link_mode, l.ip as link_ip, l.port as link_port
@@ -129,6 +130,7 @@ public:
             CachedDevice device;
             device.id = FieldHelper::getInt(row["id"]);
             device.name = FieldHelper::getString(row["name"], "");
+            device.createdBy = row["created_by"].isNull() ? 0 : FieldHelper::getInt(row["created_by"]);
             device.linkId = row["link_id"].isNull() ? 0 : FieldHelper::getInt(row["link_id"]);
             device.protocolConfigId = row["protocol_config_id"].isNull() ? 0 : FieldHelper::getInt(row["protocol_config_id"]);
             device.groupId = row["group_id"].isNull() ? 0 : FieldHelper::getInt(row["group_id"]);

@@ -17,6 +17,12 @@ export type HeartbeatMode = "OFF" | "HEX" | "ASCII";
 /** 注册包模式 */
 export type RegistrationMode = "OFF" | "HEX" | "ASCII";
 
+/** 设备资源访问级别 */
+export type DeviceAccessLevel = "owner" | "control" | "view" | "none";
+
+/** 设备分享权限 */
+export type DeviceSharePermission = "view" | "control";
+
 /** 心跳包配置 */
 export interface HeartbeatConfig {
   mode: HeartbeatMode;
@@ -59,6 +65,7 @@ export interface DeviceItem {
   registration?: RegistrationConfig;
   /** 备注 */
   remark?: string;
+  created_by?: number;
   created_at?: string;
   updated_at?: string;
 
@@ -72,6 +79,13 @@ export interface DeviceItem {
   // Agent 模式字段（link_id = 0 时返回）
   agent_id?: number;
   agent_endpoint_id?: number;
+
+  // 资源权限
+  can_edit?: boolean;
+  can_delete?: boolean;
+  can_share?: boolean;
+  can_command?: boolean;
+  access_level?: DeviceAccessLevel;
 }
 
 /** 设备选项（下拉列表） */
@@ -79,6 +93,11 @@ export interface DeviceOption {
   id: number;
   name: string;
   device_code: string;
+  can_edit?: boolean;
+  can_delete?: boolean;
+  can_share?: boolean;
+  can_command?: boolean;
+  access_level?: DeviceAccessLevel;
 }
 
 /** 设备查询参数 */
@@ -162,6 +181,7 @@ export interface DeviceStaticData {
   heartbeat?: HeartbeatConfig;
   registration?: RegistrationConfig;
   remark?: string;
+  created_by?: number;
   created_at?: string;
 
   // 关联信息
@@ -177,6 +197,13 @@ export interface DeviceStaticData {
   // Agent 模式字段（link_id = 0 时返回）
   agent_id?: number;
   agent_endpoint_id?: number;
+
+  // 资源权限
+  can_edit?: boolean;
+  can_delete?: boolean;
+  can_share?: boolean;
+  can_command?: boolean;
+  access_level?: DeviceAccessLevel;
 }
 
 /** 设备实时数据（用于轮询） */
@@ -286,6 +313,23 @@ export interface DeviceRealTimeData extends DeviceStaticData {
   image?: { data: string };
 }
 
+/** 设备分享条目 */
+export interface DeviceShareItem {
+  user_id: number;
+  username: string;
+  nickname?: string;
+  permission: DeviceSharePermission;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** 设备分享更新参数 */
+export interface DeviceShareUpsertDto {
+  user_id?: number;
+  username?: string;
+  permission: DeviceSharePermission;
+}
+
 /** 指令下发参数 */
 export interface CommandPayload {
   deviceCode: string;
@@ -374,6 +418,10 @@ export namespace Device {
   export type CommandOperationElement = import("./device").CommandOperationElement;
   export type ImageOperation = import("./device").ImageOperation;
   export type ImageOperationElement = import("./device").ImageOperationElement;
+  export type AccessLevel = import("./device").DeviceAccessLevel;
+  export type SharePermission = import("./device").DeviceSharePermission;
+  export type ShareItem = import("./device").DeviceShareItem;
+  export type ShareUpsertDto = import("./device").DeviceShareUpsertDto;
 
   // 历史数据
   export type HistoryDevice = HistoryDeviceItem;

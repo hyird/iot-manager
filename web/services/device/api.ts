@@ -13,6 +13,8 @@ const ENDPOINTS = {
   OPTIONS: "/api/device/options",
   HISTORY: "/api/device/history",
   COMMAND: (linkId: number) => `/api/device/command/${linkId}`,
+  SHARES: (id: number) => `/api/device/${id}/shares`,
+  SHARE_DETAIL: (id: number, userId: number) => `/api/device/${id}/shares/${userId}`,
 } as const;
 
 /** 获取设备详情 */
@@ -68,4 +70,19 @@ export function getHistoryData(params: Device.HistoryQuery) {
 /** 下发设备指令 */
 export function sendCommand(linkId: number, payload: Device.Command) {
   return request.post<void>(ENDPOINTS.COMMAND(linkId), payload);
+}
+
+/** 获取设备分享列表 */
+export function getShares(deviceId: number) {
+  return request.get<Device.ShareItem[]>(ENDPOINTS.SHARES(deviceId));
+}
+
+/** 新增或更新设备分享 */
+export function upsertShare(deviceId: number, payload: Device.ShareUpsertDto) {
+  return request.post<void>(ENDPOINTS.SHARES(deviceId), payload);
+}
+
+/** 删除设备分享 */
+export function removeShare(deviceId: number, userId: number) {
+  return request.delete<void>(ENDPOINTS.SHARE_DETAIL(deviceId, userId));
 }

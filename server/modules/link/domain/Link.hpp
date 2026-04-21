@@ -429,6 +429,7 @@ public:
     int port() const { return port_; }
     const std::string& usage() const { return usage_; }
     const std::string& status() const { return status_; }
+    int createdBy() const { return createdBy_; }
     int agentId() const { return agentId_; }
     const std::string& agentInterface() const { return agentInterface_; }
     const std::string& agentBindIp() const { return agentBindIp_; }
@@ -471,6 +472,7 @@ public:
         json["usage"] = usage_;
         json["is_reserved"] = isReserved();
         json["status"] = status_;
+        json["created_by"] = createdBy_ > 0 ? Json::Value(createdBy_) : Json::Value::null;
         json["agent_id"] = agentId_ > 0 ? Json::Value(agentId_) : Json::nullValue;
         json["agent_interface"] = agentInterface_;
         json["agent_bind_ip"] = agentBindIp_;
@@ -515,6 +517,7 @@ private:
     int port_ = 0;
     std::string usage_ = Constants::LINK_USAGE_DEVICE;
     std::string status_ = Constants::USER_STATUS_ENABLED;
+    int createdBy_ = 0;
     int agentId_ = 0;
     std::string agentInterface_;
     std::string agentBindIp_;
@@ -543,6 +546,7 @@ private:
         port_ = data.get("port", 0).asInt();
         usage_ = data.get("usage", Constants::LINK_USAGE_DEVICE).asString();
         status_ = data.get("status", Constants::USER_STATUS_ENABLED).asString();
+        createdBy_ = data.get("created_by", 0).asInt();
         agentId_ = data.get("agent_id", 0).asInt();
         agentInterface_ = data.get("agent_interface", "").asString();
         agentBindIp_ = data.get("agent_bind_ip", "").asString();
@@ -582,6 +586,7 @@ private:
         port_ = FieldHelper::getInt(row["port"]);
         usage_ = FieldHelper::getString(row["usage"], Constants::LINK_USAGE_DEVICE);
         status_ = FieldHelper::getString(row["status"], Constants::USER_STATUS_ENABLED);
+        createdBy_ = row["created_by"].isNull() ? 0 : FieldHelper::getInt(row["created_by"]);
         agentId_ = FieldHelper::getInt(row["agent_id"]);
         agentInterface_ = FieldHelper::getString(row["agent_interface"]);
         agentBindIp_ = FieldHelper::getString(row["agent_bind_ip"]);
@@ -603,9 +608,9 @@ private:
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO link (
                 name, mode, protocol, ip, port, usage, status,
-                agent_id, agent_interface, agent_bind_ip, agent_prefix_length, agent_gateway, created_at
+                created_by, agent_id, agent_interface, agent_bind_ip, agent_prefix_length, agent_gateway, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, '0')::INT, ?, ?, NULLIF(?, '0')::INT, ?, ?) RETURNING id
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, '0')::INT, NULLIF(?, '0')::INT, ?, ?, NULLIF(?, '0')::INT, ?, ?) RETURNING id
         )", {
             name_,
             mode_,
@@ -614,6 +619,7 @@ private:
             std::to_string(port_),
             usage_,
             status_,
+            std::to_string(createdBy_),
             std::to_string(agentId_),
             agentInterface_,
             agentBindIp_,

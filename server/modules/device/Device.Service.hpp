@@ -14,11 +14,13 @@
 #include "common/utils/SqlHelper.hpp"
 #include "common/utils/JsonHelper.hpp"
 #include "common/edgenode/AgentBridgeManager.hpp"
+#include "common/filters/ResourcePermission.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
 
 // 类型别名，简化代码
 using ElementData = DeviceDataTransformer::ElementData;
@@ -40,6 +42,101 @@ public:
 
 private:
     DatabaseService dbService_;
+
+    enum class DeviceAccessLevel {
+        None,
+        View,
+        Control,
+        Owner
+    };
+
+    static DeviceAccessLevel resolveDeviceAccessLevel(
+        const DeviceCache::CachedDevice& device,
+        int userId,
+        bool isSuperAdmin,
+        const std::unordered_map<int, std::string>& sharePermissions
+    ) {
+        if (userId <= 0 || isSuperAdmin) {
+            return DeviceAccessLevel::Owner;
+        }
+        if (device.createdBy == userId) {
+            return DeviceAccessLevel::Owner;
+        }
+
+        auto it = sharePermissions.find(device.id);
+        if (it == sharePermissions.end()) {
+            return DeviceAccessLevel::None;
+        }
+        if (it->second == "control") {
+            return DeviceAccessLevel::Control;
+        }
+        if (it->second == "view") {
+            return DeviceAccessLevel::View;
+        }
+        return DeviceAccessLevel::None;
+    }
+
+    static void injectDeviceAccessFlags(Json::Value& item, DeviceAccessLevel level) {
+        const bool canEdit = level == DeviceAccessLevel::Owner;
+        const bool canDelete = level == DeviceAccessLevel::Owner;
+        const bool canShare = level == DeviceAccessLevel::Owner;
+        const bool canCommand = level == DeviceAccessLevel::Owner || level == DeviceAccessLevel::Control;
+
+        item["can_edit"] = canEdit;
+        item["can_delete"] = canDelete;
+        item["can_share"] = canShare;
+        item["can_command"] = canCommand;
+
+        switch (level) {
+            case DeviceAccessLevel::Owner:
+                item["access_level"] = "owner";
+                break;
+            case DeviceAccessLevel::Control:
+                item["access_level"] = "control";
+                break;
+            case DeviceAccessLevel::View:
+                item["access_level"] = "view";
+                break;
+            case DeviceAccessLevel::None:
+            default:
+                item["access_level"] = "none";
+                break;
+        }
+    }
+
+    Task<std::tuple<std::vector<DeviceCache::CachedDevice>, std::unordered_map<int, std::string>, bool>>
+    filterAccessibleDevices(const std::vector<DeviceCache::CachedDevice>& cachedDevices, int userId) {
+        if (cachedDevices.empty()) {
+            co_return {std::vector<DeviceCache::CachedDevice>{}, {}, false};
+        }
+
+        if (userId <= 0) {
+            co_return {cachedDevices, {}, true};
+        }
+
+        const bool isSuperAdmin = co_await PermissionChecker::isSuperAdmin(userId);
+        if (isSuperAdmin) {
+            co_return {cachedDevices, {}, true};
+        }
+
+        std::vector<int> deviceIds;
+        deviceIds.reserve(cachedDevices.size());
+        for (const auto& device : cachedDevices) {
+            deviceIds.push_back(device.id);
+        }
+        auto sharePermissions = co_await ResourcePermission::loadDeviceSharePermissions(userId, deviceIds);
+
+        std::vector<DeviceCache::CachedDevice> visibleDevices;
+        visibleDevices.reserve(cachedDevices.size());
+        for (const auto& device : cachedDevices) {
+            const auto accessLevel = resolveDeviceAccessLevel(device, userId, false, sharePermissions);
+            if (accessLevel != DeviceAccessLevel::None) {
+                visibleDevices.push_back(device);
+            }
+        }
+
+        co_return {visibleDevices, sharePermissions, false};
+    }
 
     struct CommandElementInput {
         std::string elementId;
@@ -540,23 +637,63 @@ public:
     /**
      * @brief 设备详情
      */
-    Task<Json::Value> detail(int id) {
+    Task<Json::Value> detail(int id, int userId = 0) {
+        if (userId > 0) {
+            co_await ResourcePermission::ensureDeviceViewPermission(id, userId);
+        }
+
         auto device = co_await Device::of(id);
-        co_return device.toJson();
+        Json::Value item = device.toJson();
+
+        if (userId > 0) {
+            bool isSuperAdmin = co_await PermissionChecker::isSuperAdmin(userId);
+            std::unordered_map<int, std::string> sharePermissions;
+            sharePermissions[device.id()] =
+                co_await ResourcePermission::getSingleDeviceSharePermission(device.id(), userId);
+            auto access = resolveDeviceAccessLevel(
+                DeviceCache::CachedDevice{
+                    .id = device.id(),
+                    .createdBy = device.createdBy()
+                },
+                userId,
+                isSuperAdmin,
+                sharePermissions
+            );
+            injectDeviceAccessFlags(item, access);
+        }
+
+        co_return item;
     }
 
     /**
      * @brief 设备选项（下拉选择用）
      */
-    Task<Json::Value> options() {
-        co_return co_await Device::options();
+    Task<Json::Value> options(int userId = 0) {
+        auto cachedDevices = co_await DeviceCache::instance().getDevices();
+        auto [visibleDevices, sharePermissions, isSuperAdmin] =
+            co_await filterAccessibleDevices(cachedDevices, userId);
+
+        Json::Value items(Json::arrayValue);
+        for (const auto& device : visibleDevices) {
+            Json::Value item;
+            item["id"] = device.id;
+            item["name"] = device.name;
+            item["device_code"] = device.deviceCode;
+
+            auto access = resolveDeviceAccessLevel(device, userId, isSuperAdmin, sharePermissions);
+            injectDeviceAccessFlags(item, access);
+            items.append(item);
+        }
+        co_return items;
     }
 
     /**
      * @brief 创建设备
      */
-    Task<void> create(const Json::Value& data) {
-        auto device = Device::create(data);
+    Task<void> create(const Json::Value& data, int creatorId) {
+        Json::Value payload = data;
+        payload["created_by"] = creatorId;
+        auto device = Device::create(payload);
 
         device.require(Device::nameUnique)
               .require(Device::linkExists)
@@ -611,23 +748,148 @@ public:
             .save();
     }
 
+    /**
+     * @brief 获取设备分享列表（仅创建者/超级管理员）
+     */
+    Task<Json::Value> listShares(int deviceId, int userId) {
+        co_await ResourcePermission::ensureDeviceOwnerOrSuperAdmin(deviceId, userId);
+
+        auto rows = co_await dbService_.execSqlCoro(R"(
+            SELECT ds.user_id, ds.permission, ds.created_at, ds.updated_at,
+                   u.username, u.nickname
+            FROM device_share ds
+            INNER JOIN sys_user u ON ds.user_id = u.id
+            WHERE ds.device_id = ?
+              AND u.deleted_at IS NULL
+            ORDER BY ds.updated_at DESC, ds.id DESC
+        )", {std::to_string(deviceId)});
+
+        Json::Value items(Json::arrayValue);
+        for (const auto& row : rows) {
+            Json::Value item;
+            item["user_id"] = FieldHelper::getInt(row["user_id"]);
+            item["username"] = FieldHelper::getString(row["username"], "");
+            item["nickname"] = FieldHelper::getString(row["nickname"], "");
+            item["permission"] = FieldHelper::getString(row["permission"], "view");
+            item["created_at"] = FieldHelper::getString(row["created_at"], "");
+            item["updated_at"] = FieldHelper::getString(row["updated_at"], "");
+            items.append(std::move(item));
+        }
+
+        co_return items;
+    }
+
+    /**
+     * @brief 新增或更新设备分享权限（仅创建者/超级管理员）
+     */
+    Task<void> upsertShare(int deviceId, int operatorId, const Json::Value& data) {
+        co_await ResourcePermission::ensureDeviceOwnerOrSuperAdmin(deviceId, operatorId);
+
+        int targetUserId = data.get("user_id", 0).asInt();
+        std::string username = trimCopy(data.get("username", "").asString());
+        std::string permission = trimCopy(data.get("permission", "view").asString());
+        if (permission.empty()) {
+            permission = "view";
+        }
+        std::transform(permission.begin(), permission.end(), permission.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        if (permission != "view" && permission != "control") {
+            throw ValidationException("分享权限仅支持 view 或 control");
+        }
+
+        if (targetUserId <= 0 && username.empty()) {
+            throw ValidationException("请提供分享目标用户ID或用户名");
+        }
+
+        if (targetUserId <= 0) {
+            auto userResult = co_await dbService_.execSqlCoro(
+                "SELECT id FROM sys_user WHERE username = ? AND deleted_at IS NULL LIMIT 1",
+                {username}
+            );
+            if (userResult.empty()) {
+                throw NotFoundException("分享目标用户不存在");
+            }
+            targetUserId = FieldHelper::getInt(userResult[0]["id"]);
+        } else {
+            auto userResult = co_await dbService_.execSqlCoro(
+                "SELECT id FROM sys_user WHERE id = ? AND deleted_at IS NULL LIMIT 1",
+                {std::to_string(targetUserId)}
+            );
+            if (userResult.empty()) {
+                throw NotFoundException("分享目标用户不存在");
+            }
+        }
+
+        auto creatorResult = co_await dbService_.execSqlCoro(
+            "SELECT created_by FROM device WHERE id = ? AND deleted_at IS NULL LIMIT 1",
+            {std::to_string(deviceId)}
+        );
+        if (!creatorResult.empty()) {
+            int creatorId = creatorResult[0]["created_by"].isNull()
+                ? 0
+                : FieldHelper::getInt(creatorResult[0]["created_by"]);
+            if (creatorId > 0 && targetUserId == creatorId) {
+                throw ValidationException("创建者默认拥有设备全部权限，无需分享");
+            }
+        }
+
+        co_await dbService_.execSqlCoro(R"(
+            INSERT INTO device_share (device_id, user_id, permission, created_by)
+            VALUES (?, ?, ?, NULLIF(?, '0')::INT)
+            ON CONFLICT (device_id, user_id)
+            DO UPDATE SET
+                permission = EXCLUDED.permission,
+                updated_at = CURRENT_TIMESTAMP
+        )", {
+            std::to_string(deviceId),
+            std::to_string(targetUserId),
+            permission,
+            std::to_string(operatorId)
+        });
+
+        ResourceVersion::instance().incrementVersion("device");
+    }
+
+    /**
+     * @brief 删除设备分享权限（仅创建者/超级管理员）
+     */
+    Task<void> removeShare(int deviceId, int targetUserId, int operatorId) {
+        co_await ResourcePermission::ensureDeviceOwnerOrSuperAdmin(deviceId, operatorId);
+
+        auto deleted = co_await dbService_.execSqlCoro(
+            "DELETE FROM device_share WHERE device_id = ? AND user_id = ? RETURNING user_id",
+            {std::to_string(deviceId), std::to_string(targetUserId)}
+        );
+        if (deleted.empty()) {
+            throw NotFoundException("分享记录不存在");
+        }
+
+        ResourceVersion::instance().incrementVersion("device");
+    }
+
     // ==================== 查询接口 ====================
 
     /**
      * @brief 获取设备静态数据列表（用于 ETag 缓存）
      * 只返回设备基本信息和协议配置，不查询实时数据
      */
-    Task<Json::Value> listStatic() {
+    Task<Json::Value> listStatic(int userId = 0) {
         auto cachedDevices = co_await DeviceCache::instance().getDevices();
 
         if (cachedDevices.empty()) {
             co_return Json::Value(Json::arrayValue);
         }
 
+        auto [visibleDevices, sharePermissions, isSuperAdmin] =
+            co_await filterAccessibleDevices(cachedDevices, userId);
+
         Json::Value items(Json::arrayValue);
 
-        for (const auto& device : cachedDevices) {
+        for (const auto& device : visibleDevices) {
             Json::Value item = DeviceDataTransformer::buildDeviceBaseInfo(device);
+            auto access = resolveDeviceAccessLevel(device, userId, isSuperAdmin, sharePermissions);
+            injectDeviceAccessFlags(item, access);
 
             // 按协议类型返回各自的操作定义（协议无关命名）
             Json::Value commandOps, imageOps;
@@ -655,17 +917,23 @@ public:
      * - 后续通过报文解析更新缓存
      * - 实时查询直接从缓存返回，无需查询数据库
      */
-    Task<Json::Value> listRealtime() {
+    Task<Json::Value> listRealtime(int userId = 0) {
         auto cachedDevices = co_await DeviceCache::instance().getDevices();
 
         if (cachedDevices.empty()) {
             co_return Json::Value(Json::arrayValue);
         }
 
+        auto [visibleDevices, sharePermissions, isSuperAdmin] =
+            co_await filterAccessibleDevices(cachedDevices, userId);
+        if (visibleDevices.empty()) {
+            co_return Json::Value(Json::arrayValue);
+        }
+
         // 构建设备 ID 列表
         std::vector<int> deviceIds;
-        deviceIds.reserve(cachedDevices.size());
-        for (const auto& device : cachedDevices) {
+        deviceIds.reserve(visibleDevices.size());
+        for (const auto& device : visibleDevices) {
             deviceIds.push_back(device.id);
         }
 
@@ -723,13 +991,16 @@ public:
             return ProtocolDispatcher::instance().isDeviceConnected(deviceId);
         };
 
-        for (const auto& device : cachedDevices) {
+        for (const auto& device : visibleDevices) {
             auto dataIt = deviceDataMap.find(device.id);
             auto timeIt = latestTimeMap.find(device.id);
             const auto& data = dataIt != deviceDataMap.end() ? dataIt->second : emptyData;
             std::string latestTime = timeIt != latestTimeMap.end() ? timeIt->second : "";
-            items.append(DeviceDataTransformer::buildRealtimeItem(
-                device, data, latestTime, connChecker));
+            Json::Value item = DeviceDataTransformer::buildRealtimeItem(
+                device, data, latestTime, connChecker);
+            auto access = resolveDeviceAccessLevel(device, userId, isSuperAdmin, sharePermissions);
+            injectDeviceAccessFlags(item, access);
+            items.append(item);
         }
 
         co_return items;
@@ -753,8 +1024,13 @@ public:
         const std::string& endTime,
         int page,
         int pageSize,
-        int deviceId
+        int deviceId,
+        int userId = 0
     ) {
+        if (userId > 0) {
+            co_await ResourcePermission::ensureDeviceViewPermission(deviceId, userId);
+        }
+
         // ==================== 1. 初始化与归档检测 ====================
         std::string deviceIdStr = std::to_string(deviceId);
 
@@ -1133,8 +1409,13 @@ public:
     Task<std::string> queryHistoryRaw(
         const std::string& startTime,
         const std::string& endTime,
-        int deviceId
+        int deviceId,
+        int userId = 0
     ) {
+        if (userId > 0) {
+            co_await ResourcePermission::ensureDeviceViewPermission(deviceId, userId);
+        }
+
         std::string deviceIdStr = std::to_string(deviceId);
 
         // 判断是否需要查询归档数据
@@ -1279,6 +1560,9 @@ public:
                                     const Json::Value& elements,
                                     int userId, int deviceId = 0) {
         auto device = co_await requireCommandDevice(deviceCode, deviceId);
+        if (userId > 0) {
+            co_await ResourcePermission::ensureDeviceControlPermission(device.id, userId);
+        }
         validateCommandElements(device, elements);
         std::string funcCode = resolveCommandFuncCode(device, elements);
 

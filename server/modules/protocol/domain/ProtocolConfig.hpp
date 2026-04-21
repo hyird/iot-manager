@@ -206,6 +206,7 @@ public:
     const std::string& protocol() const { return protocol_; }
     const std::string& name() const { return name_; }
     bool enabled() const { return enabled_; }
+    int createdBy() const { return createdBy_; }
     const Json::Value& config() const { return config_; }
     const std::string& remark() const { return remark_; }
 
@@ -220,6 +221,7 @@ public:
         json["enabled"] = enabled_;
         json["config"] = config_;
         json["remark"] = remark_;
+        json["created_by"] = createdBy_ > 0 ? Json::Value(createdBy_) : Json::Value::null;
         json["created_at"] = createdAt_;
         json["updated_at"] = updatedAt_;
         return json;
@@ -241,6 +243,7 @@ private:
     std::string protocol_;
     std::string name_;
     bool enabled_ = true;
+    int createdBy_ = 0;
     Json::Value config_{Json::objectValue};
     std::string remark_;
     std::string createdAt_;
@@ -250,6 +253,7 @@ private:
         protocol_ = data.get("protocol", "").asString();
         name_ = data.get("name", "").asString();
         enabled_ = data.get("enabled", true).asBool();
+        createdBy_ = data.get("created_by", 0).asInt();
         config_ = data.get("config", Json::objectValue);
         remark_ = data.get("remark", "").asString();
     }
@@ -273,6 +277,7 @@ private:
         protocol_ = FieldHelper::getString(row["protocol"]);
         name_ = FieldHelper::getString(row["name"]);
         enabled_ = row["enabled"].as<bool>();
+        createdBy_ = row["created_by"].isNull() ? 0 : FieldHelper::getInt(row["created_by"]);
         remark_ = FieldHelper::getString(row["remark"], "");
         createdAt_ = FieldHelper::getString(row["created_at"], "");
         updatedAt_ = FieldHelper::getString(row["updated_at"], "");
@@ -298,11 +303,11 @@ private:
 
     Task<void> persistCreate(TransactionGuard& tx) {
         auto result = co_await tx.execSqlCoro(R"(
-            INSERT INTO protocol_config (protocol, name, enabled, config, remark, created_at)
-            VALUES (?, ?, ?, ?::jsonb, ?, ?) RETURNING id
+            INSERT INTO protocol_config (protocol, name, enabled, config, remark, created_by, created_at)
+            VALUES (?, ?, ?, ?::jsonb, ?, NULLIF(?, '0')::INT, ?) RETURNING id
         )", {
             protocol_, name_, enabled_ ? "true" : "false",
-            serializeConfig(), remark_, TimestampHelper::now()
+            serializeConfig(), remark_, std::to_string(createdBy_), TimestampHelper::now()
         });
 
         setId(FieldHelper::getInt(result[0]["id"]));
