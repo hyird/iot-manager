@@ -707,7 +707,8 @@ public:
         }
 
         // Modbus 多设备链路必须配置注册包
-        device.require(Device::modbusRegistrationRequired);
+        device.require(Device::modbusRegistrationRequired)
+              .require(Device::runtimeIdentityUnique);
 
         co_await device.save();
     }
@@ -733,7 +734,8 @@ public:
         }
 
         // Modbus 多设备链路必须配置注册包
-        device.require(Device::modbusRegistrationRequired);
+        device.require(Device::modbusRegistrationRequired)
+              .require(Device::runtimeIdentityUnique);
 
         device.update(data);
 

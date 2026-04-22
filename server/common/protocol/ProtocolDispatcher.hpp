@@ -474,7 +474,12 @@ private:
             }
 
             std::string protocol = DeviceCache::instance().getProtocolByLinkIdSync(linkId);
-            if (protocol.empty()) return;
+            if (protocol.empty()) {
+                LOG_WARN << "[ProtocolDispatcher] No protocol mapping in DeviceCache for link "
+                         << linkId << ", scheduling cache reload";
+                scheduleDeviceCacheReload();
+                return;
+            }
 
             auto* adapter = findAdapter(protocol);
             if (!adapter) {
@@ -496,7 +501,11 @@ private:
         try {
             if (DeviceCache::instance().isLoaded()) {
                 auto protocol = DeviceCache::instance().getProtocolByLinkIdSync(linkId);
-                if (auto* adapter = findAdapter(protocol)) {
+                if (protocol.empty()) {
+                    LOG_WARN << "[ProtocolDispatcher] No protocol mapping in DeviceCache for link "
+                             << linkId << " on connection event, scheduling cache reload";
+                    scheduleDeviceCacheReload();
+                } else if (auto* adapter = findAdapter(protocol)) {
                     adapter->onConnectionChanged(linkId, clientAddr, connected);
                 }
             } else {

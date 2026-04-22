@@ -10,6 +10,9 @@
 #include "common/utils/LinkHelper.hpp"
 #include "common/utils/DeviceConnectionStateHelper.hpp"
 
+#include <algorithm>
+#include <cctype>
+
 /**
  * @brief 设备聚合根
  *
@@ -321,6 +324,133 @@ public:
             }
             throw ConflictException(
                 "Modbus 链路存在多个设备时，所有设备都必须配置注册包。以下设备未配置: " + names);
+        }
+    }
+
+    /**
+     * @brief 约束：运行时可识别身份必须唯一（避免“设备创建成功但采集不参与”）
+     *
+     * 规则：
+     * - Modbus(TCP Server)：同一链路、同一注册码下，slave_id 必须唯一
+     * - S7(TCP Server)：同一链路下注册码必须唯一（未配置注册码视为同一标识）
+     */
+    static Task<void> runtimeIdentityUnique(const Device& device) {
+        if (device.linkId_ <= 0) co_return;
+
+        auto normalizeRegistrationKey = [](const Json::Value& protocolParams) {
+            if (!protocolParams.isObject() || !protocolParams.isMember("registration")
+                || !protocolParams["registration"].isObject()) {
+                return std::string("OFF:");
+            }
+
+            const auto& reg = protocolParams["registration"];
+            std::string mode = reg.get("mode", "OFF").asString();
+            std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char ch) {
+                return static_cast<char>(std::toupper(ch));
+            });
+
+            if (mode.empty() || mode == "OFF") {
+                return std::string("OFF:");
+            }
+
+            std::string content = reg.get("content", "").asString();
+            if (mode == "HEX") {
+                std::string normalized;
+                normalized.reserve(content.size());
+                for (unsigned char ch : content) {
+                    if (std::isspace(ch) != 0) {
+                        continue;
+                    }
+                    normalized.push_back(static_cast<char>(std::toupper(ch)));
+                }
+                return std::string("HEX:") + normalized;
+            }
+
+            return mode + ":" + content;
+        };
+
+        DatabaseService db;
+
+        // 解析当前设备协议类型与链路模式
+        std::string protocol = device.protocolType_;
+        std::string linkMode = device.linkMode_;
+        if (protocol.empty() || linkMode.empty()) {
+            auto metaResult = co_await db.execSqlCoro(R"(
+                SELECT pc.protocol, l.mode AS link_mode
+                FROM protocol_config pc
+                LEFT JOIN link l ON l.id = ? AND l.deleted_at IS NULL
+                WHERE pc.id = ? AND pc.deleted_at IS NULL
+                LIMIT 1
+            )", {std::to_string(device.linkId_), std::to_string(device.protocolConfigId_)});
+
+            if (metaResult.empty()) {
+                co_return;
+            }
+            if (protocol.empty()) {
+                protocol = FieldHelper::getString(metaResult[0]["protocol"], "");
+            }
+            if (linkMode.empty()) {
+                linkMode = FieldHelper::getString(metaResult[0]["link_mode"], "");
+            }
+        }
+
+        if (linkMode != Constants::LINK_MODE_TCP_SERVER) {
+            co_return;
+        }
+        if (protocol != Constants::PROTOCOL_MODBUS && protocol != Constants::PROTOCOL_S7) {
+            co_return;
+        }
+
+        const std::string currentRegKey = normalizeRegistrationKey(device.protocolParams_);
+        const int currentSlaveId = std::clamp(device.slaveId(), 1, 247);
+
+        std::string sql = R"(
+            SELECT d.id, d.name, d.protocol_params
+            FROM device d
+            JOIN protocol_config pc ON d.protocol_config_id = pc.id AND pc.deleted_at IS NULL
+            WHERE d.link_id = ? AND d.deleted_at IS NULL AND pc.protocol = ?
+        )";
+        std::vector<std::string> params = {
+            std::to_string(device.linkId_),
+            protocol
+        };
+        if (device.id() > 0) {
+            sql += " AND d.id != ?";
+            params.push_back(std::to_string(device.id()));
+        }
+
+        auto siblings = co_await db.execSqlCoro(sql, params);
+        Json::CharReaderBuilder rb;
+
+        for (const auto& row : siblings) {
+            Json::Value siblingParams(Json::objectValue);
+            std::string ppStr = FieldHelper::getString(row["protocol_params"], "");
+            if (!ppStr.empty()) {
+                std::string errs;
+                std::istringstream iss(ppStr);
+                (void)Json::parseFromStream(rb, iss, &siblingParams, &errs);
+            }
+
+            const std::string siblingRegKey = normalizeRegistrationKey(siblingParams);
+            if (protocol == Constants::PROTOCOL_MODBUS) {
+                if (siblingRegKey != currentRegKey) {
+                    continue;
+                }
+                const int siblingSlaveId = std::clamp(siblingParams.get("slave_id", 1).asInt(), 1, 247);
+                if (siblingSlaveId == currentSlaveId) {
+                    throw ConflictException(
+                        "Modbus 设备冲突：同一链路/注册码下 slave_id 重复，冲突设备: "
+                        + FieldHelper::getString(row["name"], "未知设备"));
+                }
+                continue;
+            }
+
+            // S7(TCP Server) 无 slave_id 维度，注册码必须唯一（未配置注册码也算同一标识）
+            if (siblingRegKey == currentRegKey) {
+                throw ConflictException(
+                    "S7 设备冲突：同一链路下注册码重复（或均未配置注册码），冲突设备: "
+                    + FieldHelper::getString(row["name"], "未知设备"));
+            }
         }
     }
 

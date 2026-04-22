@@ -4,6 +4,7 @@
 #include "common/utils/Constants.hpp"
 #include "common/utils/FieldHelper.hpp"
 #include "common/utils/DeviceConnectionStateHelper.hpp"
+#include "common/utils/DrogonLoopSelector.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -330,6 +331,20 @@ public:
         std::unique_lock lock(mutex_);
         lastRefresh_ = std::chrono::steady_clock::time_point{};
         LOG_DEBUG << "[DeviceCache] Cache marked as stale";
+
+        // 同步读取路径（TcpIoPool）不会触发 getDevices() 刷新，
+        // 这里主动调度一次异步刷新，确保新设备尽快可被后端数据接收链路识别。
+        auto* loop = DrogonLoopSelector::getNext();
+        loop->queueInLoop([]() {
+            drogon::async_run([]() -> Task<void> {
+                try {
+                    co_await DeviceCache::instance().getDevices();
+                    LOG_DEBUG << "[DeviceCache] Async refresh completed after markStale";
+                } catch (const std::exception& e) {
+                    LOG_ERROR << "[DeviceCache] Async refresh failed after markStale: " << e.what();
+                }
+            });
+        });
     }
 
     /**
