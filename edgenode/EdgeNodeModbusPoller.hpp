@@ -8,6 +8,7 @@
 #include "common/protocol/modbus/Modbus.Utils.hpp"
 #include "common/utils/Constants.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -73,6 +74,13 @@ public:
                 ctx.readIntervalSec = config.get("readInterval", 5).asInt();
                 if (ctx.readIntervalSec < 1) ctx.readIntervalSec = 1;
                 if (ctx.readIntervalSec > 3600) ctx.readIntervalSec = 3600;
+                if (config.isMember("packet") && config["packet"].isObject()) {
+                    const auto& packet = config["packet"];
+                    ctx.mergeGap = packet.get("mergeGap", DEFAULT_MERGE_GAP).asInt();
+                    ctx.maxRegsPerRead = packet.get("maxQuantity", DEFAULT_MAX_REGS_PER_READ).asInt();
+                }
+                ctx.mergeGap = std::clamp(ctx.mergeGap, 0, 2000);
+                ctx.maxRegsPerRead = std::clamp(ctx.maxRegsPerRead, 1, 125);
 
                 // 解析寄存器定义
                 if (config.isMember("registers") && config["registers"].isArray()) {
@@ -104,6 +112,8 @@ public:
                               << ", slaveId=" << static_cast<int>(ctx.slaveId)
                               << ", registers=" << ctx.registers.size()
                               << ", readGroups=" << ctx.readGroups.size()
+                              << ", mergeGap=" << ctx.mergeGap
+                              << ", maxQuantity=" << ctx.maxRegsPerRead
                               << ", interval=" << ctx.readIntervalSec << "s" << std::endl;
                     devices_[dev.id] = std::move(ctx);
                 } else {
@@ -339,6 +349,8 @@ public:
 private:
     static constexpr auto REQUEST_TIMEOUT = std::chrono::milliseconds(5000);
     static constexpr auto READBACK_INTERVAL = std::chrono::seconds(5);
+    static constexpr int DEFAULT_MERGE_GAP = 100;
+    static constexpr int DEFAULT_MAX_REGS_PER_READ = 125;
 
     struct DevicePollContext {
         int deviceId = 0;
@@ -349,6 +361,8 @@ private:
         modbus::FrameMode frameMode = modbus::FrameMode::TCP;
         modbus::ByteOrder byteOrder = modbus::ByteOrder::Big;
         int readIntervalSec = 5;
+        int mergeGap = DEFAULT_MERGE_GAP;
+        int maxRegsPerRead = DEFAULT_MAX_REGS_PER_READ;
 
         std::vector<modbus::RegisterDef> registers;
         std::vector<modbus::ReadGroupSnapshot> readGroups;
@@ -442,7 +456,11 @@ private:
     }
 
     void buildReadGroups(DevicePollContext& ctx) {
-        auto merged = modbus::ModbusUtils::mergeRegisters(ctx.registers, 100);
+        auto merged = modbus::ModbusUtils::mergeRegisters(
+            ctx.registers,
+            ctx.mergeGap,
+            ctx.maxRegsPerRead
+        );
         ctx.readGroups.clear();
         ctx.readGroups.reserve(merged.size());
 

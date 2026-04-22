@@ -337,6 +337,30 @@ inline void validateModbus(const Json::Value& config) {
         );
     }
 
+    if (const auto* packet = ValidatorHelper::optionalObjectField(
+            config,
+            "packet",
+            "Modbus 配置的 packet 必须是对象")) {
+        if (packet->isMember("mergeGap")) {
+            ValidatorHelper::requireIntRangeField(
+                *packet,
+                "mergeGap",
+                0,
+                2000,
+                "组包地址间隙必须在 0-2000 之间"
+            );
+        }
+        if (packet->isMember("maxQuantity")) {
+            ValidatorHelper::requireIntRangeField(
+                *packet,
+                "maxQuantity",
+                1,
+                125,
+                "单包最大寄存器数必须在 1-125 之间"
+            );
+        }
+    }
+
     if (!config.isMember("registers")) {
         return;
     }

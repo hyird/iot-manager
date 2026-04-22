@@ -163,11 +163,21 @@ export interface ModbusRegister {
 }
 
 /** Modbus 配置结构 */
+export interface ModbusPacketConfig {
+  /** 组包地址间隙（两个寄存器地址差 <= 该值时可合并） */
+  mergeGap?: number;
+  /** 单包最大寄存器数量（字寄存器，1-125） */
+  maxQuantity?: number;
+}
+
+/** Modbus 配置结构 */
 export interface ModbusConfig {
   /** 字节序 */
   byteOrder: ModbusByteOrder;
   /** 读取间隔（秒），默认 1 */
   readInterval?: number;
+  /** 组包配置 */
+  packet?: ModbusPacketConfig;
   /** 寄存器列表 */
   registers: ModbusRegister[];
 }
@@ -307,6 +317,7 @@ export namespace Modbus {
   export type ByteOrder = ModbusByteOrder;
   export type DictMapItem = ModbusDictMapItem;
   export type DictConfig = ModbusDictConfig;
+  export type PacketConfig = ModbusPacketConfig;
   export type Register = ModbusRegister;
   export type Config = ModbusConfig;
 }

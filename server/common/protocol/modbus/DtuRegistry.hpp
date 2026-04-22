@@ -67,7 +67,8 @@ namespace detail {
 
 // DTU 链路往返开销大（4G/GPRS 延迟 200-500ms），适当放宽合并间距
 // 同时仍受 Modbus 协议最大读取量约束（字寄存器 125，位寄存器 2000）
-inline constexpr int DTU_MERGE_GAP = 100;
+inline constexpr int DTU_DEFAULT_MERGE_GAP = 100;
+inline constexpr int DTU_DEFAULT_MAX_REGS_PER_READ = 125;
 inline constexpr int DTU_DEFAULT_READ_INTERVAL = 1;
 
 inline std::string makeRegistrationToken(const std::vector<uint8_t>& bytes) {
@@ -101,9 +102,13 @@ inline ReadGroupSnapshot toReadGroupSnapshot(const ReadGroup& group) {
     return snapshot;
 }
 
-inline std::vector<ReadGroupSnapshot> buildReadGroups(const std::vector<RegisterDef>& registers) {
+inline std::vector<ReadGroupSnapshot> buildReadGroups(
+    const std::vector<RegisterDef>& registers,
+    int mergeGap,
+    int maxRegsPerRead
+) {
     std::vector<ReadGroupSnapshot> groups;
-    auto merged = ModbusUtils::mergeRegisters(registers, DTU_MERGE_GAP);
+    auto merged = ModbusUtils::mergeRegisters(registers, mergeGap, maxRegsPerRead);
     groups.reserve(merged.size());
     for (const auto& group : merged) {
         groups.push_back(toReadGroupSnapshot(group));
@@ -134,6 +139,16 @@ inline ModbusDeviceDef buildDeviceDef(const DeviceCache::CachedDevice& device, c
         def.readInterval = DTU_DEFAULT_READ_INTERVAL;
     }
 
+    int mergeGap = DTU_DEFAULT_MERGE_GAP;
+    int maxRegsPerRead = DTU_DEFAULT_MAX_REGS_PER_READ;
+    if (config.isMember("packet") && config["packet"].isObject()) {
+        const auto& packet = config["packet"];
+        mergeGap = packet.get("mergeGap", DTU_DEFAULT_MERGE_GAP).asInt();
+        maxRegsPerRead = packet.get("maxQuantity", DTU_DEFAULT_MAX_REGS_PER_READ).asInt();
+    }
+    mergeGap = std::clamp(mergeGap, 0, 2000);
+    maxRegsPerRead = std::clamp(maxRegsPerRead, 1, 125);
+
     if (config.isMember("registers") && config["registers"].isArray()) {
         for (const auto& reg : config["registers"]) {
             RegisterDef item;
@@ -162,7 +177,7 @@ inline ModbusDeviceDef buildDeviceDef(const DeviceCache::CachedDevice& device, c
         }
     }
 
-    def.readGroups = buildReadGroups(def.registers);
+    def.readGroups = buildReadGroups(def.registers, mergeGap, maxRegsPerRead);
     return def;
 }
 

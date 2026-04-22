@@ -79,6 +79,25 @@ const ByteOrderOptions: { value: Modbus.ByteOrder; label: string }[] = [
   { value: "LITTLE_ENDIAN_BYTE_SWAP", label: "Little-endian byte swap" },
 ];
 
+const DEFAULT_PACKET_MERGE_GAP = 100;
+const DEFAULT_PACKET_MAX_QUANTITY = 125;
+
+const normalizePacketConfig = (
+  packet?: Modbus.PacketConfig
+): Required<Modbus.PacketConfig> => {
+  const mergeGapRaw = Number(packet?.mergeGap);
+  const maxQuantityRaw = Number(packet?.maxQuantity);
+
+  const mergeGap = Number.isFinite(mergeGapRaw)
+    ? Math.min(2000, Math.max(0, Math.floor(mergeGapRaw)))
+    : DEFAULT_PACKET_MERGE_GAP;
+  const maxQuantity = Number.isFinite(maxQuantityRaw)
+    ? Math.min(125, Math.max(1, Math.floor(maxQuantityRaw)))
+    : DEFAULT_PACKET_MAX_QUANTITY;
+
+  return { mergeGap, maxQuantity };
+};
+
 const REGISTER_TYPE_ORDER: Modbus.RegisterType[] = [
   "COIL",
   "DISCRETE_INPUT",
@@ -277,6 +296,7 @@ const ModbusConfigPage = () => {
         config: {
           byteOrder: config.byteOrder,
           readInterval: config.readInterval,
+          packet: normalizePacketConfig(config.packet),
           registers: nextRegisters,
         },
       });
@@ -322,6 +342,7 @@ const ModbusConfigPage = () => {
     const newConfig: Modbus.Config = {
       byteOrder: config.byteOrder,
       readInterval: config.readInterval,
+      packet: normalizePacketConfig(config.packet),
       registers: config.registers.filter((r) => r.id !== registerId),
     };
 
@@ -522,6 +543,14 @@ const ModbusConfigPage = () => {
                     )?.label || "Big-endian"}
                   </Tag>
                   <Tag>间隔 {(activeType.config as Modbus.Config)?.readInterval ?? 1}s</Tag>
+                  <Tag>
+                    组包 gap≤
+                    {normalizePacketConfig((activeType.config as Modbus.Config)?.packet).mergeGap}
+                  </Tag>
+                  <Tag>
+                    单包≤
+                    {normalizePacketConfig((activeType.config as Modbus.Config)?.packet).maxQuantity}
+                  </Tag>
                   <Tag color="blue">{registers.length} 个寄存器</Tag>
                   <Tag color="geekblue">{registerGroups.length} 个分组</Tag>
                   {writableRegisterCount > 0 && (
@@ -641,11 +670,14 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
         form.resetFields();
         if (data) {
           const config = data.config as Modbus.Config;
+          const packet = normalizePacketConfig(config?.packet);
           form.setFieldsValue({
             name: data.name,
             enabled: data.enabled,
             byteOrder: config?.byteOrder || "BIG_ENDIAN",
             readInterval: Number(config?.readInterval) || 1,
+            packetMergeGap: packet.mergeGap,
+            packetMaxQuantity: packet.maxQuantity,
             remark: data.remark,
           });
         } else {
@@ -653,6 +685,8 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
             enabled: true,
             byteOrder: "BIG_ENDIAN",
             readInterval: 1,
+            packetMergeGap: DEFAULT_PACKET_MERGE_GAP,
+            packetMaxQuantity: DEFAULT_PACKET_MAX_QUANTITY,
           });
         }
         setOpen(true);
@@ -662,6 +696,10 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
     const handleOk = async () => {
       const values = await form.validateFields();
       const existingConfig = (current?.config as Modbus.Config) || { registers: [] };
+      const packet = normalizePacketConfig({
+        mergeGap: values.packetMergeGap,
+        maxQuantity: values.packetMaxQuantity,
+      });
 
       await saveMutation.mutateAsync({
         id: current?.id,
@@ -671,6 +709,7 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
         config: {
           byteOrder: values.byteOrder,
           readInterval: values.readInterval,
+          packet,
           registers: existingConfig.registers || [],
         },
         remark: values.remark,
@@ -708,6 +747,24 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
           >
             <InputNumber min={1} max={3600} className="!w-full" addonAfter="秒" />
           </Form.Item>
+          <Flex gap={16}>
+            <Form.Item
+              label="组包地址间隙"
+              name="packetMergeGap"
+              className="flex-1"
+              extra="地址间隙 <= 该值时会合并成同一读包，0 表示只合并连续地址"
+            >
+              <InputNumber min={0} max={2000} className="!w-full" addonAfter="寄存器" />
+            </Form.Item>
+            <Form.Item
+              label="单包最大寄存器数"
+              name="packetMaxQuantity"
+              className="flex-1"
+              extra="每个读包最多读取的字寄存器数量"
+            >
+              <InputNumber min={1} max={125} className="!w-full" addonAfter="个" />
+            </Form.Item>
+          </Flex>
           <Form.Item label="备注" name="remark">
             <Input.TextArea rows={3} placeholder="备注说明" />
           </Form.Item>
@@ -868,6 +925,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
         config: {
           byteOrder: config.byteOrder,
           readInterval: config.readInterval,
+          packet: normalizePacketConfig(config.packet),
           registers: newRegisters,
         },
       });
