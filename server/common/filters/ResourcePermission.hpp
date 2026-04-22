@@ -116,10 +116,10 @@ public:
                     COALESCE((ds.permission->>'control')::boolean, false) AS can_control,
                     COALESCE(NULLIF(ds.permission->>'target_type', ''), ds.target_type) AS target_type,
                     CASE
-                        WHEN ds.permission ? 'target_id'
+                        WHEN jsonb_exists(ds.permission, 'target_id')
                              AND jsonb_typeof(ds.permission->'target_id') = 'number'
                             THEN (ds.permission->>'target_id')::INT
-                        WHEN ds.permission ? 'target_id'
+                        WHEN jsonb_exists(ds.permission, 'target_id')
                              AND jsonb_typeof(ds.permission->'target_id') = 'string'
                              AND (ds.permission->>'target_id') ~ '^[0-9]+$'
                             THEN (ds.permission->>'target_id')::INT
@@ -177,10 +177,10 @@ public:
                         COALESCE((ds.permission->>'control')::boolean, false) AS can_control,
                         COALESCE(NULLIF(ds.permission->>'target_type', ''), ds.target_type) AS target_type,
                         CASE
-                            WHEN ds.permission ? 'target_id'
+                            WHEN jsonb_exists(ds.permission, 'target_id')
                                  AND jsonb_typeof(ds.permission->'target_id') = 'number'
                                 THEN (ds.permission->>'target_id')::INT
-                            WHEN ds.permission ? 'target_id'
+                            WHEN jsonb_exists(ds.permission, 'target_id')
                                  AND jsonb_typeof(ds.permission->'target_id') = 'string'
                                  AND (ds.permission->>'target_id') ~ '^[0-9]+$'
                                 THEN (ds.permission->>'target_id')::INT

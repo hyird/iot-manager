@@ -764,10 +764,10 @@ public:
                     ds.device_id,
                     COALESCE(NULLIF(ds.permission->>'target_type', ''), ds.target_type) AS target_type,
                     CASE
-                        WHEN ds.permission ? 'target_id'
+                        WHEN jsonb_exists(ds.permission, 'target_id')
                              AND jsonb_typeof(ds.permission->'target_id') = 'number'
                             THEN (ds.permission->>'target_id')::INT
-                        WHEN ds.permission ? 'target_id'
+                        WHEN jsonb_exists(ds.permission, 'target_id')
                              AND jsonb_typeof(ds.permission->'target_id') = 'string'
                              AND (ds.permission->>'target_id') ~ '^[0-9]+$'
                             THEN (ds.permission->>'target_id')::INT
@@ -1001,10 +1001,10 @@ public:
                   AND COALESCE(NULLIF(permission->>'target_type', ''), target_type) = ?
                   AND (
                         CASE
-                            WHEN permission ? 'target_id'
+                            WHEN jsonb_exists(permission, 'target_id')
                                  AND jsonb_typeof(permission->'target_id') = 'number'
                                 THEN (permission->>'target_id')::INT
-                            WHEN permission ? 'target_id'
+                            WHEN jsonb_exists(permission, 'target_id')
                                  AND jsonb_typeof(permission->'target_id') = 'string'
                                  AND (permission->>'target_id') ~ '^[0-9]+$'
                                 THEN (permission->>'target_id')::INT
