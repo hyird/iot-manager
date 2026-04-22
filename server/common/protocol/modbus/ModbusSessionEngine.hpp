@@ -570,20 +570,32 @@ inline std::map<std::string, Json::Value> ModbusSessionEngine::extractRegisterVa
             if (byteOffset + byteSize <= responseData.size()) {
                 double value = ModbusUtils::extractValue(
                     responseData.data() + byteOffset, reg.dataType, device.byteOrder);
+                if (std::isfinite(reg.scale) && reg.scale > 0.0) {
+                    value *= reg.scale;
+                }
 
-                if (reg.dataType == DataType::BOOL
+                if (reg.decimals >= 0) {
+                    double factor = std::pow(10.0, reg.decimals);
+                    value = std::round(value * factor) / factor;
+                }
+
+                const bool integerType =
+                    reg.dataType == DataType::BOOL
                     || reg.dataType == DataType::INT16
                     || reg.dataType == DataType::UINT16
                     || reg.dataType == DataType::INT32
                     || reg.dataType == DataType::UINT32
                     || reg.dataType == DataType::INT64
-                    || reg.dataType == DataType::UINT64) {
+                    || reg.dataType == DataType::UINT64;
+
+                const bool keepIntegerOutput =
+                    integerType
+                    && reg.decimals < 0
+                    && std::fabs(reg.scale - 1.0) < 1e-12;
+
+                if (keepIntegerOutput) {
                     elem["value"] = static_cast<Json::Int64>(value);
                 } else {
-                    if (reg.decimals >= 0) {
-                        double factor = std::pow(10.0, reg.decimals);
-                        value = std::round(value * factor) / factor;
-                    }
                     elem["value"] = value;
                 }
             } else {

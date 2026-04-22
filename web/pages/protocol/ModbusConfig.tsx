@@ -409,6 +409,9 @@ const ModbusConfigPage = () => {
             <Tag>只读</Tag>
           )}
           {register.unit ? <Tag>{register.unit}</Tag> : null}
+          {typeof register.scale === "number" && register.scale !== 1 ? (
+            <Tag color="geekblue">x{register.scale}</Tag>
+          ) : null}
           {typeof register.decimals === "number" ? <Tag>小数 {register.decimals}</Tag> : null}
         </Space>
 
@@ -823,6 +826,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
           form.setFieldsValue({
             ...register,
             group: normalizeGroupName(register.group) || undefined,
+            scale: typeof register.scale === "number" ? register.scale : 1,
             boolLabel0: register.dictConfig?.items?.find((i) => i.key === "0")?.label,
             boolLabel1: register.dictConfig?.items?.find((i) => i.key === "1")?.label,
           });
@@ -831,6 +835,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
             registerType: "HOLDING_REGISTER",
             dataType: "INT16",
             writable: false,
+            scale: 1,
           });
         }
         setOpen(true);
@@ -893,6 +898,13 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
       const isWritableType =
         values.registerType === "COIL" || values.registerType === "HOLDING_REGISTER";
       const writable = isWritableType ? !!values.writable : false;
+      const inputScale = Number(values.scale);
+      const scale =
+        values.registerType === "COIL" || values.registerType === "DISCRETE_INPUT"
+          ? 1
+          : Number.isFinite(inputScale) && inputScale > 0
+            ? inputScale
+            : 1;
       const group = normalizeGroupName(values.group);
 
       const registerFields = {
@@ -904,6 +916,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
         quantity: actualQuantity,
         writable,
         unit: values.unit,
+        scale,
         decimals: values.decimals,
         dictConfig,
         remark: values.remark,
@@ -983,6 +996,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                       dataType: "BOOL",
                       decimals: undefined,
                       writable: false,
+                      scale: 1,
                     });
                   } else if (form.getFieldValue("dataType") === "BOOL") {
                     form.setFieldsValue({
@@ -1047,6 +1061,31 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
           <Flex gap={16}>
             <Form.Item label="单位" name="unit" className="flex-1">
               <Input placeholder="如：V、A、℃、%" />
+            </Form.Item>
+            <Form.Item
+              label="缩放系数"
+              name="scale"
+              className="flex-1"
+              extra="入库值 = 原始值 × 缩放系数（默认 1）"
+              rules={[
+                {
+                  validator: async (_, value) => {
+                    const numericValue = Number(value);
+                    if (!Number.isFinite(numericValue) || numericValue <= 0) {
+                      throw new Error("请输入大于 0 的缩放系数");
+                    }
+                  },
+                },
+              ]}
+            >
+              <InputNumber
+                min={0.000001}
+                max={1000000}
+                step={0.1}
+                precision={6}
+                className="!w-full"
+                disabled={isBitRegister}
+              />
             </Form.Item>
             {(dataType === "FLOAT32" || dataType === "DOUBLE") && (
               <Form.Item label="小数位数" name="decimals" className="flex-1">

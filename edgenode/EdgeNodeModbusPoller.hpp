@@ -94,6 +94,10 @@ public:
                         item.dataType = modbus::parseDataType(reg.get("dataType", "UINT16").asString());
                         item.quantity = static_cast<uint16_t>(reg.get("quantity", 1).asUInt());
                         item.unit = reg.get("unit", "").asString();
+                        item.scale = reg.get("scale", 1.0).asDouble();
+                        if (!std::isfinite(item.scale) || item.scale <= 0.0) {
+                            item.scale = 1.0;
+                        }
                         item.remark = reg.get("remark", "").asString();
                         item.decimals = reg.get("decimals", -1).asInt();
                         if (reg.isMember("dictConfig") && reg["dictConfig"].isObject()) {
@@ -555,6 +559,9 @@ private:
                 if (byteOffset + modbus::dataTypeToByteSize(reg.dataType) <= resp.data.size()) {
                     value = modbus::ModbusUtils::extractValue(
                         resp.data.data() + byteOffset, reg.dataType, ctx.byteOrder);
+                    if (std::isfinite(reg.scale) && reg.scale > 0.0) {
+                        value *= reg.scale;
+                    }
                 }
             }
 

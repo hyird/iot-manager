@@ -6,6 +6,7 @@
 
 #include <json/json.h>
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <iomanip>
 #include <optional>
@@ -167,6 +168,16 @@ inline void validateModbusRegister(const Json::Value& reg) {
         125,
         "寄存器「" + regName + "」的数量超出范围 (1-125)"
     );
+
+    if (reg.isMember("scale")) {
+        if (!reg["scale"].isNumeric()) {
+            throw ValidationException("寄存器「" + regName + "」的缩放系数必须为数字");
+        }
+        const double scale = reg["scale"].asDouble();
+        if (!std::isfinite(scale) || scale <= 0.0 || scale > 1000000.0) {
+            throw ValidationException("寄存器「" + regName + "」的缩放系数必须在 (0, 1000000] 范围内");
+        }
+    }
 
     if (address + quantity - 1 > 65535) {
         throw ValidationException("寄存器「" + regName + "」的地址 + 数量超出范围（末地址不能超过 65535）");

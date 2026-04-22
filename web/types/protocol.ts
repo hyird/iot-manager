@@ -152,6 +152,8 @@ export interface ModbusRegister {
   quantity: number;
   /** 单位 */
   unit?: string;
+  /** 缩放系数（入库值 = 原始值 * scale，默认 1） */
+  scale?: number;
   /** 小数位数（仅 FLOAT32/DOUBLE 生效，-1 或 undefined 表示不限制） */
   decimals?: number;
   /** 是否可写（仅可写寄存器支持下发写操作） */
