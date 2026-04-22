@@ -12,6 +12,7 @@
 #include "migration/migrations/V005_DeviceShareTargetScope.hpp"
 #include "migration/migrations/V006_DeviceSharePermissionJsonb.hpp"
 #include "migration/migrations/V007_DeviceShareTargetInPermission.hpp"
+#include "migration/migrations/V008_DeviceShareDropTargetColumns.hpp"
 #include <cstdlib>
 
 /**
@@ -47,6 +48,7 @@ private:
         registry.add<V005_DeviceShareTargetScope>();
         registry.add<V006_DeviceSharePermissionJsonb>();
         registry.add<V007_DeviceShareTargetInPermission>();
+        registry.add<V008_DeviceShareDropTargetColumns>();
         // 新增迁移在此处注册，例如：
         // registry.add<V003_AddDeviceTags>();
         return registry;

@@ -762,7 +762,7 @@ public:
                 SELECT
                     ds.id,
                     ds.device_id,
-                    COALESCE(NULLIF(ds.permission->>'target_type', ''), ds.target_type) AS target_type,
+                    NULLIF(ds.permission->>'target_type', '') AS target_type,
                     CASE
                         WHEN jsonb_exists(ds.permission, 'target_id')
                              AND jsonb_typeof(ds.permission->'target_id') = 'number'
@@ -771,7 +771,7 @@ public:
                              AND jsonb_typeof(ds.permission->'target_id') = 'string'
                              AND (ds.permission->>'target_id') ~ '^[0-9]+$'
                             THEN (ds.permission->>'target_id')::INT
-                        ELSE ds.target_id
+                        ELSE NULL
                     END AS target_id,
                     ds.permission,
                     ds.created_at,
@@ -959,16 +959,18 @@ public:
             const std::string permissionJson = JsonHelper::serialize(permissionObj);
 
             co_await dbService_.execSqlCoro(R"(
-                INSERT INTO device_share (device_id, target_type, target_id, permission, created_by)
-                VALUES (?, ?, ?, ?::jsonb, NULLIF(?, '0')::INT)
-                ON CONFLICT (device_id, target_type, target_id)
+                INSERT INTO device_share (device_id, permission, created_by)
+                VALUES (?, ?::jsonb, NULLIF(?, '0')::INT)
+                ON CONFLICT (
+                    device_id,
+                    (permission->>'target_type'),
+                    (permission->>'target_id')
+                )
                 DO UPDATE SET
                     permission = EXCLUDED.permission,
                     updated_at = CURRENT_TIMESTAMP
             )", {
                 std::to_string(deviceId),
-                targetType,
-                std::to_string(targetId),
                 permissionJson,
                 std::to_string(operatorId)
             });
@@ -998,19 +1000,8 @@ public:
             R"(
                 DELETE FROM device_share
                 WHERE device_id = ?
-                  AND COALESCE(NULLIF(permission->>'target_type', ''), target_type) = ?
-                  AND (
-                        CASE
-                            WHEN jsonb_exists(permission, 'target_id')
-                                 AND jsonb_typeof(permission->'target_id') = 'number'
-                                THEN (permission->>'target_id')::INT
-                            WHEN jsonb_exists(permission, 'target_id')
-                                 AND jsonb_typeof(permission->'target_id') = 'string'
-                                 AND (permission->>'target_id') ~ '^[0-9]+$'
-                                THEN (permission->>'target_id')::INT
-                            ELSE target_id
-                        END
-                      ) = ?
+                  AND NULLIF(permission->>'target_type', '') = ?
+                  AND permission->>'target_id' = ?
                 RETURNING id
             )",
             {std::to_string(deviceId), targetType, std::to_string(targetId)}

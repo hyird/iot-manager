@@ -114,7 +114,7 @@ public:
                 SELECT
                     ds.device_id,
                     COALESCE((ds.permission->>'control')::boolean, false) AS can_control,
-                    COALESCE(NULLIF(ds.permission->>'target_type', ''), ds.target_type) AS target_type,
+                    NULLIF(ds.permission->>'target_type', '') AS target_type,
                     CASE
                         WHEN jsonb_exists(ds.permission, 'target_id')
                              AND jsonb_typeof(ds.permission->'target_id') = 'number'
@@ -123,7 +123,7 @@ public:
                              AND jsonb_typeof(ds.permission->'target_id') = 'string'
                              AND (ds.permission->>'target_id') ~ '^[0-9]+$'
                             THEN (ds.permission->>'target_id')::INT
-                        ELSE ds.target_id
+                        ELSE NULL
                     END AS target_id
                 FROM device_share ds
             )
@@ -175,7 +175,7 @@ public:
                     SELECT
                         ds.device_id,
                         COALESCE((ds.permission->>'control')::boolean, false) AS can_control,
-                        COALESCE(NULLIF(ds.permission->>'target_type', ''), ds.target_type) AS target_type,
+                        NULLIF(ds.permission->>'target_type', '') AS target_type,
                         CASE
                             WHEN jsonb_exists(ds.permission, 'target_id')
                                  AND jsonb_typeof(ds.permission->'target_id') = 'number'
@@ -184,7 +184,7 @@ public:
                                  AND jsonb_typeof(ds.permission->'target_id') = 'string'
                                  AND (ds.permission->>'target_id') ~ '^[0-9]+$'
                                 THEN (ds.permission->>'target_id')::INT
-                            ELSE ds.target_id
+                            ELSE NULL
                         END AS target_id
                     FROM device_share ds
                 )
