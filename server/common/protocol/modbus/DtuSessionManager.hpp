@@ -339,6 +339,14 @@ inline void DtuSessionManager::clearInflightAndPollQueues() {
         filterQueue(session.highQueue);
         filterQueue(session.normalQueue);
 
+        // reload 后 discovery 任务已被清空，必须重置 discovery 状态，
+        // 否则会话可能永远停留在 Probing/discoveryRequested=true，导致后续不再探测。
+        session.discoveryRequested = false;
+        session.nextDiscoveryTime = std::chrono::steady_clock::time_point{};
+        if (session.bindState != SessionBindState::Bound) {
+            session.bindState = SessionBindState::Unknown;
+        }
+
         // 清除残留的接收缓冲区，防止旧数据影响新 poll
         session.rxBuffer.clear();
     }
