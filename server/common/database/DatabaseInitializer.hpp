@@ -11,6 +11,7 @@
 #include "migration/migrations/V004_ResourceOwnershipAndDeviceShare.hpp"
 #include "migration/migrations/V005_DeviceShareTargetScope.hpp"
 #include "migration/migrations/V006_DeviceSharePermissionJsonb.hpp"
+#include "migration/migrations/V007_DeviceShareTargetInPermission.hpp"
 #include <cstdlib>
 
 /**
@@ -45,6 +46,7 @@ private:
         registry.add<V004_ResourceOwnershipAndDeviceShare>();
         registry.add<V005_DeviceShareTargetScope>();
         registry.add<V006_DeviceSharePermissionJsonb>();
+        registry.add<V007_DeviceShareTargetInPermission>();
         // 新增迁移在此处注册，例如：
         // registry.add<V003_AddDeviceTags>();
         return registry;

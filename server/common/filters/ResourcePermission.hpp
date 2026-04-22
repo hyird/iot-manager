@@ -105,29 +105,46 @@ public:
         std::vector<std::string> params;
         params.reserve(2 + idParams.size());
         params.push_back(std::to_string(userId));
-        params.push_back(std::to_string(userId));
         params.insert(params.end(), idParams.begin(), idParams.end());
+        params.push_back(std::to_string(userId));
 
         DatabaseService db;
         std::string sql = R"(
-            SELECT ds.device_id,
-                   COALESCE((ds.permission->>'control')::boolean, false) AS can_control
-            FROM device_share ds
+            WITH share_scope AS (
+                SELECT
+                    ds.device_id,
+                    COALESCE((ds.permission->>'control')::boolean, false) AS can_control,
+                    COALESCE(NULLIF(ds.permission->>'target_type', ''), ds.target_type) AS target_type,
+                    CASE
+                        WHEN ds.permission ? 'target_id'
+                             AND jsonb_typeof(ds.permission->'target_id') = 'number'
+                            THEN (ds.permission->>'target_id')::INT
+                        WHEN ds.permission ? 'target_id'
+                             AND jsonb_typeof(ds.permission->'target_id') = 'string'
+                             AND (ds.permission->>'target_id') ~ '^[0-9]+$'
+                            THEN (ds.permission->>'target_id')::INT
+                        ELSE ds.target_id
+                    END AS target_id
+                FROM device_share ds
+            )
+            SELECT ss.device_id,
+                   ss.can_control
+            FROM share_scope ss
             LEFT JOIN sys_user su ON su.id = ? AND su.deleted_at IS NULL
-            WHERE ds.device_id IN (
+            WHERE ss.device_id IN (
         )";
         sql += placeholders;
         sql += R"(
             )
               AND (
                 (
-                    ds.target_type = 'user'
-                    AND ds.target_id = ?
+                    ss.target_type = 'user'
+                    AND ss.target_id = ?
                 )
                 OR (
-                    ds.target_type = 'department'
+                    ss.target_type = 'department'
                     AND su.department_id IS NOT NULL
-                    AND ds.target_id = su.department_id
+                    AND ss.target_id = su.department_id
                 )
               )
         )";
@@ -154,19 +171,36 @@ public:
         DatabaseService db;
         auto rows = co_await db.execSqlCoro(
             R"(
-                SELECT COALESCE((ds.permission->>'control')::boolean, false) AS can_control
-                FROM device_share ds
+                WITH share_scope AS (
+                    SELECT
+                        ds.device_id,
+                        COALESCE((ds.permission->>'control')::boolean, false) AS can_control,
+                        COALESCE(NULLIF(ds.permission->>'target_type', ''), ds.target_type) AS target_type,
+                        CASE
+                            WHEN ds.permission ? 'target_id'
+                                 AND jsonb_typeof(ds.permission->'target_id') = 'number'
+                                THEN (ds.permission->>'target_id')::INT
+                            WHEN ds.permission ? 'target_id'
+                                 AND jsonb_typeof(ds.permission->'target_id') = 'string'
+                                 AND (ds.permission->>'target_id') ~ '^[0-9]+$'
+                                THEN (ds.permission->>'target_id')::INT
+                            ELSE ds.target_id
+                        END AS target_id
+                    FROM device_share ds
+                )
+                SELECT ss.can_control
+                FROM share_scope ss
                 LEFT JOIN sys_user su ON su.id = ? AND su.deleted_at IS NULL
-                WHERE ds.device_id = ?
+                WHERE ss.device_id = ?
                   AND (
                     (
-                        ds.target_type = 'user'
-                        AND ds.target_id = ?
+                        ss.target_type = 'user'
+                        AND ss.target_id = ?
                     )
                     OR (
-                        ds.target_type = 'department'
+                        ss.target_type = 'department'
                         AND su.department_id IS NOT NULL
-                        AND ds.target_id = su.department_id
+                        AND ss.target_id = su.department_id
                     )
                   )
             )",

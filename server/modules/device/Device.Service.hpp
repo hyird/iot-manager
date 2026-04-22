@@ -758,26 +758,46 @@ public:
         co_await ResourcePermission::ensureDeviceOwnerOrSuperAdmin(deviceId, userId);
 
         auto rows = co_await dbService_.execSqlCoro(R"(
-            SELECT ds.target_type,
-                   ds.target_id,
+            WITH share_scope AS (
+                SELECT
+                    ds.id,
+                    ds.device_id,
+                    COALESCE(NULLIF(ds.permission->>'target_type', ''), ds.target_type) AS target_type,
+                    CASE
+                        WHEN ds.permission ? 'target_id'
+                             AND jsonb_typeof(ds.permission->'target_id') = 'number'
+                            THEN (ds.permission->>'target_id')::INT
+                        WHEN ds.permission ? 'target_id'
+                             AND jsonb_typeof(ds.permission->'target_id') = 'string'
+                             AND (ds.permission->>'target_id') ~ '^[0-9]+$'
+                            THEN (ds.permission->>'target_id')::INT
+                        ELSE ds.target_id
+                    END AS target_id,
+                    ds.permission,
+                    ds.created_at,
+                    ds.updated_at
+                FROM device_share ds
+                WHERE ds.device_id = ?
+            )
+            SELECT ss.target_type,
+                   ss.target_id,
                    CASE
-                     WHEN COALESCE((ds.permission->>'control')::boolean, false) THEN 'control'
+                     WHEN COALESCE((ss.permission->>'control')::boolean, false) THEN 'control'
                      ELSE 'view'
                    END AS permission,
-                   ds.created_at, ds.updated_at,
-                   u.id AS user_id, u.username, u.nickname,
-                   d.id AS department_id, d.name AS department_name
-            FROM device_share ds
+                   ss.created_at, ss.updated_at,
+                    u.id AS user_id, u.username, u.nickname,
+                    d.id AS department_id, d.name AS department_name
+            FROM share_scope ss
             LEFT JOIN sys_user u
-              ON ds.target_type = 'user'
-             AND ds.target_id = u.id
+              ON ss.target_type = 'user'
+             AND ss.target_id = u.id
              AND u.deleted_at IS NULL
             LEFT JOIN sys_department d
-              ON ds.target_type = 'department'
-             AND ds.target_id = d.id
+              ON ss.target_type = 'department'
+             AND ss.target_id = d.id
              AND d.deleted_at IS NULL
-            WHERE ds.device_id = ?
-            ORDER BY ds.updated_at DESC, ds.id DESC
+            ORDER BY ss.updated_at DESC, ss.id DESC
         )", {std::to_string(deviceId)});
 
         Json::Value items(Json::arrayValue);
@@ -930,11 +950,14 @@ public:
             throw ValidationException("未找到可分享的有效目标");
         }
 
-        const std::string permissionJson = permission == "control"
-            ? R"({"view":true,"control":true})"
-            : R"({"view":true,"control":false})";
-
         for (const auto& [targetType, targetId] : targets) {
+            Json::Value permissionObj(Json::objectValue);
+            permissionObj["view"] = true;
+            permissionObj["control"] = (permission == "control");
+            permissionObj["target_type"] = targetType;
+            permissionObj["target_id"] = targetId;
+            const std::string permissionJson = JsonHelper::serialize(permissionObj);
+
             co_await dbService_.execSqlCoro(R"(
                 INSERT INTO device_share (device_id, target_type, target_id, permission, created_by)
                 VALUES (?, ?, ?, ?::jsonb, NULLIF(?, '0')::INT)
@@ -975,8 +998,19 @@ public:
             R"(
                 DELETE FROM device_share
                 WHERE device_id = ?
-                  AND target_type = ?
-                  AND target_id = ?
+                  AND COALESCE(NULLIF(permission->>'target_type', ''), target_type) = ?
+                  AND (
+                        CASE
+                            WHEN permission ? 'target_id'
+                                 AND jsonb_typeof(permission->'target_id') = 'number'
+                                THEN (permission->>'target_id')::INT
+                            WHEN permission ? 'target_id'
+                                 AND jsonb_typeof(permission->'target_id') = 'string'
+                                 AND (permission->>'target_id') ~ '^[0-9]+$'
+                                THEN (permission->>'target_id')::INT
+                            ELSE target_id
+                        END
+                      ) = ?
                 RETURNING id
             )",
             {std::to_string(deviceId), targetType, std::to_string(targetId)}
