@@ -2,6 +2,7 @@
 
 #include "OpenAccess.Shared.hpp"
 #include "common/database/DatabaseService.hpp"
+#include "common/filters/ResourcePermission.hpp"
 #include "common/utils/FieldHelper.hpp"
 #include "common/utils/ValidatorHelper.hpp"
 
@@ -85,7 +86,7 @@ public:
         }
 
         auto deviceIds = OpenAccess::normalizeDeviceIds(data["deviceIds"]);
-        co_await ensureDevicesExist(deviceIds);
+        co_await ensureDevicesExistAndAccessible(deviceIds, createdBy);
 
         bool allowRealtime = data.get("allowRealtime", true).asBool();
         bool allowHistory = data.get("allowHistory", true).asBool();
@@ -146,7 +147,7 @@ public:
         co_return resp;
     }
 
-    Task<void> updateAccessKey(int id, const Json::Value& data) {
+    Task<void> updateAccessKey(int id, const Json::Value& data, int updatedBy) {
         auto current = co_await getAccessKeyById(id);
 
         std::string name = data.isMember("name")
@@ -218,7 +219,7 @@ public:
 
         if (data.isMember("deviceIds")) {
             auto deviceIds = OpenAccess::normalizeDeviceIds(data["deviceIds"]);
-            co_await ensureDevicesExist(deviceIds);
+            co_await ensureDevicesExistAndAccessible(deviceIds, updatedBy);
             co_await replaceAccessKeyDevices(id, deviceIds);
         }
     }
@@ -1098,7 +1099,7 @@ private:
         return normalized;
     }
 
-    Task<void> ensureDevicesExist(const std::vector<int>& deviceIds) {
+    Task<void> ensureDevicesExistAndAccessible(const std::vector<int>& deviceIds, int userId) {
         if (deviceIds.empty()) {
             throw ConflictException("至少配置一个可访问设备");
         }
@@ -1110,13 +1111,67 @@ private:
         }
 
         auto result = co_await dbService_.execSqlCoro(
-            "SELECT COUNT(*) AS cnt FROM device WHERE deleted_at IS NULL AND id IN (" +
+            "SELECT id, name, created_by FROM device WHERE deleted_at IS NULL AND id IN (" +
             OpenAccess::buildPlaceholders(deviceIds.size()) + ")",
             params
         );
 
-        if (result.empty() || FieldHelper::getInt(result[0]["cnt"]) != static_cast<int>(deviceIds.size())) {
+        if (result.size() != deviceIds.size()) {
             throw NotFoundException("deviceIds 中存在无效设备");
+        }
+
+        if (userId <= 0 || co_await PermissionChecker::isSuperAdmin(userId)) {
+            co_return;
+        }
+
+        std::vector<int> sharedCheckIds;
+        sharedCheckIds.reserve(deviceIds.size());
+        std::unordered_map<int, std::string> deviceNames;
+        deviceNames.reserve(result.size());
+
+        for (const auto& row : result) {
+            int deviceId = FieldHelper::getInt(row["id"]);
+            int createdBy = row["created_by"].isNull() ? 0 : FieldHelper::getInt(row["created_by"]);
+            deviceNames[deviceId] = FieldHelper::getString(row["name"], "ID:" + std::to_string(deviceId));
+            if (createdBy != userId) {
+                sharedCheckIds.push_back(deviceId);
+            }
+        }
+
+        if (sharedCheckIds.empty()) {
+            co_return;
+        }
+
+        auto sharePermissions = co_await ResourcePermission::loadDeviceSharePermissions(
+            userId,
+            sharedCheckIds
+        );
+
+        std::vector<std::string> forbiddenDevices;
+        forbiddenDevices.reserve(sharedCheckIds.size());
+        for (int deviceId : sharedCheckIds) {
+            if (sharePermissions.contains(deviceId)) {
+                continue;
+            }
+            forbiddenDevices.push_back(deviceNames.contains(deviceId)
+                ? deviceNames[deviceId]
+                : ("ID:" + std::to_string(deviceId)));
+        }
+
+        if (!forbiddenDevices.empty()) {
+            throw ForbiddenException(
+                "无权绑定以下设备: " + OpenAccess::sanitizeError(
+                    [forbiddenDevices]() {
+                        std::string joined;
+                        for (size_t i = 0; i < forbiddenDevices.size(); ++i) {
+                            if (i > 0) joined += ", ";
+                            joined += forbiddenDevices[i];
+                        }
+                        return joined;
+                    }(),
+                    300
+                )
+            );
         }
     }
 

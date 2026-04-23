@@ -54,6 +54,7 @@ const TAB_LOG = "access-log";
 const EVENT_TYPE_OPTIONS: Array<{ label: string; value: OpenAccess.EventType; color: string }> = [
   { label: "数据上报", value: "device.data.reported", color: "blue" },
   { label: "图片上报", value: "device.image.reported", color: "cyan" },
+  { label: "命令下发", value: "device.command.dispatched", color: "orange" },
   { label: "命令应答", value: "device.command.responded", color: "geekblue" },
   { label: "告警触发", value: "device.alert.triggered", color: "red" },
   { label: "告警恢复", value: "device.alert.resolved", color: "green" },
@@ -75,6 +76,7 @@ const LOG_STATUS_OPTIONS: Array<{ label: string; value: OpenAccess.LogStatus }> 
 ];
 
 const LOG_ACTION_OPTIONS = [
+  { label: "设备列表", value: "device-list" },
   { label: "实时查询", value: "realtime" },
   { label: "历史查询", value: "history" },
   { label: "控制下发", value: "command" },
@@ -85,16 +87,20 @@ const LOG_ACTION_OPTIONS = [
 const AUTH_HEADER_EXAMPLE = [
   "X-Access-Key: <你的AccessKey>",
   "Authorization: AccessKey <你的AccessKey>",
+].join("\n");
+
+const DEVICE_LIST_QUERY_EXAMPLE = [
+  'curl -X GET "https://your-host/open-api/device/list?page=1&pageSize=50" \\',
+  '  -H "X-Access-Key: <你的AccessKey>"',
   "",
-  "# 不推荐，仅做兼容",
-  "GET /open-api/device/realtime?accessKey=<你的AccessKey>",
+  "# 建议先获取设备列表，后续统一使用返回的 device.id",
 ].join("\n");
 
 const REALTIME_QUERY_EXAMPLE = [
   'curl -X GET "https://your-host/open-api/device/realtime?deviceId=123&page=1&pageSize=20" \\',
   '  -H "X-Access-Key: <你的AccessKey>"',
   "",
-  "# 也可按设备编码查询",
+  "# code 参数仅保留兼容旧调用方，推荐统一使用 deviceId",
   'curl -X GET "https://your-host/open-api/device/realtime?code=ST001" \\',
   '  -H "Authorization: AccessKey <你的AccessKey>"',
 ].join("\n");
@@ -103,7 +109,7 @@ const HISTORY_QUERY_EXAMPLE = [
   'curl -X GET "https://your-host/open-api/device/history?deviceId=123&dataType=ELEMENT&startTime=2026-03-09T00:00:00Z&endTime=2026-03-09T23:59:59Z" \\',
   '  -H "X-Access-Key: <你的AccessKey>"',
   "",
-  "# 历史查询必须提供 deviceId 或 code，并且必须带 startTime / endTime",
+  "# 历史查询必须提供 deviceId（或兼容传 code），并且必须带 startTime / endTime",
   "# dataType 必填：ELEMENT（要素数据）或 IMAGE（图片数据）",
 ].join("\n");
 
@@ -123,7 +129,7 @@ const ALERT_QUERY_EXAMPLE = [
   'curl -X GET "https://your-host/open-api/device/alert?deviceId=123&status=active&severity=critical&page=1&pageSize=20" \\',
   '  -H "X-Access-Key: <你的AccessKey>"',
   "",
-  "# 可按 deviceId / code、status、severity、ruleId 过滤",
+  "# 可按 deviceId（或兼容传 code）、status、severity、ruleId 过滤",
 ].join("\n");
 
 const WEBHOOK_HEADER_EXAMPLE = [
@@ -1686,35 +1692,41 @@ export default function OpenAccessPage() {
                       <>
                         一个调用配置可统一管理实时查询、历史查询、设备控制下发和告警查询。
                         <br />
-                        实时查询可不传 `deviceId` /
-                        `code`；历史查询必须带时间范围；控制与告警仍受设备授权范围约束。
+                        建议先调用设备列表接口拿到授权范围内的 `deviceId`，后续查询和控制统一传
+                        `deviceId`；`code` 仅保留兼容。实时查询与告警查询不传设备时会返回当前
+                        AccessKey 授权范围内的数据。
                       </>
                     }
                   />
-                  <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+                  <div className="mx-auto max-w-4xl space-y-4">
                     <UsageCodeBlock
-                      title="鉴权方式"
-                      description="推荐使用请求头传 AccessKey；query 参数只建议在联调阶段临时使用。"
+                      title="1. 鉴权方式"
+                      description="当前仅支持通过请求头传递 AccessKey，避免密钥暴露在 URL 与代理日志中。"
                       code={AUTH_HEADER_EXAMPLE}
                     />
                     <UsageCodeBlock
-                      title="实时数据查询"
-                      description="支持按设备 ID 或设备编码过滤，也支持分页。"
+                      title="2. 设备列表"
+                      description="先拿当前 AccessKey 可访问设备的 id、名称、协议、状态等摘要，后续统一用 deviceId。"
+                      code={DEVICE_LIST_QUERY_EXAMPLE}
+                    />
+                    <UsageCodeBlock
+                      title="3. 实时数据查询"
+                      description="推荐按设备 ID 查询，也支持分页；code 仅保留兼容旧调用方。"
                       code={REALTIME_QUERY_EXAMPLE}
                     />
                     <UsageCodeBlock
-                      title="历史数据查询"
-                      description="必须指定 dataType（ELEMENT 或 IMAGE）和时间范围。"
+                      title="4. 历史数据查询"
+                      description="必须指定 dataType（ELEMENT 或 IMAGE）和时间范围，推荐统一传 deviceId。"
                       code={HISTORY_QUERY_EXAMPLE}
                     />
                     <UsageCodeBlock
-                      title="控制下发"
-                      description="当前为 POST JSON 请求，需指定 deviceId 或 code，并传入 elements。"
+                      title="5. 控制下发"
+                      description="当前为 POST JSON 请求，推荐指定 deviceId，并传入 elements。"
                       code={COMMAND_QUERY_EXAMPLE}
                     />
                     <UsageCodeBlock
-                      title="告警查询"
-                      description="支持按状态、严重级别、规则等条件筛选，适合第三方平台拉取当前告警。"
+                      title="6. 告警查询"
+                      description="支持按设备、状态、严重级别、规则等条件筛选；不传设备时返回授权范围内的告警。"
                       code={ALERT_QUERY_EXAMPLE}
                     />
                   </div>
@@ -1738,15 +1750,15 @@ export default function OpenAccessPage() {
                       </>
                     }
                   />
-                  <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="mx-auto max-w-4xl space-y-4">
                     <UsageCodeBlock
-                      title="接收方需要关注的请求头"
+                      title="1. 接收方需要关注的请求头"
                       description="配置了 secret 时才会带 X-IOT-Signature，用于验签。"
                       code={WEBHOOK_HEADER_EXAMPLE}
                     />
                     <UsageCodeBlock
-                      title="Webhook 推送体示例"
-                      description="命令应答事件会额外包含 command 对象；data 字段内容随协议解析结果变化。"
+                      title="2. Webhook 推送体示例"
+                      description="命令下发、命令应答事件会额外包含 command 对象；data 字段内容随协议解析结果变化。"
                       code={WEBHOOK_PAYLOAD_EXAMPLE}
                     />
                   </div>

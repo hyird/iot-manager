@@ -6,6 +6,7 @@
 #include "common/utils/ControllerMacros.hpp"
 #include "common/utils/Pagination.hpp"
 #include "common/utils/Response.hpp"
+#include "common/utils/StringUtils.hpp"
 #include "common/utils/ValidatorHelper.hpp"
 #include "modules/device/Device.Service.hpp"
 
@@ -133,6 +134,88 @@ private:
         throw NotFoundException("设备不存在");
     }
 
+    static std::string toLowerCopy(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return value;
+    }
+
+    static bool matchesDeviceKeyword(
+        const DeviceCache::CachedDevice& device,
+        const std::string& normalizedKeyword
+    ) {
+        if (normalizedKeyword.empty()) {
+            return true;
+        }
+
+        auto containsKeyword = [&normalizedKeyword](const std::string& value) {
+            return !value.empty() && toLowerCopy(value).find(normalizedKeyword) != std::string::npos;
+        };
+
+        return containsKeyword(std::to_string(device.id))
+            || containsKeyword(device.name)
+            || containsKeyword(device.deviceCode)
+            || containsKeyword(device.protocolName)
+            || containsKeyword(device.protocolType)
+            || containsKeyword(device.linkName);
+    }
+
+    static Json::Value buildOpenDeviceListItem(
+        const DeviceCache::CachedDevice& device,
+        const OpenAccess::AccessKeySession& session
+    ) {
+        Json::Value item(Json::objectValue);
+        item["id"] = device.id;
+        item["name"] = device.name;
+        item["deviceCode"] = device.deviceCode.empty()
+            ? Json::nullValue
+            : Json::Value(device.deviceCode);
+        item["status"] = device.status;
+        item["typeName"] = device.protocolName.empty()
+            ? Json::nullValue
+            : Json::Value(device.protocolName);
+        item["protocolName"] = device.protocolName.empty()
+            ? Json::nullValue
+            : Json::Value(device.protocolName);
+        item["protocolType"] = device.protocolType.empty()
+            ? Json::nullValue
+            : Json::Value(device.protocolType);
+        item["linkId"] = device.linkId > 0
+            ? Json::Value(device.linkId)
+            : Json::Value(Json::nullValue);
+        item["linkName"] = device.linkName.empty()
+            ? Json::nullValue
+            : Json::Value(device.linkName);
+        item["groupId"] = device.groupId > 0
+            ? Json::Value(device.groupId)
+            : Json::Value(Json::nullValue);
+        item["remoteControl"] = device.remoteControl;
+        item["onlineTimeout"] = device.onlineTimeout;
+        item["timezone"] = device.timezone.empty()
+            ? Json::nullValue
+            : Json::Value(device.timezone);
+        item["remark"] = device.remark.empty()
+            ? Json::nullValue
+            : Json::Value(device.remark);
+        item["createdAt"] = device.createdAt.empty()
+            ? Json::nullValue
+            : Json::Value(device.createdAt);
+        item["commandReady"] = session.allowCommand
+            && device.status == "enabled"
+            && device.remoteControl
+            && device.linkId > 0
+            && !(device.protocolType == "SL651" && device.deviceCode.empty());
+
+        Json::Value permissions(Json::objectValue);
+        permissions["allowRealtime"] = session.allowRealtime;
+        permissions["allowHistory"] = session.allowHistory;
+        permissions["allowCommand"] = session.allowCommand;
+        permissions["allowAlert"] = session.allowAlert;
+        item["permissions"] = std::move(permissions);
+        return item;
+    }
+
 public:
     using enum drogon::HttpMethod;
 
@@ -147,6 +230,7 @@ public:
     ADD_METHOD_TO(OpenAccessController::updateWebhook, "/api/open-webhook/{id}", Put, "AuthFilter");
     ADD_METHOD_TO(OpenAccessController::removeWebhook, "/api/open-webhook/{id}", Delete, "AuthFilter");
     ADD_METHOD_TO(OpenAccessController::listAccessLogs, "/api/open-access-log", Get, "AuthFilter");
+    ADD_METHOD_TO(OpenAccessController::openDeviceList, "/open-api/device/list", Get);
     ADD_METHOD_TO(OpenAccessController::openRealtime, "/open-api/device/realtime", Get);
     ADD_METHOD_TO(OpenAccessController::openHistory, "/open-api/device/history", Get);
     ADD_METHOD_TO(OpenAccessController::openCommand, "/open-api/device/command", Post);
@@ -182,7 +266,7 @@ public:
 
         auto json = ControllerUtils::requireJson(req);
 
-        co_await repository_.updateAccessKey(id, *json);
+        co_await repository_.updateAccessKey(id, *json, ControllerUtils::getUserId(req));
         co_return Response::updated("更新成功");
     }
 
@@ -280,6 +364,88 @@ public:
         co_return Pagination::buildResponse(items, total, page.page, page.pageSize);
     }
 
+    Task<HttpResponsePtr> openDeviceList(HttpRequestPtr req) {
+        std::string rawAccessKey = OpenAccess::extractAccessKey(req);
+        std::string clientIp = OpenAccess::resolveClientIp(req);
+        int logAccessKeyId = 0;
+        auto page = Pagination::fromRequest(req);
+        std::string keyword = OpenAccess::trim(req->getParameter("keyword"));
+
+        Json::Value requestPayload;
+        requestPayload["keyword"] = keyword;
+        requestPayload["page"] = page.page;
+        requestPayload["pageSize"] = page.pageSize;
+        std::exception_ptr capturedError;
+        std::string errorMessage;
+
+        try {
+            auto session = co_await authenticateOpenRequest(req, false, false, false, false);
+            logAccessKeyId = session.id;
+
+            auto devices = co_await DeviceCache::instance().getDevices();
+            std::string normalizedKeyword = toLowerCopy(keyword);
+
+            Json::Value filtered(Json::arrayValue);
+            for (const auto& device : devices) {
+                if (!session.canAccessDevice(device.id)) continue;
+                if (!matchesDeviceKeyword(device, normalizedKeyword)) continue;
+                filtered.append(buildOpenDeviceListItem(device, session));
+            }
+
+            auto [pagedItems, total] = Pagination::paginate(filtered, page);
+            Json::Value responsePayload;
+            responsePayload["total"] = total;
+            responsePayload["returned"] = static_cast<Json::Int64>(pagedItems.size());
+
+            co_await writeAccessLogSafe(
+                "pull",
+                "device-list",
+                logAccessKeyId,
+                0,
+                "",
+                "success",
+                "GET",
+                "/open-api/device/list",
+                clientIp,
+                200,
+                0,
+                "",
+                "",
+                requestPayload,
+                responsePayload
+            );
+            co_return Pagination::buildResponse(pagedItems, total, page.page, page.pageSize);
+        } catch (const std::exception& e) {
+            errorMessage = e.what();
+            capturedError = std::current_exception();
+        }
+
+        if (capturedError) {
+            if (logAccessKeyId <= 0) {
+                logAccessKeyId = co_await repository_.tryResolveAccessKeyId(rawAccessKey);
+            }
+            co_await writeAccessLogSafe(
+                "pull",
+                "device-list",
+                logAccessKeyId,
+                0,
+                "",
+                "failed",
+                "GET",
+                "/open-api/device/list",
+                clientIp,
+                0,
+                0,
+                "",
+                errorMessage,
+                requestPayload
+            );
+            std::rethrow_exception(capturedError);
+        }
+
+        co_return Response::internalError("请求处理失败");
+    }
+
     Task<HttpResponsePtr> openRealtime(HttpRequestPtr req) {
         std::string rawAccessKey = OpenAccess::extractAccessKey(req);
         std::string clientIp = OpenAccess::resolveClientIp(req);
@@ -300,14 +466,15 @@ public:
             auto session = co_await authenticateOpenRequest(req, true, false);
             logAccessKeyId = session.id;
 
-            ControllerUtils::requireDeviceSelector(code, requestedDeviceId);
-
-            int deviceId = co_await repository_.resolveDeviceId(code, requestedDeviceId);
-            if (deviceId <= 0) {
-                throw NotFoundException("设备不存在");
-            }
-            if (deviceId > 0 && !session.canAccessDevice(deviceId)) {
-                throw ForbiddenException("AccessKey 无权访问该设备");
+            int deviceId = 0;
+            if (!code.empty() || requestedDeviceId > 0) {
+                deviceId = co_await repository_.resolveDeviceId(code, requestedDeviceId);
+                if (deviceId <= 0) {
+                    throw NotFoundException("设备不存在");
+                }
+                if (!session.canAccessDevice(deviceId)) {
+                    throw ForbiddenException("AccessKey 无权访问该设备");
+                }
             }
 
             auto items = co_await deviceService_.listRealtimeForOpenApi();
@@ -385,6 +552,7 @@ public:
         auto page = Pagination::fromRequest(req);
 
         Json::Value requestPayload;
+        requestPayload["code"] = code;
         requestPayload["deviceId"] = requestedDeviceId;
         requestPayload["dataType"] = dataType;
         requestPayload["startTime"] = startTime;
@@ -398,6 +566,10 @@ public:
             auto session = co_await authenticateOpenRequest(req, false, true);
             logAccessKeyId = session.id;
 
+            ControllerUtils::requireNonEmptyString(dataType, "dataType 不能为空");
+            if (dataType != "ELEMENT" && dataType != "IMAGE") {
+                throw ValidationException("dataType 只能为 ELEMENT 或 IMAGE");
+            }
             ControllerUtils::requireDeviceSelector(code, requestedDeviceId);
             ControllerUtils::requireTimeRange(startTime, endTime);
 
@@ -637,14 +809,15 @@ public:
             auto session = co_await authenticateOpenRequest(req, false, false, false, true);
             logAccessKeyId = session.id;
 
-            ControllerUtils::requireDeviceSelector(code, requestedDeviceId);
-
-            int deviceId = co_await repository_.resolveDeviceId(code, requestedDeviceId);
-            if (deviceId <= 0) {
-                throw NotFoundException("设备不存在");
-            }
-            if (deviceId > 0 && !session.canAccessDevice(deviceId)) {
-                throw ForbiddenException("AccessKey 无权访问该设备告警");
+            int deviceId = 0;
+            if (!code.empty() || requestedDeviceId > 0) {
+                deviceId = co_await repository_.resolveDeviceId(code, requestedDeviceId);
+                if (deviceId <= 0) {
+                    throw NotFoundException("设备不存在");
+                }
+                if (!session.canAccessDevice(deviceId)) {
+                    throw ForbiddenException("AccessKey 无权访问该设备告警");
+                }
             }
 
             auto [items, total] = co_await repository_.listAlertRecords(

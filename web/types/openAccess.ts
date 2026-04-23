@@ -8,6 +8,7 @@ export namespace OpenAccess {
   export type EventType =
     | "device.data.reported"
     | "device.image.reported"
+    | "device.command.dispatched"
     | "device.command.responded"
     | "device.alert.triggered"
     | "device.alert.resolved";
@@ -59,6 +60,31 @@ export namespace OpenAccess {
     deviceIds: number[];
     accessKey: string;
     accessKeyPrefix: string;
+  }
+
+  export interface DeviceListItem {
+    id: number;
+    name: string;
+    deviceCode?: string | null;
+    status: string;
+    typeName?: string | null;
+    protocolName?: string | null;
+    protocolType?: string | null;
+    linkId?: number | null;
+    linkName?: string | null;
+    groupId?: number | null;
+    remoteControl: boolean;
+    onlineTimeout: number;
+    timezone?: string | null;
+    remark?: string | null;
+    createdAt?: string | null;
+    commandReady: boolean;
+    permissions: {
+      allowRealtime: boolean;
+      allowHistory: boolean;
+      allowCommand: boolean;
+      allowAlert: boolean;
+    };
   }
 
   export interface WebhookItem {
