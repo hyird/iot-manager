@@ -18,6 +18,8 @@ export namespace GB28181 {
     name: string;
     manufacturer: string;
     online: boolean;
+    ptz_type: number;
+    ptz_capable: boolean;
   }
 
   export interface RecordItem {
@@ -36,6 +38,9 @@ export namespace GB28181 {
     name: string;
     manufacturer: string;
     remote_address: string;
+    remote_ip: string;
+    remote_port: string;
+    registration_source: string;
     online: boolean;
     channels: Channel[];
     records: RecordItem[];

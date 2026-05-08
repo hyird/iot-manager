@@ -9,6 +9,7 @@ struct Channel {
     std::string name;
     std::string manufacturer;
     bool online{false};
+    int ptzType{-1};
 };
 
 struct RecordItem {
@@ -27,6 +28,7 @@ struct Device {
     std::string name;
     std::string manufacturer;
     std::string remoteAddress;
+    std::string registrationSource{"sip"};
     bool online{false};
     std::chrono::system_clock::time_point lastSeen{};
     std::vector<Channel> channels;

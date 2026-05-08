@@ -117,6 +117,21 @@ std::string xmlText(const pugi::xml_node& node, const char* name) {
     return node.child(name).text().as_string();
 }
 
+int xmlInt(const pugi::xml_node& node, const char* name, int fallback = -1) {
+    auto text = xmlText(node, name);
+    if (text.empty()) {
+        text = xmlText(node.child("Info"), name);
+    }
+    if (text.empty()) {
+        return fallback;
+    }
+    try {
+        return std::stoi(text);
+    } catch (...) {
+        return fallback;
+    }
+}
+
 bool statusOnline(const std::string& status) {
     return status == "ON" || status == "ONLINE" || status == "OK";
 }
@@ -642,6 +657,7 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
             channel.name = xmlText(item, "Name");
             channel.manufacturer = xmlText(item, "Manufacturer");
             channel.online = statusOnline(xmlText(item, "Status"));
+            channel.ptzType = xmlInt(item, "PTZType");
             if (!channel.id.empty()) {
                 channels.push_back(std::move(channel));
             }

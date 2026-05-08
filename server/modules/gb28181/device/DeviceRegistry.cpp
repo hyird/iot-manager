@@ -3,7 +3,7 @@
 #include <chrono>
 #include <utility>
 
-void DeviceRegistry::upsertRegistration(const std::string& deviceId, const std::string& remoteAddress) {
+void DeviceRegistry::upsertRegistration(const std::string& deviceId, const std::string& remoteAddress, const std::string& source) {
     std::lock_guard lock(mutex_);
     auto& device = devices_[deviceId];
     device.id = deviceId;
@@ -11,6 +11,7 @@ void DeviceRegistry::upsertRegistration(const std::string& deviceId, const std::
         device.name = deviceId;
     }
     device.remoteAddress = remoteAddress;
+    device.registrationSource = source;
     device.online = true;
     device.lastSeen = std::chrono::system_clock::now();
 }
@@ -23,6 +24,7 @@ void DeviceRegistry::updateKeepalive(const std::string& deviceId, const std::str
         device.name = deviceId;
     }
     device.remoteAddress = remoteAddress;
+    device.registrationSource = "sip";
     device.online = true;
     device.lastSeen = std::chrono::system_clock::now();
 }
@@ -38,6 +40,7 @@ bool DeviceRegistry::updateKeepaliveAndNeedsCatalog(const std::string& deviceId,
         device.name = deviceId;
     }
     device.remoteAddress = remoteAddress;
+    device.registrationSource = "sip";
     device.online = true;
     device.lastSeen = std::chrono::system_clock::now();
     return needsCatalog;

@@ -3,8 +3,6 @@ import {
   ArrowLeftOutlined,
   ArrowRightOutlined,
   ArrowUpOutlined,
-  CameraOutlined,
-  DatabaseOutlined,
   MinusOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
@@ -19,47 +17,44 @@ import {
   Badge,
   Button,
   Card,
-  DatePicker,
   Descriptions,
-  Empty,
   Input,
   Result,
-  Segmented,
+  Select,
   Slider,
   Space,
   Statistic,
   Table,
-  Tabs,
   Tag,
   Tooltip,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import dayjs, { type Dayjs } from "dayjs";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import Hls from "hls.js";
+import mpegts from "mpegts.js";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Endpoint, Events } from "zlmrtc-client";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission } from "@/hooks";
+import {
+  createJessibucaFlvPlayer,
+  type JessibucaFlvPlayer,
+} from "@/lib/gb28181/jessibucaFlvPlayer";
 import {
   useGb28181CatalogQuery,
   useGb28181Devices,
   useGb28181Health,
-  useGb28181MockRegister,
-  useGb28181PlaybackStart,
   useGb28181PreviewStart,
   useGb28181PreviewStop,
   useGb28181Ptz,
-  useGb28181RecordQuery,
-  useGb28181SipConfig,
-  useGb28181Streams,
 } from "@/services";
 import type { GB28181 } from "@/types";
 
-const { RangePicker } = DatePicker;
 const { Text, Title } = Typography;
 
-type WorkMode = "preview" | "playback";
-
-const DEFAULT_MOCK_DEVICE_ID = "34020000001320000001";
+const WEBRTC_FALLBACK_DELAY_MS = 8000;
+const WEBRTC_CODEC_RETRY_MS = 400;
+const WEBRTC_CODEC_RETRY_COUNT = 10;
 
 const PTZ_ACTIONS: Array<{
   action: GB28181.PtzAction;
@@ -74,8 +69,6 @@ const PTZ_ACTIONS: Array<{
   { action: "down", title: "下", icon: <ArrowDownOutlined />, className: "col-start-2" },
 ];
 
-const formatGbTime = (value: Dayjs) => value.format("YYYY-MM-DDTHH:mm:ss");
-
 const onlineTag = (online: boolean) => (
   <Badge status={online ? "processing" : "default"} text={online ? "在线" : "离线"} />
 );
@@ -85,56 +78,512 @@ const displayText = (value?: string | number | null) => {
   return value;
 };
 
-function openExternal(url: string) {
-  window.open(url, "_blank", "noopener,noreferrer");
+const remoteEndpoint = (device?: GB28181.Device) => {
+  if (!device) return "--";
+  const ip = device.remote_ip || device.remote_address;
+  const port = device.remote_port;
+  if (!ip) return "--";
+  return port ? `${ip}:${port}` : ip;
+};
+
+const registrationSourceTag = (source?: string) => {
+  if (source === "mock") {
+    return <Tag color="orange">模拟</Tag>;
+  }
+  return null;
+};
+
+const ptzCapabilityTag = (channel?: GB28181.Channel) => {
+  if (!channel || channel.ptz_type === undefined || channel.ptz_type < 0) {
+    return <Tag>云台未知</Tag>;
+  }
+  return channel.ptz_capable ? <Tag color="green">支持云台</Tag> : <Tag color="red">无云台</Tag>;
+};
+
+type PlaybackCandidate = {
+  label: string;
+  engine: "jessibuca" | "hls" | "mpegts";
+  mediaType?: "flv" | "mpegts";
+  url: string;
+};
+
+type PlayerResources = {
+  hls?: Hls;
+  mpegts?: ReturnType<typeof mpegts.createPlayer>;
+  rtc?: Endpoint;
+  jessibuca?: JessibucaFlvPlayer;
+  fallbackTimer?: number;
+};
+
+const resetVideoElement = (video: HTMLVideoElement) => {
+  video.pause();
+  video.removeAttribute("src");
+  video.srcObject = null;
+  video.load();
+};
+
+const closePlayerResources = (resources: PlayerResources, video?: HTMLVideoElement | null) => {
+  if (resources.fallbackTimer) {
+    window.clearTimeout(resources.fallbackTimer);
+    resources.fallbackTimer = undefined;
+  }
+  resources.hls?.destroy();
+  resources.hls = undefined;
+  resources.mpegts?.destroy();
+  resources.mpegts = undefined;
+  resources.rtc?.close();
+  resources.rtc = undefined;
+  resources.jessibuca?.close();
+  resources.jessibuca = undefined;
+  if (video) resetVideoElement(video);
+};
+
+const buildPlaybackCandidates = (urls: GB28181.PlayUrls): PlaybackCandidate[] => {
+  const candidates: Array<PlaybackCandidate | null> = [
+    urls.http_flv
+      ? { label: "Jessibuca HTTP-FLV", engine: "jessibuca" as const, url: urls.http_flv }
+      : null,
+    urls.ws_flv
+      ? { label: "Jessibuca WS-FLV", engine: "jessibuca" as const, url: urls.ws_flv }
+      : null,
+    urls.hls ? { label: "HLS", engine: "hls" as const, url: urls.hls } : null,
+    urls.http_flv
+      ? {
+          label: "HTTP-FLV",
+          engine: "mpegts" as const,
+          mediaType: "flv" as const,
+          url: urls.http_flv,
+        }
+      : null,
+    urls.ws_flv
+      ? { label: "WS-FLV", engine: "mpegts" as const, mediaType: "flv" as const, url: urls.ws_flv }
+      : null,
+    urls.http_ts
+      ? {
+          label: "HTTP-TS",
+          engine: "mpegts" as const,
+          mediaType: "mpegts" as const,
+          url: urls.http_ts,
+        }
+      : null,
+  ];
+  return candidates.filter((candidate): candidate is PlaybackCandidate => Boolean(candidate?.url));
+};
+
+const AUXILIARY_VIDEO_CODECS = new Set(["RTX", "RED", "ULPFEC", "FLEXFEC-03"]);
+
+type RtcEndpointWithPeerConnection = Endpoint & {
+  pc?: RTCPeerConnection | null;
+};
+
+type RtcStatsRecord = {
+  id?: string;
+  type?: string;
+  kind?: string;
+  mediaType?: string;
+  codecId?: string;
+  mimeType?: string;
+  payloadType?: number;
+  packetsReceived?: number;
+  framesDecoded?: number;
+};
+
+const normalizeVideoCodecName = (value?: string) => {
+  if (!value) return undefined;
+  let codec = value.trim();
+  const mimeMatch = /^video\/([^;\s]+)/i.exec(codec);
+  if (mimeMatch?.[1]) {
+    codec = mimeMatch[1];
+  }
+  codec = codec.split(";")[0].split("/")[0].trim().toUpperCase();
+  if (!codec || AUXILIARY_VIDEO_CODECS.has(codec)) return undefined;
+  if (codec === "HEVC" || codec === "HVC1") return "H265";
+  if (codec === "AVC" || codec === "AVC1") return "H264";
+  return codec;
+};
+
+const parseVideoCodecFromSdp = (sdp?: string) => {
+  if (!sdp) return undefined;
+  const lines = sdp.split(/\r?\n/).map((line) => line.trim());
+  const videoLineIndex = lines.findIndex((line) => line.startsWith("m=video "));
+  if (videoLineIndex < 0) return undefined;
+
+  const payloadTypes = lines[videoLineIndex].split(/\s+/).slice(3);
+  const payloadCodecs = new Map<string, string>();
+  for (let index = videoLineIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.startsWith("m=")) break;
+    const match = /^a=rtpmap:(\d+)\s+([^\s]+)/i.exec(line);
+    const codec = normalizeVideoCodecName(match?.[2]);
+    if (match?.[1] && codec) payloadCodecs.set(match[1], codec);
+  }
+
+  for (const payloadType of payloadTypes) {
+    const codec = payloadCodecs.get(payloadType);
+    if (codec) return codec;
+  }
+  return undefined;
+};
+
+const getEndpointPeerConnection = (endpoint: Endpoint) =>
+  (endpoint as RtcEndpointWithPeerConnection).pc ?? null;
+
+const findWebRtcVideoCodecFromStats = async (pc: RTCPeerConnection) => {
+  try {
+    const report = await pc.getStats();
+    const codecsById = new Map<string, string>();
+    const codecsByPayloadType = new Map<number, string>();
+
+    report.forEach((value: RtcStatsRecord) => {
+      if (value.type !== "codec") return;
+      const codec = normalizeVideoCodecName(value.mimeType);
+      if (!codec) return;
+      if (value.id) codecsById.set(value.id, codec);
+      if (typeof value.payloadType === "number") codecsByPayloadType.set(value.payloadType, codec);
+    });
+
+    let selectedCodecId: string | undefined;
+    let selectedPayloadType: number | undefined;
+    let selectedScore = -1;
+    report.forEach((value: RtcStatsRecord) => {
+      if (value.type !== "inbound-rtp") return;
+      if (value.kind !== "video" && value.mediaType !== "video") return;
+      const score = (value.framesDecoded ?? 0) + (value.packetsReceived ?? 0);
+      if (score < selectedScore) return;
+      selectedScore = score;
+      selectedCodecId = value.codecId;
+      selectedPayloadType = value.payloadType;
+    });
+
+    if (selectedCodecId) {
+      const codec = codecsById.get(selectedCodecId);
+      if (codec) return codec;
+    }
+    if (typeof selectedPayloadType === "number") {
+      return codecsByPayloadType.get(selectedPayloadType);
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+};
+
+const findWebRtcVideoCodec = async (endpoint: Endpoint) => {
+  const pc = getEndpointPeerConnection(endpoint);
+  if (!pc) return undefined;
+  return (
+    (await findWebRtcVideoCodecFromStats(pc)) ?? parseVideoCodecFromSdp(pc.remoteDescription?.sdp)
+  );
+};
+
+const wait = (duration: number) =>
+  new Promise<void>((resolve) => {
+    window.setTimeout(resolve, duration);
+  });
+
+function Gb28181LivePlayer({ session }: { session: GB28181.PreviewStartResult }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const resourcesRef = useRef<PlayerResources>({});
+  const [status, setStatus] = useState("准备播放");
+  const [activeProtocol, setActiveProtocol] = useState<string>();
+  const [surface, setSurface] = useState<"video" | "canvas">("video");
+
+  useEffect(() => {
+    let disposed = false;
+    let fallbackStarted = false;
+    const resources = resourcesRef.current;
+    const playUrls = session.play_urls;
+
+    const playElement = async (label: string, playingStatus = "播放中") => {
+      const video = videoRef.current;
+      if (!video || disposed) return;
+      setActiveProtocol(label);
+      try {
+        await video.play();
+        if (!disposed) setStatus(playingStatus);
+      } catch {
+        if (!disposed) setStatus("已就绪");
+      }
+    };
+
+    const updateWebRtcVideoCodec = async (endpoint: Endpoint) => {
+      for (let attempt = 0; attempt < WEBRTC_CODEC_RETRY_COUNT; attempt += 1) {
+        if (disposed || resources.rtc !== endpoint) return;
+        const codec = await findWebRtcVideoCodec(endpoint);
+        if (disposed || resources.rtc !== endpoint) return;
+        if (codec) {
+          setStatus(codec);
+          return;
+        }
+        if (attempt < WEBRTC_CODEC_RETRY_COUNT - 1) {
+          await wait(WEBRTC_CODEC_RETRY_MS);
+        }
+      }
+      if (!disposed && resources.rtc === endpoint) {
+        setStatus("未知");
+      }
+    };
+
+    const playFallbackCandidate = (candidates: PlaybackCandidate[], index: number) => {
+      const video = videoRef.current;
+      if (!video || disposed) return;
+
+      closePlayerResources(resources, video);
+      const candidate = candidates[index];
+      if (!candidate) {
+        setActiveProtocol(undefined);
+        setStatus("没有可用播放地址");
+        return;
+      }
+
+      const playNext = () => {
+        if (!disposed) playFallbackCandidate(candidates, index + 1);
+      };
+
+      if (candidate.engine === "jessibuca") {
+        const canvas = canvasRef.current;
+        if (!canvas || typeof VideoFrame === "undefined") {
+          playNext();
+          return;
+        }
+
+        setSurface("canvas");
+        setActiveProtocol(candidate.label);
+        setStatus("连接中");
+
+        let firstFrameRendered = false;
+        let player: JessibucaFlvPlayer | undefined;
+        let closed = false;
+        const firstFrameTimer = window.setTimeout(() => {
+          if (!firstFrameRendered) playNext();
+        }, WEBRTC_FALLBACK_DELAY_MS);
+
+        resources.jessibuca = {
+          close: () => {
+            closed = true;
+            window.clearTimeout(firstFrameTimer);
+            player?.close();
+            canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+          },
+        };
+
+        void createJessibucaFlvPlayer({
+          url: candidate.url,
+          canvas,
+          onFirstFrame: () => {
+            if (disposed) return;
+            firstFrameRendered = true;
+            window.clearTimeout(firstFrameTimer);
+            setStatus("播放中");
+          },
+          onError: () => {
+            playNext();
+          },
+        })
+          .then((runtime) => {
+            player = runtime;
+            if (closed || disposed) runtime.close();
+          })
+          .catch(() => {
+            playNext();
+          });
+        return;
+      }
+
+      setSurface("video");
+      if (candidate.engine === "hls") {
+        setActiveProtocol(candidate.label);
+        setStatus("连接中");
+        if (Hls.isSupported()) {
+          const hls = new Hls({
+            backBufferLength: 30,
+            lowLatencyMode: true,
+          });
+          resources.hls = hls;
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+            hls.loadSource(candidate.url);
+          });
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            void playElement(candidate.label);
+          });
+          hls.on(Hls.Events.ERROR, (_event, data) => {
+            if (data.fatal) playNext();
+          });
+          return;
+        }
+
+        if (video.canPlayType("application/vnd.apple.mpegurl")) {
+          video.src = candidate.url;
+          video.addEventListener("loadedmetadata", () => void playElement(candidate.label), {
+            once: true,
+          });
+          video.addEventListener("error", playNext, { once: true });
+          return;
+        }
+
+        playNext();
+        return;
+      }
+
+      if (mpegts.isSupported()) {
+        setActiveProtocol(candidate.label);
+        setStatus("连接中");
+        const player = mpegts.createPlayer(
+          {
+            type: candidate.mediaType ?? "flv",
+            isLive: true,
+            url: candidate.url,
+          },
+          {
+            enableStashBuffer: false,
+            isLive: true,
+            liveBufferLatencyChasing: true,
+            liveBufferLatencyMaxLatency: 1.5,
+            liveBufferLatencyMinRemain: 0.2,
+          }
+        );
+        resources.mpegts = player;
+        player.on(mpegts.Events.ERROR, playNext);
+        player.attachMediaElement(video);
+        player.load();
+        void playElement(candidate.label);
+        return;
+      }
+
+      playNext();
+    };
+
+    const startFallbackPlayback = () => {
+      if (disposed || fallbackStarted) return;
+      fallbackStarted = true;
+      playFallbackCandidate(buildPlaybackCandidates(playUrls), 0);
+    };
+
+    const startWebRtcPlayback = () => {
+      const video = videoRef.current;
+      if (!video || !playUrls.webrtc || typeof RTCPeerConnection === "undefined") {
+        return false;
+      }
+
+      closePlayerResources(resources, video);
+      setActiveProtocol("WebRTC");
+      setSurface("video");
+      setStatus("连接中");
+
+      const endpoint = new Endpoint({
+        element: video,
+        debug: false,
+        zlmsdpUrl: playUrls.webrtc,
+        simulcast: false,
+        useCamera: false,
+        audioEnable: true,
+        videoEnable: true,
+        recvOnly: true,
+        resolution: { w: 0, h: 0 },
+        usedatachannel: false,
+      });
+      resources.rtc = endpoint;
+
+      endpoint.on(Events.WEBRTC_ON_REMOTE_STREAMS, () => {
+        if (resources.fallbackTimer) {
+          window.clearTimeout(resources.fallbackTimer);
+          resources.fallbackTimer = undefined;
+        }
+        void playElement("WebRTC", "获取中").then(() => updateWebRtcVideoCodec(endpoint));
+      });
+      endpoint.on(Events.WEBRTC_NOT_SUPPORT, startFallbackPlayback);
+      endpoint.on(Events.WEBRTC_ICE_CANDIDATE_ERROR, startFallbackPlayback);
+      endpoint.on(Events.WEBRTC_OFFER_ANSWER_EXCHANGE_FAILED, startFallbackPlayback);
+      endpoint.on(Events.WEBRTC_ON_CONNECTION_STATE_CHANGE, (state) => {
+        if (["closed", "disconnected", "failed"].includes(String(state))) {
+          startFallbackPlayback();
+        }
+      });
+
+      resources.fallbackTimer = window.setTimeout(() => {
+        if (video.readyState < video.HAVE_CURRENT_DATA) {
+          startFallbackPlayback();
+        }
+      }, WEBRTC_FALLBACK_DELAY_MS);
+      return true;
+    };
+
+    setStatus("准备播放");
+    if (!startWebRtcPlayback()) {
+      startFallbackPlayback();
+    }
+
+    return () => {
+      disposed = true;
+      closePlayerResources(resources, videoRef.current);
+    };
+  }, [session.play_urls]);
+
+  return (
+    <>
+      <video
+        ref={videoRef}
+        controls
+        autoPlay
+        muted
+        playsInline
+        className={`h-full w-full bg-black ${surface === "video" ? "block" : "hidden"}`}
+      />
+      <canvas
+        ref={canvasRef}
+        className={`h-full w-full bg-black ${surface === "canvas" ? "block" : "hidden"}`}
+      />
+      <div className="absolute left-3 top-3 flex items-center gap-2 rounded bg-black/60 px-2 py-1 text-xs text-white">
+        {activeProtocol && <span>{activeProtocol}</span>}
+        <span>{status}</span>
+      </div>
+    </>
+  );
 }
 
 export default function Gb28181Page() {
   const { message } = App.useApp();
   const canQuery = usePermission("iot:gb28181:query");
   const canControl = usePermission("iot:gb28181:control");
-  const canRecord = usePermission("iot:gb28181:record");
 
   const [keyword, setKeyword] = useState("");
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>();
   const [selectedChannelId, setSelectedChannelId] = useState<string>();
   const [activeSession, setActiveSession] = useState<GB28181.PreviewStartResult | null>(null);
-  const [activeMode, setActiveMode] = useState<WorkMode>("preview");
   const [ptzSpeed, setPtzSpeed] = useState(80);
-  const [mockDeviceId, setMockDeviceId] = useState(DEFAULT_MOCK_DEVICE_ID);
-  const [recordRange, setRecordRange] = useState<[Dayjs, Dayjs]>([
-    dayjs().subtract(1, "day"),
-    dayjs(),
-  ]);
 
   const healthQuery = useGb28181Health({ enabled: canQuery });
-  const sipQuery = useGb28181SipConfig({ enabled: canQuery });
   const devicesQuery = useGb28181Devices({ enabled: canQuery });
-  const streamsQuery = useGb28181Streams({ enabled: canQuery });
 
-  const mockRegisterMutation = useGb28181MockRegister();
   const catalogMutation = useGb28181CatalogQuery();
   const previewStartMutation = useGb28181PreviewStart();
   const previewStopMutation = useGb28181PreviewStop();
   const ptzMutation = useGb28181Ptz();
-  const recordQueryMutation = useGb28181RecordQuery();
-  const playbackStartMutation = useGb28181PlaybackStart();
 
   const devices = devicesQuery.data?.items ?? [];
-  const streams = streamsQuery.data?.items ?? [];
 
   const filteredDevices = useMemo(() => {
     const text = keyword.trim().toLowerCase();
     if (!text) return devices;
     return devices.filter((device) =>
-      [device.id, device.name, device.manufacturer, device.remote_address]
+      [
+        device.id,
+        device.name,
+        device.manufacturer,
+        device.remote_address,
+        device.remote_ip,
+        device.remote_port,
+      ]
         .filter(Boolean)
         .some((item) => item.toLowerCase().includes(text))
     );
   }, [devices, keyword]);
 
   const selectedDevice = useMemo(
-    () => devices.find((device) => device.id === selectedDeviceId),
+    () => devices.find((device) => device.id === selectedDeviceId) ?? devices[0],
     [devices, selectedDeviceId]
   );
 
@@ -147,23 +596,23 @@ export default function Gb28181Page() {
         name: selectedDevice.name || selectedDevice.id,
         manufacturer: selectedDevice.manufacturer,
         online: selectedDevice.online,
+        ptz_type: -1,
+        ptz_capable: false,
       },
     ];
   }, [selectedDevice]);
 
   const selectedChannel = useMemo(
-    () => channels.find((channel) => channel.id === selectedChannelId),
+    () => channels.find((channel) => channel.id === selectedChannelId) ?? channels[0],
     [channels, selectedChannelId]
   );
 
-  const records = useMemo(() => {
-    if (!selectedDevice) return [];
-    if (!selectedChannelId) return selectedDevice.records;
-    const filtered = selectedDevice.records.filter(
-      (record) => record.device_id === selectedChannelId || record.device_id === selectedDevice.id
-    );
-    return filtered.length > 0 ? filtered : selectedDevice.records;
-  }, [selectedDevice, selectedChannelId]);
+  const selectedChannelSupportsPtz =
+    selectedChannel?.ptz_type === undefined ||
+    selectedChannel.ptz_type < 0 ||
+    selectedChannel.ptz_capable;
+  const ptzDisabled =
+    !canControl || !selectedDevice || !selectedChannel || !selectedChannelSupportsPtz;
 
   const stats = useMemo(() => {
     const onlineDevices = devices.filter((device) => device.online).length;
@@ -172,57 +621,20 @@ export default function Gb28181Page() {
       (sum, device) => sum + device.channels.filter((channel) => channel.online).length,
       0
     );
-    const onlineStreams = streams.filter((stream) => stream.online).length;
-    return { onlineDevices, channelCount, onlineChannels, onlineStreams };
-  }, [devices, streams]);
-
-  useEffect(() => {
-    if (devices.length === 0) {
-      setSelectedDeviceId(undefined);
-      return;
-    }
-    if (!selectedDeviceId || !devices.some((device) => device.id === selectedDeviceId)) {
-      setSelectedDeviceId(devices[0].id);
-    }
-  }, [devices, selectedDeviceId]);
-
-  useEffect(() => {
-    if (!selectedDevice) {
-      setSelectedChannelId(undefined);
-      return;
-    }
-    const nextChannelId = channels[0]?.id ?? selectedDevice.id;
-    if (!selectedChannelId || !channels.some((channel) => channel.id === selectedChannelId)) {
-      setSelectedChannelId(nextChannelId);
-    }
-  }, [channels, selectedChannelId, selectedDevice]);
+    return { onlineDevices, channelCount, onlineChannels };
+  }, [devices]);
 
   const refreshAll = () => {
     healthQuery.refetch();
-    sipQuery.refetch();
     devicesQuery.refetch();
-    streamsQuery.refetch();
   };
 
   const currentTarget = () => {
-    if (!selectedDevice || !selectedChannelId) {
+    if (!selectedDevice || !selectedChannel) {
       message.warning("请选择在线设备和通道");
       return null;
     }
-    return { deviceId: selectedDevice.id, channelId: selectedChannelId };
-  };
-
-  const handleMockRegister = () => {
-    const value = mockDeviceId.trim();
-    if (!value) {
-      message.warning("请输入设备国标编号");
-      return;
-    }
-    mockRegisterMutation.mutate(value, {
-      onSuccess: () => {
-        window.setTimeout(() => devicesQuery.refetch(), 300);
-      },
-    });
+    return { deviceId: selectedDevice.id, channelId: selectedChannel.id };
   };
 
   const handleQueryCatalog = () => {
@@ -243,13 +655,11 @@ export default function Gb28181Page() {
     previewStartMutation.mutate(
       {
         ...target,
-        previousSessionId: activeMode === "preview" ? activeSession?.session_id : undefined,
+        previousSessionId: activeSession?.session_id,
       },
       {
         onSuccess: (result) => {
-          setActiveMode("preview");
           setActiveSession(result);
-          window.setTimeout(() => streamsQuery.refetch(), 600);
         },
       }
     );
@@ -265,7 +675,6 @@ export default function Gb28181Page() {
       {
         onSuccess: () => {
           setActiveSession(null);
-          window.setTimeout(() => streamsQuery.refetch(), 600);
         },
       }
     );
@@ -275,43 +684,6 @@ export default function Gb28181Page() {
     const target = currentTarget();
     if (!target) return;
     ptzMutation.mutate({ ...target, action, speed: ptzSpeed });
-  };
-
-  const handleQueryRecords = () => {
-    const target = currentTarget();
-    if (!target) return;
-    recordQueryMutation.mutate(
-      {
-        ...target,
-        startTime: formatGbTime(recordRange[0]),
-        endTime: formatGbTime(recordRange[1]),
-      },
-      {
-        onSuccess: () => {
-          window.setTimeout(() => devicesQuery.refetch(), 1500);
-        },
-      }
-    );
-  };
-
-  const handleStartPlayback = (record?: GB28181.RecordItem) => {
-    const target = currentTarget();
-    if (!target) return;
-    playbackStartMutation.mutate(
-      {
-        deviceId: target.deviceId,
-        channelId: record?.device_id || target.channelId,
-        startTime: record?.start_time || formatGbTime(recordRange[0]),
-        endTime: record?.end_time || formatGbTime(recordRange[1]),
-      },
-      {
-        onSuccess: (result) => {
-          setActiveMode("playback");
-          setActiveSession(result);
-          window.setTimeout(() => streamsQuery.refetch(), 600);
-        },
-      }
-    );
   };
 
   if (!canQuery) {
@@ -334,10 +706,16 @@ export default function Gb28181Page() {
       dataIndex: "name",
       ellipsis: true,
       render: (name: string, record) => (
-        <Space direction="vertical" size={0}>
-          <Text strong>{displayText(name)}</Text>
+        <Space direction="vertical" size={2} className="min-w-0">
+          <Space size={4}>
+            <Text strong>{displayText(name)}</Text>
+            {registrationSourceTag(record.registration_source)}
+          </Space>
           <Text type="secondary" className="text-xs">
             {record.id}
+          </Text>
+          <Text type="secondary" className="text-xs">
+            IP {remoteEndpoint(record)}
           </Text>
         </Space>
       ),
@@ -350,104 +728,10 @@ export default function Gb28181Page() {
     },
   ];
 
-  const channelColumns: ColumnsType<GB28181.Channel> = [
-    {
-      title: "状态",
-      dataIndex: "online",
-      width: 78,
-      render: (online: boolean) => onlineTag(online),
-    },
-    {
-      title: "通道",
-      dataIndex: "name",
-      ellipsis: true,
-      render: (name: string, record) => (
-        <Space direction="vertical" size={0}>
-          <Text strong>{displayText(name)}</Text>
-          <Text type="secondary" className="text-xs">
-            {record.id}
-          </Text>
-        </Space>
-      ),
-    },
-    {
-      title: "操作",
-      width: 80,
-      render: (_, record) => (
-        <Button
-          size="small"
-          type={record.id === selectedChannelId ? "primary" : "default"}
-          onClick={() => setSelectedChannelId(record.id)}
-        >
-          选择
-        </Button>
-      ),
-    },
-  ];
-
-  const recordColumns: ColumnsType<GB28181.RecordItem> = [
-    {
-      title: "录像",
-      dataIndex: "name",
-      ellipsis: true,
-      render: (name: string, record) => (
-        <Space direction="vertical" size={0}>
-          <Text>{displayText(name)}</Text>
-          <Text type="secondary" className="text-xs">
-            {displayText(record.device_id)}
-          </Text>
-        </Space>
-      ),
-    },
-    { title: "开始", dataIndex: "start_time", width: 170 },
-    { title: "结束", dataIndex: "end_time", width: 170 },
-    { title: "类型", dataIndex: "type", width: 90, render: (value: string) => displayText(value) },
-    {
-      title: "操作",
-      width: 90,
-      fixed: "right",
-      render: (_, record) => (
-        <Button
-          size="small"
-          icon={<PlayCircleOutlined />}
-          disabled={!canRecord}
-          loading={playbackStartMutation.isPending}
-          onClick={() => handleStartPlayback(record)}
-        >
-          回放
-        </Button>
-      ),
-    },
-  ];
-
-  const streamColumns: ColumnsType<GB28181.StreamStatus> = [
-    {
-      title: "状态",
-      dataIndex: "online",
-      width: 78,
-      render: (online: boolean) => onlineTag(online),
-    },
-    { title: "流 ID", dataIndex: "stream", ellipsis: true },
-    { title: "应用", dataIndex: "app", width: 90 },
-    { title: "协议", dataIndex: "schema", width: 90 },
-    { title: "读者", dataIndex: "reader_count", width: 80, align: "right" },
-  ];
-
-  const playUrlEntries = activeSession
-    ? [
-        ["HLS", activeSession.play_urls.hls],
-        ["HTTP-TS", activeSession.play_urls.http_ts],
-        ["HTTP-FLV", activeSession.play_urls.http_flv],
-        ["WebRTC", activeSession.play_urls.webrtc],
-        ["RTSP", activeSession.play_urls.rtsp],
-        ["WS-FLV", activeSession.play_urls.ws_flv],
-      ].filter(([, url]) => Boolean(url))
-    : [];
-  const videoSource =
-    activeSession?.play_urls.hls ||
-    activeSession?.play_urls.http_ts ||
-    activeSession?.play_urls.http_flv ||
-    "";
+  const channelOptions = channels.map((channel) => ({
+    label: `${channel.name || channel.id} (${channel.id})`,
+    value: channel.id,
+  }));
 
   const pageHeader = (
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -458,12 +742,6 @@ export default function Gb28181Page() {
         <Tag color={healthQuery.isError ? "error" : "success"}>
           {healthQuery.isError ? "模块异常" : healthQuery.data?.status || "运行中"}
         </Tag>
-        <Text type="secondary">
-          SIP {displayText(sipQuery.data?.id)} @ {displayText(sipQuery.data?.domain)}
-        </Text>
-        <Text type="secondary">
-          {displayText(sipQuery.data?.host)}:{displayText(sipQuery.data?.port)}
-        </Text>
       </Space>
       <Space wrap>
         <Input.Search
@@ -500,15 +778,15 @@ export default function Gb28181Page() {
           >
             <div className="grid grid-cols-2 gap-3 mb-3">
               <Statistic
-                title="通道在线"
-                value={stats.onlineChannels}
-                suffix={`/ ${stats.channelCount}`}
+                title="设备在线"
+                value={stats.onlineDevices}
+                suffix={`/ ${devices.length}`}
                 valueStyle={{ fontSize: 20 }}
               />
               <Statistic
-                title="活动流"
-                value={stats.onlineStreams}
-                suffix={`/ ${streams.length}`}
+                title="通道在线"
+                value={stats.onlineChannels}
+                suffix={`/ ${stats.channelCount}`}
                 valueStyle={{ fontSize: 20 }}
               />
             </div>
@@ -520,72 +798,14 @@ export default function Gb28181Page() {
               loading={devicesQuery.isLoading}
               pagination={{ pageSize: 10, size: "small" }}
               onRow={(record) => ({
-                onClick: () => setSelectedDeviceId(record.id),
+                onClick: () => {
+                  setSelectedDeviceId(record.id);
+                  setSelectedChannelId(undefined);
+                },
                 className:
-                  record.id === selectedDeviceId ? "cursor-pointer bg-blue-50" : "cursor-pointer",
+                  record.id === selectedDevice?.id ? "cursor-pointer bg-blue-50" : "cursor-pointer",
               })}
             />
-
-            <div className="mt-3">
-              <Text type="secondary" className="text-xs">
-                模拟设备
-              </Text>
-              <Space.Compact block className="mt-1">
-                <Input
-                  size="small"
-                  value={mockDeviceId}
-                  disabled={!canControl}
-                  onChange={(event) => setMockDeviceId(event.target.value)}
-                />
-                <Button
-                  size="small"
-                  icon={<PlusOutlined />}
-                  disabled={!canControl}
-                  loading={mockRegisterMutation.isPending}
-                  onClick={handleMockRegister}
-                >
-                  写入
-                </Button>
-              </Space.Compact>
-            </div>
-          </Card>
-
-          <Card
-            size="small"
-            title={
-              <Space>
-                <CameraOutlined />
-                通道
-              </Space>
-            }
-            extra={
-              <Button
-                size="small"
-                icon={<SendOutlined />}
-                disabled={!selectedDevice || !canControl}
-                loading={catalogMutation.isPending}
-                onClick={handleQueryCatalog}
-              >
-                目录查询
-              </Button>
-            }
-          >
-            {selectedDevice ? (
-              <Table
-                rowKey="id"
-                size="small"
-                columns={channelColumns}
-                dataSource={channels}
-                pagination={{ pageSize: 5, size: "small" }}
-                onRow={(record) => ({
-                  onClick: () => setSelectedChannelId(record.id),
-                  className:
-                    record.id === selectedChannelId ? "cursor-pointer bg-blue-50" : "cursor-pointer",
-                })}
-              />
-            ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            )}
           </Card>
         </div>
 
@@ -593,15 +813,32 @@ export default function Gb28181Page() {
           <Card
             size="small"
             title={
-              <Space>
+              <Space wrap>
                 <PlayCircleOutlined />
-                {activeMode === "playback" ? "录像回放" : "实时预览"}
+                实时预览
                 {selectedDevice && <Tag>{selectedDevice.name || selectedDevice.id}</Tag>}
-                {selectedChannel && <Tag color="blue">{selectedChannel.name || selectedChannel.id}</Tag>}
+                {ptzCapabilityTag(selectedChannel)}
+                <Select
+                  size="small"
+                  value={selectedChannel?.id}
+                  placeholder="选择通道"
+                  options={channelOptions}
+                  disabled={!selectedDevice}
+                  className="min-w-[260px]"
+                  onChange={setSelectedChannelId}
+                />
               </Space>
             }
             extra={
               <Space wrap>
+                <Button
+                  icon={<SendOutlined />}
+                  disabled={!selectedDevice || !canControl}
+                  loading={catalogMutation.isPending}
+                  onClick={handleQueryCatalog}
+                >
+                  目录查询
+                </Button>
                 <Button
                   type="primary"
                   icon={<PlayCircleOutlined />}
@@ -623,34 +860,30 @@ export default function Gb28181Page() {
               </Space>
             }
           >
-            <div className="aspect-video bg-black rounded overflow-hidden">
-              {activeSession ? (
-                <video
-                  key={videoSource}
-                  src={videoSource}
-                  controls
-                  autoPlay
-                  muted
-                  className="w-full h-full"
-                />
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center text-white/70">
-                  <VideoCameraOutlined className="text-5xl mb-3" />
-                  <Text className="!text-white/80">
-                    {selectedDevice
-                      ? `${selectedDevice.name || selectedDevice.id} / ${selectedChannel?.name || selectedChannel?.id || "未选择通道"}`
-                      : "请选择设备和通道"}
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_280px] gap-4 items-start">
+              <div className="relative aspect-video bg-black rounded overflow-hidden">
+                {activeSession ? (
+                  <Gb28181LivePlayer key={activeSession.session_id} session={activeSession} />
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-white/70">
+                    <VideoCameraOutlined className="text-5xl mb-3" />
+                    <Text className="!text-white/80">
+                      {selectedDevice
+                        ? `${selectedDevice.name || selectedDevice.id} / ${selectedChannel?.name || selectedChannel?.id || "未选择通道"}`
+                        : "请选择设备和通道"}
+                    </Text>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-4 xl:border-l xl:pl-4">
+                <div className="flex items-center justify-between">
+                  <Text strong>云台</Text>
+                  <Text type="secondary" className="text-xs">
+                    速度 {ptzSpeed}
                   </Text>
                 </div>
-              )}
-            </div>
-          </Card>
-
-          <div className="grid grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)] gap-4">
-            <Card size="small" title="云台">
-              <div className="space-y-4">
                 <div>
-                  <Text type="secondary">速度</Text>
                   <Slider
                     min={1}
                     max={255}
@@ -664,7 +897,7 @@ export default function Gb28181Page() {
                       <Button
                         className={item.className}
                         icon={item.icon}
-                        disabled={!canControl}
+                        disabled={ptzDisabled}
                         loading={ptzMutation.isPending}
                         onClick={() => handlePtz(item.action)}
                       />
@@ -674,7 +907,7 @@ export default function Gb28181Page() {
                 <Space.Compact block>
                   <Button
                     icon={<PlusOutlined />}
-                    disabled={!canControl}
+                    disabled={ptzDisabled}
                     loading={ptzMutation.isPending}
                     onClick={() => handlePtz("zoomin")}
                   >
@@ -682,7 +915,7 @@ export default function Gb28181Page() {
                   </Button>
                   <Button
                     icon={<MinusOutlined />}
-                    disabled={!canControl}
+                    disabled={ptzDisabled}
                     loading={ptzMutation.isPending}
                     onClick={() => handlePtz("zoomout")}
                   >
@@ -690,159 +923,30 @@ export default function Gb28181Page() {
                   </Button>
                 </Space.Compact>
               </div>
-            </Card>
+            </div>
+          </Card>
 
-            <Card size="small" title="当前会话">
-              <Descriptions size="small" column={{ xs: 1, lg: 2 }}>
-                <Descriptions.Item label="设备">{displayText(selectedDevice?.id)}</Descriptions.Item>
-                <Descriptions.Item label="通道">{displayText(selectedChannel?.id)}</Descriptions.Item>
-                <Descriptions.Item label="远端">{displayText(selectedDevice?.remote_address)}</Descriptions.Item>
-                <Descriptions.Item label="状态">
-                  {selectedDevice ? onlineTag(selectedDevice.online) : "--"}
-                </Descriptions.Item>
-                <Descriptions.Item label="会话">
-                  {displayText(activeSession?.session_id)}
-                </Descriptions.Item>
-                <Descriptions.Item label="RTP">
-                  {displayText(activeSession?.rtp_port)}
-                </Descriptions.Item>
-              </Descriptions>
-              <div className="mt-3 space-y-2">
-                {playUrlEntries.length > 0 ? (
-                  playUrlEntries.map(([label, url]) => (
-                    <div key={label} className="flex items-center gap-2 min-w-0">
-                      <Tag className="w-[72px] text-center">{label}</Tag>
-                      <Text copyable={{ text: url }} ellipsis className="flex-1">
-                        {url}
-                      </Text>
-                      <Button size="small" onClick={() => openExternal(url)}>
-                        打开
-                      </Button>
-                    </div>
-                  ))
-                ) : (
-                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无播放地址" />
-                )}
-              </div>
-            </Card>
-          </div>
-
-          <Tabs
-            size="small"
-            items={[
-              {
-                key: "records",
-                label: "录像",
-                children: (
-                  <Card
-                    size="small"
-                    title={
-                      <Space>
-                        <DatabaseOutlined />
-                        录像查询
-                      </Space>
-                    }
-                    extra={
-                      <Space wrap>
-                        <RangePicker
-                          showTime
-                          allowClear={false}
-                          value={recordRange}
-                          onChange={(values) => {
-                            if (values?.[0] && values[1]) {
-                              setRecordRange([values[0], values[1]]);
-                            }
-                          }}
-                        />
-                        <Button
-                          icon={<SendOutlined />}
-                          disabled={!canRecord}
-                          loading={recordQueryMutation.isPending}
-                          onClick={handleQueryRecords}
-                        >
-                          查询
-                        </Button>
-                        <Button
-                          type="primary"
-                          icon={<PlayCircleOutlined />}
-                          disabled={!canRecord}
-                          loading={playbackStartMutation.isPending}
-                          onClick={() => handleStartPlayback()}
-                        >
-                          按时间回放
-                        </Button>
-                      </Space>
-                    }
-                  >
-                    <Table
-                      rowKey={(record, index) =>
-                        `${record.device_id}-${record.start_time}-${record.end_time}-${index}`
-                      }
-                      size="small"
-                      columns={recordColumns}
-                      dataSource={records}
-                      pagination={{ pageSize: 8, size: "small" }}
-                      scroll={{ x: 760 }}
-                    />
-                  </Card>
-                ),
-              },
-              {
-                key: "streams",
-                label: "流状态",
-                children: (
-                  <Card size="small" title="ZLM 流状态">
-                    <Table
-                      rowKey={(record) => `${record.app}-${record.stream}-${record.schema}`}
-                      size="small"
-                      columns={streamColumns}
-                      dataSource={streams}
-                      loading={streamsQuery.isLoading}
-                      pagination={{ pageSize: 10, size: "small" }}
-                    />
-                  </Card>
-                ),
-              },
-              {
-                key: "config",
-                label: "配置",
-                children: (
-                  <Card size="small" title="SIP 配置">
-                    <Descriptions size="small" bordered column={{ xs: 1, md: 2 }}>
-                      <Descriptions.Item label="服务">
-                        {displayText(healthQuery.data?.service)}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="状态">
-                        {healthQuery.isError ? "异常" : displayText(healthQuery.data?.status)}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="域">
-                        {displayText(sipQuery.data?.domain)}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="国标 ID">
-                        {displayText(sipQuery.data?.id)}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="监听地址">
-                        {displayText(sipQuery.data?.host)}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="端口">
-                        {displayText(sipQuery.data?.port)}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="公网 IP">
-                        {displayText(sipQuery.data?.public_ip)}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="传输">
-                        <Segmented
-                          size="small"
-                          value={String(displayText(sipQuery.data?.transport)).toUpperCase()}
-                          options={[String(displayText(sipQuery.data?.transport)).toUpperCase()]}
-                        />
-                      </Descriptions.Item>
-                    </Descriptions>
-                  </Card>
-                ),
-              },
-            ]}
-          />
+          <Card size="small" title="当前会话">
+            <Descriptions size="small" column={{ xs: 1, lg: 2 }}>
+              <Descriptions.Item label="设备">{displayText(selectedDevice?.id)}</Descriptions.Item>
+              <Descriptions.Item label="通道">{displayText(selectedChannel?.id)}</Descriptions.Item>
+              <Descriptions.Item label="云台">
+                {ptzCapabilityTag(selectedChannel)}
+              </Descriptions.Item>
+              <Descriptions.Item label="设备 IP">
+                {remoteEndpoint(selectedDevice)}
+              </Descriptions.Item>
+              <Descriptions.Item label="状态">
+                {selectedDevice ? onlineTag(selectedDevice.online) : "--"}
+              </Descriptions.Item>
+              <Descriptions.Item label="会话">
+                {displayText(activeSession?.session_id)}
+              </Descriptions.Item>
+              <Descriptions.Item label="RTP">
+                {displayText(activeSession?.rtp_port)}
+              </Descriptions.Item>
+            </Descriptions>
+          </Card>
         </div>
       </div>
     </PageContainer>

@@ -33,6 +33,22 @@ bool jsonBoolish(const boost::json::object& object, const char* key, bool fallba
     return fallback;
 }
 
+std::string remoteIp(const std::string& remoteAddress) {
+    const auto colon = remoteAddress.rfind(':');
+    if (colon == std::string::npos) {
+        return remoteAddress;
+    }
+    return remoteAddress.substr(0, colon);
+}
+
+std::string remotePort(const std::string& remoteAddress) {
+    const auto colon = remoteAddress.rfind(':');
+    if (colon == std::string::npos || colon + 1 >= remoteAddress.size()) {
+        return {};
+    }
+    return remoteAddress.substr(colon + 1);
+}
+
 boost::json::object deviceToJson(const Device& device) {
     boost::json::array channels;
     for (const auto& channel : device.channels) {
@@ -41,6 +57,8 @@ boost::json::object deviceToJson(const Device& device) {
             {"name", channel.name},
             {"manufacturer", channel.manufacturer},
             {"online", channel.online},
+            {"ptz_type", channel.ptzType},
+            {"ptz_capable", channel.ptzType > 0},
         });
     }
     boost::json::array records;
@@ -62,6 +80,9 @@ boost::json::object deviceToJson(const Device& device) {
         {"name", device.name},
         {"manufacturer", device.manufacturer},
         {"remote_address", device.remoteAddress},
+        {"remote_ip", remoteIp(device.remoteAddress)},
+        {"remote_port", remotePort(device.remoteAddress)},
+        {"registration_source", device.registrationSource},
         {"online", device.online},
         {"channels", channels},
         {"records", records},
@@ -141,9 +162,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
             if (!deviceRegistry_.visitDevice(deviceId, [&](const Device& existing) {
                     device = deviceToJson(existing);
                 })) {
-                auto response = jsonResponse({{"error", "device_not_found"}});
-                response->setStatusCode(drogon::k404NotFound);
-                callback(response);
+                callback(jsonNotFound("设备不存在"));
                 return;
             }
             callback(jsonResponse(device));
@@ -157,7 +176,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
             if (deviceId.empty()) {
                 deviceId = "34020000001320000001";
             }
-            deviceRegistry_.upsertRegistration(deviceId, request->peerAddr().toIpPort());
+            deviceRegistry_.upsertRegistration(deviceId, request->peerAddr().toIpPort(), "mock");
             callback(jsonResponse({{"registered", true}, {"device_id", deviceId}}));
         },
         {drogon::Post});
@@ -167,9 +186,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
         [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& deviceId) {
             const auto sent = sipServer_.queryCatalog(deviceId);
             if (!sent) {
-                auto response = jsonResponse({{"error", "device_not_online"}});
-                response->setStatusCode(drogon::k404NotFound);
-                callback(response);
+                callback(jsonNotFound("设备不在线"));
                 return;
             }
             callback(jsonResponse({{"sent", true}, {"device_id", deviceId}}));
@@ -182,9 +199,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
             const auto previousSessionId = request->getParameter("previous_session_id");
             const auto result = sipServer_.startPreview(deviceId, channelId);
             if (!result.has_value()) {
-                auto response = jsonResponse({{"error", "device_or_channel_not_available"}});
-                response->setStatusCode(drogon::k404NotFound);
-                callback(response);
+                callback(jsonNotFound("设备或通道不可用"));
                 return;
             }
             if (!previousSessionId.empty() && previousSessionId != result->sessionId) {
@@ -220,9 +235,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
             }
             const auto sent = sipServer_.sendPtzControl(deviceId, channelId, action, speed);
             if (!sent) {
-                auto response = jsonResponse({{"error", "device_or_channel_not_available"}});
-                response->setStatusCode(drogon::k404NotFound);
-                callback(response);
+                callback(jsonNotFound("设备或通道不可用"));
                 return;
             }
             callback(jsonResponse({{"sent", true}, {"action", action}, {"speed", speed}}));
@@ -235,16 +248,12 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
             const auto startTime = request->getParameter("start_time");
             const auto endTime = request->getParameter("end_time");
             if (startTime.empty() || endTime.empty()) {
-                auto response = jsonResponse({{"error", "missing_time_range"}});
-                response->setStatusCode(drogon::k400BadRequest);
-                callback(response);
+                callback(jsonBadRequest("缺少时间范围"));
                 return;
             }
             const auto sent = sipServer_.queryRecords(deviceId, channelId, startTime, endTime);
             if (!sent) {
-                auto response = jsonResponse({{"error", "device_or_channel_not_available"}});
-                response->setStatusCode(drogon::k404NotFound);
-                callback(response);
+                callback(jsonNotFound("设备或通道不可用"));
                 return;
             }
             callback(jsonResponse({{"sent", true}, {"device_id", deviceId}, {"channel_id", channelId}}));
@@ -257,16 +266,12 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
             const auto startTime = request->getParameter("start_time");
             const auto endTime = request->getParameter("end_time");
             if (startTime.empty() || endTime.empty()) {
-                auto response = jsonResponse({{"error", "missing_time_range"}});
-                response->setStatusCode(drogon::k400BadRequest);
-                callback(response);
+                callback(jsonBadRequest("缺少时间范围"));
                 return;
             }
             const auto result = sipServer_.startPlayback(deviceId, channelId, startTime, endTime);
             if (!result.has_value()) {
-                auto response = jsonResponse({{"error", "device_or_channel_not_available"}});
-                response->setStatusCode(drogon::k404NotFound);
-                callback(response);
+                callback(jsonNotFound("设备或通道不可用"));
                 return;
             }
             callback(jsonResponse({
@@ -305,9 +310,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
         [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& sessionId) {
             const auto result = sipServer_.stopPreview(sessionId);
             if (!result.has_value()) {
-                auto response = jsonResponse({{"error", "preview_session_not_found"}});
-                response->setStatusCode(drogon::k404NotFound);
-                callback(response);
+                callback(jsonNotFound("预览会话不存在"));
                 return;
             }
             callback(jsonResponse({
@@ -325,9 +328,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
         [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& streamId) {
             const auto stream = streamRegistry_.findStream(streamId);
             if (!stream.has_value()) {
-                auto response = jsonResponse({{"error", "stream_not_found"}});
-                response->setStatusCode(drogon::k404NotFound);
-                callback(response);
+                callback(jsonNotFound("流不存在"));
                 return;
             }
             callback(jsonResponse(streamToJson(*stream)));
@@ -351,7 +352,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                     LOG_INFO << "ZLM stream changed, stream=" << stream << ", online=" << online;
                 }
             }
-            callback(jsonResponse({{"code", 0}}));
+            callback(jsonBody({{"code", 0}}));
         },
         {drogon::Post});
 
@@ -370,7 +371,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                     LOG_INFO << "ZLM stream none reader, stream=" << stream;
                 }
             }
-            callback(jsonResponse({{"code", 0}, {"close", false}}));
+            callback(jsonBody({{"code", 0}, {"close", false}}));
         },
         {drogon::Post});
 }
