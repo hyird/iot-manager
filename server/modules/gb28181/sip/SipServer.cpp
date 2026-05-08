@@ -704,19 +704,19 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
 }
 
 bool SipServer::queryCatalog(const std::string& deviceId) {
-    const auto device = deviceRegistry_.findDevice(deviceId);
-    if (!device.has_value() || !device->online || device->remoteAddress.empty()) {
+    const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
+    if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
         return false;
     }
 
-    const auto colon = device->remoteAddress.rfind(':');
+    const auto colon = route->remoteAddress.rfind(':');
     if (colon == std::string::npos) {
         return false;
     }
 
-    const auto host = device->remoteAddress.substr(0, colon);
-    const auto port = static_cast<unsigned short>(std::stoi(device->remoteAddress.substr(colon + 1)));
-    auto remote = peerFromAddress(device->remoteAddress);
+    const auto host = route->remoteAddress.substr(0, colon);
+    const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
+    auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
         return false;
     }
@@ -754,19 +754,19 @@ bool SipServer::queryCatalog(const std::string& deviceId) {
 }
 
 bool SipServer::queryRecords(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
-    const auto device = deviceRegistry_.findDevice(deviceId);
-    if (!device.has_value() || !device->online || device->remoteAddress.empty()) {
+    const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
+    if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
         return false;
     }
 
-    const auto colon = device->remoteAddress.rfind(':');
+    const auto colon = route->remoteAddress.rfind(':');
     if (colon == std::string::npos) {
         return false;
     }
 
-    const auto host = device->remoteAddress.substr(0, colon);
-    const auto port = static_cast<unsigned short>(std::stoi(device->remoteAddress.substr(colon + 1)));
-    auto remote = peerFromAddress(device->remoteAddress);
+    const auto host = route->remoteAddress.substr(0, colon);
+    const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
+    auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
         return false;
     }
@@ -812,19 +812,19 @@ bool SipServer::queryRecords(const std::string& deviceId, const std::string& cha
 }
 
 bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& channelId, const std::string& action, uint8_t speed) {
-    const auto device = deviceRegistry_.findDevice(deviceId);
-    if (!device.has_value() || !device->online || device->remoteAddress.empty()) {
+    const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
+    if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
         return false;
     }
 
-    const auto colon = device->remoteAddress.rfind(':');
+    const auto colon = route->remoteAddress.rfind(':');
     if (colon == std::string::npos) {
         return false;
     }
 
-    const auto host = device->remoteAddress.substr(0, colon);
-    const auto port = static_cast<unsigned short>(std::stoi(device->remoteAddress.substr(colon + 1)));
-    auto remote = peerFromAddress(device->remoteAddress);
+    const auto host = route->remoteAddress.substr(0, colon);
+    const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
+    auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
         return false;
     }
@@ -866,26 +866,22 @@ bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& c
 }
 
 std::optional<SipServer::PreviewStartResult> SipServer::startPreview(const std::string& deviceId, const std::string& channelId) {
-    const auto device = deviceRegistry_.findDevice(deviceId);
-    if (!device.has_value() || !device->online || device->remoteAddress.empty()) {
+    const auto route = deviceRegistry_.findRouteSnapshot(deviceId, channelId);
+    if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
+        return std::nullopt;
+    }
+    if (route->hasChannels && !route->channelExists) {
         return std::nullopt;
     }
 
-    const auto channelExists = std::any_of(device->channels.begin(), device->channels.end(), [&](const Channel& channel) {
-        return channel.id == channelId;
-    });
-    if (!device->channels.empty() && !channelExists) {
-        return std::nullopt;
-    }
-
-    const auto colon = device->remoteAddress.rfind(':');
+    const auto colon = route->remoteAddress.rfind(':');
     if (colon == std::string::npos) {
         return std::nullopt;
     }
 
-    const auto host = device->remoteAddress.substr(0, colon);
-    const auto port = static_cast<unsigned short>(std::stoi(device->remoteAddress.substr(colon + 1)));
-    auto remote = peerFromAddress(device->remoteAddress);
+    const auto host = route->remoteAddress.substr(0, colon);
+    const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
+    auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
         return std::nullopt;
     }
@@ -1018,19 +1014,19 @@ void SipServer::markStreamOnline(const std::string& streamId, bool online) {
 }
 
 std::optional<SipServer::PreviewStartResult> SipServer::startPlayback(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
-    const auto device = deviceRegistry_.findDevice(deviceId);
-    if (!device.has_value() || !device->online || device->remoteAddress.empty()) {
+    const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
+    if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
         return std::nullopt;
     }
 
-    const auto colon = device->remoteAddress.rfind(':');
+    const auto colon = route->remoteAddress.rfind(':');
     if (colon == std::string::npos) {
         return std::nullopt;
     }
 
-    const auto host = device->remoteAddress.substr(0, colon);
-    const auto port = static_cast<unsigned short>(std::stoi(device->remoteAddress.substr(colon + 1)));
-    auto remote = peerFromAddress(device->remoteAddress);
+    const auto host = route->remoteAddress.substr(0, colon);
+    const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
+    auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
         return std::nullopt;
     }

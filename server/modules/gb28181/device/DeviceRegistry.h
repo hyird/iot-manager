@@ -9,6 +9,13 @@
 #include <unordered_map>
 #include <vector>
 
+struct DeviceRouteSnapshot {
+    bool online{false};
+    std::string remoteAddress;
+    bool hasChannels{false};
+    bool channelExists{false};
+};
+
 class DeviceRegistry {
 public:
     void upsertRegistration(const std::string& deviceId, const std::string& remoteAddress, const std::string& source = "sip");
@@ -20,6 +27,7 @@ public:
     bool visitDevice(const std::string& deviceId, const std::function<void(const Device&)>& visitor) const;
     std::vector<Device> listDevices() const;
     std::optional<Device> findDevice(const std::string& deviceId) const;
+    std::optional<DeviceRouteSnapshot> findRouteSnapshot(const std::string& deviceId, const std::string& channelId = {}) const;
     void markOffline(const std::string& deviceId);
 
 private:

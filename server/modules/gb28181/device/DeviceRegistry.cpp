@@ -1,5 +1,6 @@
 #include "device/DeviceRegistry.h"
 
+#include <algorithm>
 #include <chrono>
 #include <utility>
 
@@ -104,6 +105,26 @@ std::optional<Device> DeviceRegistry::findDevice(const std::string& deviceId) co
         return std::nullopt;
     }
     return iter->second;
+}
+
+std::optional<DeviceRouteSnapshot> DeviceRegistry::findRouteSnapshot(const std::string& deviceId, const std::string& channelId) const {
+    std::lock_guard lock(mutex_);
+    const auto iter = devices_.find(deviceId);
+    if (iter == devices_.end()) {
+        return std::nullopt;
+    }
+
+    const auto& device = iter->second;
+    DeviceRouteSnapshot snapshot;
+    snapshot.online = device.online;
+    snapshot.remoteAddress = device.remoteAddress;
+    snapshot.hasChannels = !device.channels.empty();
+    if (!channelId.empty()) {
+        snapshot.channelExists = std::any_of(device.channels.begin(), device.channels.end(), [&](const Channel& channel) {
+            return channel.id == channelId;
+        });
+    }
+    return snapshot;
 }
 
 void DeviceRegistry::markOffline(const std::string& deviceId) {

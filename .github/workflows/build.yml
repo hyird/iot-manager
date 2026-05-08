@@ -85,7 +85,9 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
-          -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+          -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -g"
+          -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g"
+          -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -Wl,--build-id=sha1"
 
       # 保存 vcpkg 缓存（Configure 后、Build 前，仅在缓存未命中时保存）
       - name: Save vcpkg cache
@@ -98,10 +100,17 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }} --parallel
 
-      # Strip Release 二进制（先 strip 再 UPX，效果更好）
+      - name: Export Release symbols
+        if: matrix.build_type == 'Release'
+        run: |
+          mkdir -p build/symbols
+          objcopy --only-keep-debug build/release/iot-manager build/symbols/iot-manager.debug
+          objcopy --add-gnu-debuglink=build/symbols/iot-manager.debug build/release/iot-manager
+
+      # Strip Release 二进制（保留 debuglink 后再 UPX）
       - name: Strip binary
         if: matrix.build_type == 'Release'
-        run: strip --strip-all build/release/iot-manager
+        run: strip --strip-debug --strip-unneeded build/release/iot-manager
 
       # UPX 压缩 Release 二进制（最优压缩）
       - name: Compress with UPX
@@ -116,6 +125,13 @@ jobs:
         with:
           name: iot-manager-linux-${{ matrix.build_type }}
           path: build/${{ matrix.build_type == 'Release' && 'release' || 'debug' }}/
+
+      - name: Upload Release symbols
+        if: matrix.build_type == 'Release'
+        uses: actions/upload-artifact@v7
+        with:
+          name: iot-manager-linux-Release-symbols
+          path: build/symbols/
 
   agent-armv7l:
     runs-on: ubuntu-latest
@@ -189,6 +205,9 @@ jobs:
           -DVCPKG_TARGET_TRIPLET=arm-linux
           -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/triplets
           -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${{ github.workspace }}/cmake/toolchain-armv7l.cmake
+          -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -g"
+          -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g"
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--build-id=sha1"
           -DBUILD_FRONTEND=OFF
 
       - name: Save vcpkg cache
@@ -201,8 +220,14 @@ jobs:
       - name: Build agent
         run: cmake --build build --config Release --target iot-edgenode --parallel
 
+      - name: Export Release symbols
+        run: |
+          mkdir -p build/symbols
+          arm-linux-musleabihf-objcopy --only-keep-debug build/release/iot-edgenode build/symbols/iot-edgenode.debug
+          arm-linux-musleabihf-objcopy --add-gnu-debuglink=build/symbols/iot-edgenode.debug build/release/iot-edgenode
+
       - name: Strip binary
-        run: arm-linux-musleabihf-strip --strip-all build/release/iot-edgenode
+        run: arm-linux-musleabihf-strip --strip-debug --strip-unneeded build/release/iot-edgenode
 
       - name: Compress with UPX
         run: |
@@ -215,6 +240,12 @@ jobs:
         with:
           name: iot-edgenode-armv7l-Release
           path: build/release/
+
+      - name: Upload Release symbols
+        uses: actions/upload-artifact@v7
+        with:
+          name: iot-edgenode-armv7l-Release-symbols
+          path: build/symbols/
 
   l2config-windows:
     runs-on: windows-latest
