@@ -1,40 +1,29 @@
 #pragma once
 
-#include "common/database/RedisService.hpp"
+#include <drogon/drogon.h>
+#include <openssl/sha.h>
+
+#include <algorithm>
+#include <chrono>
+#include <iomanip>
+#include <mutex>
+#include <optional>
+#include <shared_mutex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+
 #include "common/utils/Constants.hpp"
 
-/**
- * @brief 认证缓存管理器
- * 管理用户会话、角色权限、菜单缓存、Token 黑名单、登录限流等认证相关缓存
- */
 class AuthCache {
-private:
-    RedisService redis_;
-    int userSessionTtl_;
-    int userMenusTtl_;
-    int userRolesTtl_;
-
-    /** Token 哈希：SHA256 → 64字符 hex，替代完整 JWT 作为 Redis key */
-    static std::string hashToken(const std::string& token) {
-        unsigned char hash[SHA256_DIGEST_LENGTH];
-        SHA256(reinterpret_cast<const unsigned char*>(token.data()),
-               token.size(), hash);
-        std::ostringstream oss;
-        for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-            oss << std::hex << std::setw(2) << std::setfill('0')
-                << static_cast<int>(hash[i]);
-        }
-        return oss.str();
-    }
-
 public:
-    template<typename T = void> using Task = drogon::Task<T>;
+    template<typename T = void>
+    using Task = drogon::Task<T>;
 
     AuthCache()
         : userSessionTtl_(Constants::CACHE_TTL_USER_SESSION)
         , userMenusTtl_(Constants::CACHE_TTL_USER_MENUS)
-        , userRolesTtl_(Constants::CACHE_TTL_USER_ROLES)
-    {
+        , userRolesTtl_(Constants::CACHE_TTL_USER_ROLES) {
         auto config = drogon::app().getCustomConfig();
         if (config.isMember("cache")) {
             userSessionTtl_ = config["cache"].get("user_session_ttl", Constants::CACHE_TTL_USER_SESSION).asInt();
@@ -43,234 +32,245 @@ public:
         }
     }
 
-    // ==================== 用户会话缓存 ====================
-
-    /**
-     * @brief 缓存用户会话信息
-     */
     Task<bool> cacheUserSession(int userId, const Json::Value& userInfo) {
-        std::string key = "session:user:" + std::to_string(userId);
-        co_return co_await redis_.setJson(key, userInfo, userSessionTtl_);
+        co_return setJson("session:user:" + std::to_string(userId), userInfo, userSessionTtl_);
     }
 
-    /**
-     * @brief 获取用户会话信息
-     */
     Task<std::optional<Json::Value>> getUserSession(int userId) {
-        std::string key = "session:user:" + std::to_string(userId);
-        co_return co_await redis_.getJson(key);
+        co_return getJson("session:user:" + std::to_string(userId));
     }
 
-    /**
-     * @brief 删除用户会话（用户登出、权限变更时调用）
-     */
     Task<bool> deleteUserSession(int userId) {
-        std::string key = "session:user:" + std::to_string(userId);
-        co_return co_await redis_.del(key);
+        co_return eraseJson("session:user:" + std::to_string(userId));
     }
 
-    // ==================== 用户角色缓存 ====================
-
-    /**
-     * @brief 缓存用户角色
-     */
     Task<bool> cacheUserRoles(int userId, const Json::Value& roles) {
-        std::string key = "user:roles:" + std::to_string(userId);
-        co_return co_await redis_.setJson(key, roles, userRolesTtl_);
+        co_return setJson("user:roles:" + std::to_string(userId), roles, userRolesTtl_);
     }
 
-    /**
-     * @brief 获取用户角色
-     */
     Task<std::optional<Json::Value>> getUserRoles(int userId) {
-        std::string key = "user:roles:" + std::to_string(userId);
-        co_return co_await redis_.getJson(key);
+        co_return getJson("user:roles:" + std::to_string(userId));
     }
 
-    /**
-     * @brief 删除用户角色缓存
-     */
     Task<bool> deleteUserRoles(int userId) {
-        std::string key = "user:roles:" + std::to_string(userId);
-        co_return co_await redis_.del(key);
+        co_return eraseJson("user:roles:" + std::to_string(userId));
     }
 
-    // ==================== 用户菜单缓存 ====================
-
-    /**
-     * @brief 缓存用户菜单
-     */
     Task<bool> cacheUserMenus(int userId, const Json::Value& menus) {
-        std::string key = "user:menus:" + std::to_string(userId);
-        co_return co_await redis_.setJson(key, menus, userMenusTtl_);
+        co_return setJson("user:menus:" + std::to_string(userId), menus, userMenusTtl_);
     }
 
-    /**
-     * @brief 获取用户菜单
-     */
     Task<std::optional<Json::Value>> getUserMenus(int userId) {
-        std::string key = "user:menus:" + std::to_string(userId);
-        co_return co_await redis_.getJson(key);
+        co_return getJson("user:menus:" + std::to_string(userId));
     }
 
-    /**
-     * @brief 删除用户菜单缓存
-     */
     Task<bool> deleteUserMenus(int userId) {
-        std::string key = "user:menus:" + std::to_string(userId);
-        co_return co_await redis_.del(key);
+        co_return eraseJson("user:menus:" + std::to_string(userId));
     }
 
-    // ==================== 全局菜单缓存 ====================
-
-    /**
-     * @brief 缓存所有菜单（超级管理员使用）
-     */
     Task<bool> cacheAllMenus(const Json::Value& menus) {
-        co_return co_await redis_.setJson("menu:all", menus, userMenusTtl_);
+        co_return setJson("menu:all", menus, userMenusTtl_);
     }
 
-    /**
-     * @brief 获取所有菜单
-     */
     Task<std::optional<Json::Value>> getAllMenus() {
-        co_return co_await redis_.getJson("menu:all");
+        co_return getJson("menu:all");
     }
 
-    /**
-     * @brief 删除所有菜单缓存（菜单更新时调用）
-     */
     Task<bool> deleteAllMenus() {
-        co_return co_await redis_.del("menu:all");
+        co_return eraseJson("menu:all");
     }
 
-    // ==================== Token 黑名单 ====================
-
-    /**
-     * @brief 将 Token 加入黑名单（用于强制登出）
-     * 使用 SHA256 哈希作为 key，避免完整 JWT（200~500字节）占用 Redis 内存
-     */
     Task<bool> blacklistToken(const std::string& token, int ttl) {
-        std::string key = "blacklist:token:" + hashToken(token);
-        co_return co_await redis_.set(key, "1", ttl);
+        if (token.empty() || ttl <= 0) {
+            co_return false;
+        }
+
+        std::unique_lock lock(mutex_);
+        tokenBlacklist_["blacklist:token:" + hashToken(token)] = {makeExpiry(ttl)};
+        co_return true;
     }
 
-    /**
-     * @brief 检查 Token 是否在黑名单中
-     */
     Task<bool> isTokenBlacklisted(const std::string& token) {
-        std::string key = "blacklist:token:" + hashToken(token);
-        co_return co_await redis_.exists(key);
+        if (token.empty()) {
+            co_return false;
+        }
+
+        std::unique_lock lock(mutex_);
+        auto key = "blacklist:token:" + hashToken(token);
+        auto it = tokenBlacklist_.find(key);
+        if (it == tokenBlacklist_.end()) {
+            co_return false;
+        }
+        if (isExpired(it->second.expiresAt)) {
+            tokenBlacklist_.erase(it);
+            co_return false;
+        }
+        co_return true;
     }
 
-    // ==================== 登录失败限流 ====================
-
-    /**
-     * @brief 记录登录失败次数
-     * @return 失败次数
-     */
     Task<int64_t> recordLoginFailure(const std::string& username) {
-        std::string key = "login:failed:" + username;
-        co_return co_await redis_.incrWithExpire(key, Constants::LOGIN_FAILURE_WINDOW);
+        co_return incrementCounter("login:failed:" + username, Constants::LOGIN_FAILURE_WINDOW);
     }
 
-    /**
-     * @brief 清除登录失败记录
-     */
     Task<bool> clearLoginFailure(const std::string& username) {
-        std::string key = "login:failed:" + username;
-        co_return co_await redis_.del(key);
+        co_return eraseCounter("login:failed:" + username);
     }
 
-    /**
-     * @brief 获取登录失败次数
-     */
     Task<int64_t> getLoginFailureCount(const std::string& username) {
-        std::string key = "login:failed:" + username;
-        auto value = co_await redis_.get(key);
-        if (!value) {
-            co_return 0;
-        }
-        try {
-            co_return std::stoll(*value);
-        } catch (const std::exception&) {
-            LOG_WARN << "Invalid login failure count for user " << username << ", resetting";
-            co_return 0;
-        }
+        co_return getCounter("login:failed:" + username);
     }
 
-    // ==================== API 限流 ====================
-
-    /**
-     * @brief 检查 API 访问频率
-     * @return true 表示允许访问，false 表示超过限制
-     */
     Task<bool> checkRateLimit(int userId, const std::string& endpoint, int maxRequests, int windowSeconds) {
-        std::string key = "ratelimit:" + std::to_string(userId) + ":" + endpoint;
-        auto count = co_await redis_.incrWithExpire(key, windowSeconds);
+        auto count = incrementCounter("ratelimit:" + std::to_string(userId) + ":" + endpoint, windowSeconds);
         co_return count <= maxRequests;
     }
 
-    /**
-     * @brief 按 IP 记录登录失败次数（防密码喷洒攻击）
-     */
     Task<int64_t> recordLoginFailureByIp(const std::string& ip) {
-        std::string key = "login:failed:ip:" + ip;
-        co_return co_await redis_.incrWithExpire(key, Constants::LOGIN_FAILURE_WINDOW);
+        co_return incrementCounter("login:failed:ip:" + ip, Constants::LOGIN_FAILURE_WINDOW);
     }
 
-    /**
-     * @brief 获取 IP 登录失败次数
-     */
     Task<int64_t> getLoginFailureCountByIp(const std::string& ip) {
-        std::string key = "login:failed:ip:" + ip;
-        auto value = co_await redis_.get(key);
-        if (!value) co_return 0;
-        try { co_return std::stoll(*value); }
-        catch (...) { co_return 0; }
+        co_return getCounter("login:failed:ip:" + ip);
     }
 
-    // ==================== 批量清除缓存 ====================
-
-    /**
-     * @brief 清除用户所有缓存（权限变更、角色变更时调用）
-     */
     Task<void> clearUserCache(int userId) {
-        // 串行清除三类缓存（Drogon 协程启动后依次 co_await）
-        auto t1 = deleteUserSession(userId);
-        auto t2 = deleteUserRoles(userId);
-        auto t3 = deleteUserMenus(userId);
-        co_await t1;
-        co_await t2;
-        co_await t3;
-        LOG_INFO << "Cleared all cache for user: " << userId;
+        co_await deleteUserSession(userId);
+        co_await deleteUserRoles(userId);
+        co_await deleteUserMenus(userId);
+        LOG_INFO << "Cleared all auth cache for user: " << userId;
     }
 
-    /**
-     * @brief 清除所有用户的菜单缓存（菜单变更时调用）
-     */
     Task<int> clearAllUserMenusCache() {
         co_await deleteAllMenus();
-        auto count = co_await redis_.delPattern("user:menus:*");
+        auto count = eraseJsonByPrefix("user:menus:");
         LOG_INFO << "Cleared menu cache for " << count << " users";
         co_return count;
     }
 
-    /**
-     * @brief 清除所有用户的角色缓存（角色权限变更时调用）
-     */
     Task<int> clearAllUserRolesCache() {
-        auto count = co_await redis_.delPattern("user:roles:*");
+        auto count = eraseJsonByPrefix("user:roles:");
         LOG_INFO << "Cleared role cache for " << count << " users";
         co_return count;
     }
 
-    /**
-     * @brief 清除所有用户的会话缓存（菜单/角色变更时调用）
-     */
     Task<int> clearAllUserSessionsCache() {
-        auto count = co_await redis_.delPattern("session:user:*");
+        auto count = eraseJsonByPrefix("session:user:");
         LOG_INFO << "Cleared session cache for " << count << " users";
         co_return count;
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+    using TimePoint = Clock::time_point;
+
+    struct JsonEntry {
+        Json::Value value;
+        TimePoint expiresAt;
+    };
+
+    struct ExpiringFlag {
+        TimePoint expiresAt;
+    };
+
+    struct CounterEntry {
+        int64_t count = 0;
+        TimePoint expiresAt;
+    };
+
+    int userSessionTtl_;
+    int userMenusTtl_;
+    int userRolesTtl_;
+
+    inline static std::unordered_map<std::string, JsonEntry> jsonCache_;
+    inline static std::unordered_map<std::string, ExpiringFlag> tokenBlacklist_;
+    inline static std::unordered_map<std::string, CounterEntry> counters_;
+    inline static std::shared_mutex mutex_;
+
+    static TimePoint makeExpiry(int ttlSeconds) {
+        return Clock::now() + std::chrono::seconds(std::max(1, ttlSeconds));
+    }
+
+    static bool isExpired(TimePoint expiresAt) {
+        return Clock::now() >= expiresAt;
+    }
+
+    static std::string hashToken(const std::string& token) {
+        unsigned char hash[SHA256_DIGEST_LENGTH];
+        SHA256(reinterpret_cast<const unsigned char*>(token.data()), token.size(), hash);
+
+        std::ostringstream oss;
+        for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+            oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
+        }
+        return oss.str();
+    }
+
+    static bool setJson(const std::string& key, const Json::Value& value, int ttl) {
+        std::unique_lock lock(mutex_);
+        jsonCache_[key] = {value, makeExpiry(ttl)};
+        return true;
+    }
+
+    static std::optional<Json::Value> getJson(const std::string& key) {
+        std::unique_lock lock(mutex_);
+        auto it = jsonCache_.find(key);
+        if (it == jsonCache_.end()) {
+            return std::nullopt;
+        }
+        if (isExpired(it->second.expiresAt)) {
+            jsonCache_.erase(it);
+            return std::nullopt;
+        }
+        return it->second.value;
+    }
+
+    static bool eraseJson(const std::string& key) {
+        std::unique_lock lock(mutex_);
+        return jsonCache_.erase(key) > 0;
+    }
+
+    static int eraseJsonByPrefix(const std::string& prefix) {
+        std::unique_lock lock(mutex_);
+        int count = 0;
+        for (auto it = jsonCache_.begin(); it != jsonCache_.end();) {
+            if (it->first.rfind(prefix, 0) == 0) {
+                it = jsonCache_.erase(it);
+                ++count;
+            } else {
+                ++it;
+            }
+        }
+        return count;
+    }
+
+    static int64_t incrementCounter(const std::string& key, int windowSeconds) {
+        std::unique_lock lock(mutex_);
+        auto now = Clock::now();
+        auto& entry = counters_[key];
+        if (entry.count == 0 || now >= entry.expiresAt) {
+            entry.count = 1;
+            entry.expiresAt = now + std::chrono::seconds(std::max(1, windowSeconds));
+        } else {
+            ++entry.count;
+        }
+        return entry.count;
+    }
+
+    static int64_t getCounter(const std::string& key) {
+        std::unique_lock lock(mutex_);
+        auto it = counters_.find(key);
+        if (it == counters_.end()) {
+            return 0;
+        }
+        if (isExpired(it->second.expiresAt)) {
+            counters_.erase(it);
+            return 0;
+        }
+        return it->second.count;
+    }
+
+    static bool eraseCounter(const std::string& key) {
+        std::unique_lock lock(mutex_);
+        return counters_.erase(key) > 0;
     }
 };

@@ -76,7 +76,6 @@
 #include <drogon/HttpTypes.h>
 #include <drogon/orm/DbClient.h>
 #include <drogon/orm/Field.h>
-#include <drogon/nosql/RedisClient.h>
 #include <drogon/utils/Utilities.h>
 
 #include <trantor/net/TcpServer.h>

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common/database/DatabaseService.hpp"
-#include "common/database/RedisService.hpp"
 #include "common/cache/AuthCache.hpp"
 #include "common/cache/DeviceCache.hpp"
 #include "common/cache/RealtimeDataCache.hpp"
@@ -332,54 +331,7 @@ public:
         ws["onlineUsers"] = static_cast<int>(WebSocketManager::instance().onlineUserCount());
         data["websocket"] = ws;
 
-        // 3. Redis 状态
-        Json::Value redis;
-        bool redisOk = true;
-        try {
-            RedisService redisService;
-            auto client = redisService.getClient();
-
-            // INFO memory
-            auto memResult = co_await client->execCommandCoro("INFO memory");
-            std::string memInfo = memResult.asString();
-            redis["usedMemory"] = parseRedisField(memInfo, "used_memory_human:");
-
-            // DBSIZE
-            auto dbsizeResult = co_await client->execCommandCoro("DBSIZE");
-            redis["keyCount"] = static_cast<int>(dbsizeResult.asInteger());
-
-            // INFO stats: ops/sec, hit/miss
-            auto statsResult = co_await client->execCommandCoro("INFO stats");
-            std::string statsInfo = statsResult.asString();
-            redis["opsPerSec"] = parseRedisInt(statsInfo, "instantaneous_ops_per_sec:");
-            auto hits = parseRedisInt64(statsInfo, "keyspace_hits:");
-            auto misses = parseRedisInt64(statsInfo, "keyspace_misses:");
-            if (hits + misses > 0) {
-                redis["hitRate"] = static_cast<double>(hits) / static_cast<double>(hits + misses) * 100.0;
-            } else {
-                redis["hitRate"] = 0.0;
-            }
-
-            // INFO server: uptime
-            auto serverResult = co_await client->execCommandCoro("INFO server");
-            std::string serverInfo = serverResult.asString();
-            redis["uptimeSeconds"] = parseRedisInt(serverInfo, "uptime_in_seconds:");
-
-            // INFO clients: connected_clients
-            auto clientsResult = co_await client->execCommandCoro("INFO clients");
-            std::string clientsInfo = clientsResult.asString();
-            redis["connectedClients"] = parseRedisInt(clientsInfo, "connected_clients:");
-        } catch (...) {
-            redisOk = false;
-        }
-        redis["status"] = redisOk ? "ok" : "error";
-        if (!redisOk) {
-            redis["usedMemory"] = "N/A";
-            redis["keyCount"] = 0;
-        }
-        data["redis"] = redis;
-
-        // 4. PostgreSQL 连接 + 性能状态
+        // 3. PostgreSQL 连接 + 性能状态
         Json::Value pg;
         bool pgOk = true;
         try {
@@ -571,28 +523,6 @@ public:
     }
 
 private:
-    // ==================== Redis INFO 解析助手 ====================
-
-    /** 从 Redis INFO 输出中提取字段值（字符串） */
-    static std::string parseRedisField(const std::string& info, const std::string& key) {
-        auto pos = info.find(key);
-        if (pos == std::string::npos) return "N/A";
-        auto end = info.find("\r\n", pos);
-        return info.substr(pos + key.size(), end - pos - key.size());
-    }
-
-    /** 从 Redis INFO 输出中提取整数字段 */
-    static int parseRedisInt(const std::string& info, const std::string& key) {
-        auto val = parseRedisField(info, key);
-        try { return std::stoi(val); } catch (...) { return 0; }
-    }
-
-    /** 从 Redis INFO 输出中提取 int64 字段 */
-    static int64_t parseRedisInt64(const std::string& info, const std::string& key) {
-        auto val = parseRedisField(info, key);
-        try { return std::stoll(val); } catch (...) { return 0; }
-    }
-
     // ==================== 系统信息助手 ====================
 
     /** 获取进程内存使用（MB） */

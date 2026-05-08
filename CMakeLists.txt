@@ -137,7 +137,7 @@ endif()
 
 # 编译选项
 if(MSVC)
-    add_compile_options(/W4 /EHsc /bigobj /MP)
+    add_compile_options(/W4 /EHsc /bigobj /MP /utf-8)
     add_compile_options(/wd4068 /wd4996 /wd4244 /wd4267)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
@@ -171,18 +171,35 @@ endif()
 
 # 查找 Drogon (通过 vcpkg)
 find_package(Drogon CONFIG REQUIRED)
+find_package(Boost REQUIRED COMPONENTS json)
+find_package(OpenSSL REQUIRED)
+find_package(pugixml CONFIG REQUIRED)
 
 # 查找 mimalloc (高性能内存分配器)
 find_package(mimalloc CONFIG REQUIRED)
 
 # 包含目录
 include_directories(${PROJECT_SOURCE_DIR}/server)
+include_directories(${PROJECT_SOURCE_DIR}/server/modules/gb28181)
 
 # 收集所有头文件
-file(GLOB_RECURSE HEADERS "server/*.hpp")
+file(GLOB_RECURSE HEADERS "server/*.hpp" "server/*.h")
+
+set(GB28181_SOURCES
+    server/modules/gb28181/Gb28181Module.cpp
+    server/modules/gb28181/api/ApiServer.cpp
+    server/modules/gb28181/config/AppConfig.cpp
+    server/modules/gb28181/device/DeviceRegistry.cpp
+    server/modules/gb28181/media/StreamRegistry.cpp
+    server/modules/gb28181/media/ZlmClient.cpp
+    server/modules/gb28181/platform/WindowsFirewall.cpp
+    server/modules/gb28181/sip/DigestAuth.cpp
+    server/modules/gb28181/sip/SipMessage.cpp
+    server/modules/gb28181/sip/SipServer.cpp
+)
 
 # 添加可执行文件
-add_executable(${PROJECT_NAME} server/main.cpp)
+add_executable(${PROJECT_NAME} server/main.cpp ${GB28181_SOURCES})
 
 # 预编译头文件
 target_precompile_headers(${PROJECT_NAME} PRIVATE
@@ -202,9 +219,16 @@ target_sources(${PROJECT_NAME} PRIVATE ${HEADERS})
 set_source_files_properties(${HEADERS} PROPERTIES HEADER_FILE_ONLY TRUE)
 
 # 链接 Drogon + mimalloc
-target_link_libraries(${PROJECT_NAME} PRIVATE Drogon::Drogon mimalloc-static)
+target_link_libraries(${PROJECT_NAME}
+    PRIVATE
+        Drogon::Drogon
+        mimalloc-static
+        Boost::json
+        OpenSSL::Crypto
+        pugixml::pugixml
+)
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 shell32)
 endif()
 
 # EdgeNode 子项目

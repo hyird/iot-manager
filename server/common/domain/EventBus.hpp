@@ -56,7 +56,7 @@ public:
                   << " for " << event.aggregateType << "#" << event.aggregateId;
 
         // 1. 执行内置处理（缓存失效、版本更新）
-        // 即使 Redis 不可用也不应阻止事件分发到订阅者
+        // 缓存失效不应阻止事件分发到订阅者
         try {
             co_await handleBuiltinEffects(event);
         } catch (const std::exception& e) {

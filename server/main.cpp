@@ -8,7 +8,6 @@
 #include "common/utils/ExceptionHandler.hpp"
 #include "common/cache/ResourceVersion.hpp"
 #include "common/cache/DeviceCache.hpp"
-#include "common/cache/RealtimeDataCache.hpp"
 #include "common/edgenode/AgentBridgeManager.hpp"
 
 // Filters
@@ -19,7 +18,6 @@
 // Database
 #include "common/database/DatabaseInitializer.hpp"
 #include "common/database/DatabaseService.hpp"
-#include "common/database/RedisService.hpp"
 
 // Controllers - System Module
 #include "modules/system/Auth.Controller.hpp"
@@ -57,6 +55,9 @@
 #include "modules/websocket/EdgeNodeWebSocket.Controller.hpp"
 #include "modules/websocket/WebSocket.Controller.hpp"
 #include "modules/websocket/WsEventHandlers.hpp"
+
+// GB28181 Module
+#include "modules/gb28181/Gb28181Module.hpp"
 
 // Protocol
 #include "common/protocol/ProtocolDispatcher.hpp"
@@ -115,14 +116,6 @@ std::vector<std::string> getStageHints(const std::string& stage) {
             "检查 schema_migrations 表中是否有失败记录",
         };
     }
-    if (stage == "redis:ping") {
-        return {
-            "Redis 服务是否正在运行",
-            "config 中 redis_clients 的 host/port 是否正确",
-            "Redis 密码是否正确（requirepass）",
-            "防火墙/安全组是否放行了 Redis 端口",
-        };
-    }
     if (stage == "cache:preload-device" || stage == "cache:invalidate") {
         return {
             "数据库连接是否稳定",
@@ -140,11 +133,6 @@ std::vector<std::string> getStageHints(const std::string& stage) {
             "数据库连接是否稳定",
             "device 和 protocol_config 表是否已正确创建",
             "S7 自研客户端协议栈是否初始化成功",
-        };
-    }
-    if (stage == "resource-version:load-and-reset") {
-        return {
-            "Redis 连接是否稳定",
         };
     }
     if (stage == "alert-engine:initialize") {
@@ -173,6 +161,23 @@ void onServerStarted() {
         LOG_INFO << "Server listening on http://" << addr.toIpPort();
     }
     std::cout << "Logs: ./logs/iot-manager_*.log" << std::endl;
+
+    // Initialize the shared TCP IO pool before modules that bind network sockets.
+    TcpLinkManager::instance().initialize(ConfigManager::getNumberOfThreads());
+
+    try {
+        Gb28181Module::instance().start();
+    } catch (const std::exception& e) {
+        printStartupError("GB28181 module startup failed", e.what(), {
+            "Check custom_config.gb28181.sip host/port",
+            "Check whether SIP port 5060 is already in use",
+            "Check ZLM media configuration",
+        });
+        app().getLoop()->queueInLoop([]() {
+            app().quit();
+        });
+        return;
+    }
 
     // 初始化协议分发器基础设施
     auto& dispatcher = ProtocolDispatcher::instance();
@@ -215,9 +220,6 @@ void onServerStarted() {
     // 启动 Agent 心跳超时检测和事件清理
     AgentBridgeManager::instance().startHealthCheck(app().getLoop());
 
-    // 初始化 TCP 链路管理器（使用独立的 IO 线程池）
-    TcpLinkManager::instance().initialize(ConfigManager::getNumberOfThreads());
-
     // 注册事件处理器（在启动链路之前）
     LinkEventHandlers::registerAll();
     WsEventHandlers::registerAll();
@@ -232,11 +234,6 @@ void onServerStarted() {
             DatabaseService dbHealthCheck;
             co_await dbHealthCheck.ping();
 
-            stage = "redis:ping";
-            LOG_INFO << "[Startup] " << stage;
-            RedisService redisHealthCheck;
-            co_await redisHealthCheck.ping();
-
             stage = "database:initialize";
             LOG_INFO << "[Startup] " << stage;
             // 1. 初始化数据库（必须先完成）
@@ -246,7 +243,6 @@ void onServerStarted() {
             LOG_INFO << "[Startup] " << stage;
             // 2. 清理缓存（数据库初始化可能变更 schema，确保缓存与新结构一致）
             DeviceCache::instance().markStale();
-            RealtimeDataCache::instance().invalidateAll();
 
             stage = "cache:preload-device";
             LOG_INFO << "[Startup] " << stage;
@@ -262,13 +258,11 @@ void onServerStarted() {
             LOG_INFO << "[Startup] " << stage;
             co_await ProtocolDispatcher::instance().initializeProtocolAsync(Constants::PROTOCOL_S7);
 
-            stage = "resource-version:load-and-reset";
+            stage = "resource-version:reset";
             LOG_INFO << "[Startup] " << stage;
-            // 4. 加载资源版本号（从 Redis），然后重置以强制客户端重新获取数据
-            co_await ResourceVersion::instance().loadFromRedis({
-                "device", "user", "role", "menu", "department", "link", "protocol", "alert", "deviceGroup"
+            ResourceVersion::instance().resetAll({
+                "device", "user", "role", "menu", "department", "link", "protocol", "alert", "deviceGroup", "agent"
             });
-            ResourceVersion::instance().resetAll();
 
             stage = "alert-engine:initialize";
             LOG_INFO << "[Startup] " << stage;
@@ -307,6 +301,9 @@ void onServerStarted() {
  */
 void onServerStopping() {
     LOG_INFO << "Server is stopping, cleaning up resources...";
+
+    // 0. Stop GB28181 SIP/media runtime first so no new camera traffic enters shutdown.
+    Gb28181Module::instance().stop();
 
     // 1. 停止告警引擎离线检测定时器
     AlertEngine::instance().stopOfflineChecker();
@@ -351,6 +348,16 @@ int main() {
     // 6. 注册请求/响应拦截器
     RequestAdvices::setup();
 
+    try {
+        Gb28181Module::instance().initialize();
+    } catch (const std::exception& e) {
+        printStartupError("GB28181 module configuration failed", e.what(), {
+            "Check custom_config.gb28181 in config/config.json",
+            "Set custom_config.gb28181.enabled=false to disable the module",
+        });
+        fatalExit();
+    }
+
     // 7. 注册启动回调
     app().registerBeginningAdvice([]() {
         // 检查 DB 客户端是否可用（Drogon 根据配置创建连接池）
@@ -370,31 +377,6 @@ int main() {
                 "config 中 db_clients 配置是否正确",
                 "PostgreSQL 服务是否正在运行",
                 "数据库连接地址和端口是否可达",
-            });
-            fatalExit();
-        }
-
-        // 检查 Redis 客户端是否可用
-        try {
-            auto client = AppRedisConfig::useFast()
-                ? drogon::app().getFastRedisClient("default")
-                : drogon::app().getRedisClient("default");
-            if (!client) {
-                printStartupError("Redis 客户端不可用",
-                    "Drogon 未能创建 Redis 客户端 'default'", {
-                    "config 中 redis_clients 配置是否正确",
-                    "Redis 服务是否正在运行",
-                    "Redis 连接地址和端口是否可达",
-                });
-                fatalExit();
-            }
-            LOG_INFO << "Redis client is configured (fast mode: "
-                     << (AppRedisConfig::useFast() ? "true" : "false") << ")";
-        } catch (const std::exception& e) {
-            printStartupError("Redis 客户端初始化失败", e.what(), {
-                "config 中 redis_clients 配置是否正确",
-                "Redis 服务是否正在运行",
-                "Redis 连接地址和端口是否可达",
             });
             fatalExit();
         }

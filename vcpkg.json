@@ -5,9 +5,8 @@
   "dependencies": [
     {
       "name": "drogon",
-      "features": ["postgres", "redis"]
+      "features": ["postgres"]
     },
-    "hiredis",
     {
       "name": "imgui",
       "features": ["dx11-binding", "win32-binding"],
@@ -15,6 +14,9 @@
     },
     "libpq",
     "mimalloc",
+    "boost-json",
+    "openssl",
+    "pugixml",
     "sqlite3"
   ]
 }

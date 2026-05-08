@@ -57,15 +57,6 @@ export interface MonitorData {
     connections: number;
     onlineUsers: number;
   };
-  redis: {
-    status: "ok" | "error";
-    usedMemory: string;
-    keyCount: number;
-    opsPerSec?: number;
-    hitRate?: number;
-    connectedClients?: number;
-    uptimeSeconds?: number;
-  };
   postgres: {
     status: "ok" | "error";
     activeConnections: number;

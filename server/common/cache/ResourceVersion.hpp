@@ -1,20 +1,23 @@
 #pragma once
 
-#include "common/database/RedisService.hpp"
-#include "common/utils/DrogonLoopSelector.hpp"
+#include <drogon/drogon.h>
+
+#include <format>
+#include <functional>
+#include <initializer_list>
+#include <map>
+#include <shared_mutex>
+#include <string>
+#include <vector>
 
 /**
  * @brief 资源版本管理器
  *
  * 提供版本号的存取功能，具体的缓存 key 和清理由各 Controller/Service 自行管理。
  * 使用 UUID 作为版本标识，避免哈希冲突。
- *
- * 存储策略：内存 + Redis 双写，启动时从 Redis 加载
  */
 class ResourceVersion {
 public:
-    template<typename T = void> using Task = drogon::Task<T>;
-
     /**
      * @brief 获取单例实例
      */
@@ -41,10 +44,8 @@ public:
      * @brief 更新版本号（数据变更时调用）
      * @param key 资源 key
      *
-     * 内存立即更新（mutex 保护），Redis 异步写入。
      * 设计取舍：优先保证低延迟（TcpIoPool 线程调用不阻塞），
      * 代价是服务崩溃时可能丢失最近一次版本号。
-     * 重启后从 Redis 加载旧版本 → ETag 不匹配 → 客户端获取全量数据（自愈）。
      */
     void incrementVersion(const std::string& key) {
         std::string uuid;
@@ -54,13 +55,6 @@ public:
             versions_[key] = uuid;
         }
         LOG_TRACE << "[ResourceVersion] " << key << " -> " << uuid;
-
-        // Redis 写入必须在 Drogon IO 线程执行（incrementVersion 可能从 TcpIoPool 线程调用）
-        DrogonLoopSelector::getNext()->queueInLoop([this, key, uuid]() {
-            drogon::async_run([this, key, uuid]() -> Task<void> {
-                co_await syncToRedis(key, uuid);
-            });
-        });
     }
 
     /**
@@ -93,42 +87,21 @@ public:
         LOG_INFO << "[ResourceVersion] All " << versions_.size() << " versions reset";
     }
 
-    /**
-     * @brief 从 Redis 加载版本号到内存（启动时调用）
-     * @param keys 需要加载的资源 key 列表
-     */
-    Task<void> loadFromRedis(const std::vector<std::string>& keys) {
-        RedisService redis;
-        int loaded = 0;
-
+    void resetAll(const std::vector<std::string>& keys) {
+        std::lock_guard<std::shared_mutex> lock(sharedMutex_);
+        versions_.clear();
         for (const auto& key : keys) {
-            std::string redisKey = "resource:version:" + key;
-            auto value = co_await redis.get(redisKey);
-            if (value && !value->empty()) {
-                std::lock_guard<std::shared_mutex> lock(sharedMutex_);
-                versions_[key] = *value;
-                loaded++;
-            }
+            auto version = drogon::utils::getUuid();
+            versions_[key] = version;
+            LOG_DEBUG << "[ResourceVersion] " << key << " version reset to " << version;
         }
-
-        LOG_INFO << "[ResourceVersion] Loaded " << loaded << " versions from Redis";
+        LOG_INFO << "[ResourceVersion] All " << versions_.size() << " versions reset";
     }
 
 private:
     ResourceVersion() = default;
     ResourceVersion(const ResourceVersion&) = delete;
     ResourceVersion& operator=(const ResourceVersion&) = delete;
-
-    Task<void> syncToRedis(const std::string& key, const std::string& version) {
-        try {
-            RedisService redis;
-            std::string redisKey = "resource:version:" + key;
-            co_await redis.set(redisKey, version);
-        } catch (const std::exception& e) {
-            LOG_WARN << "[ResourceVersion] Failed to sync " << key << " to Redis: " << e.what()
-                     << " (in-memory version is authoritative, will self-heal on restart)";
-        }
-    }
 
     std::map<std::string, std::string> versions_;  // key -> UUID
     mutable std::shared_mutex sharedMutex_;

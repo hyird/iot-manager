@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common/database/DatabaseService.hpp"
-#include "common/database/RedisService.hpp"
 
 namespace fs = std::filesystem;
 
@@ -10,7 +9,7 @@ namespace fs = std::filesystem;
  *
  * 启动时检查配置文件的完整性和正确性：
  * - JSON 语法检查
- * - 必填字段检查（listeners、db_clients、redis_clients、jwt）
+ * - 必填字段检查（listeners、db_clients、jwt）
  * - 端口范围、类型合法性校验
  * - 占位符值警告（YOUR_*、CHANGE_ME 等）
  * - JWT 密钥安全性警告
@@ -24,7 +23,6 @@ public:
     static bool load() {
         // 每次加载前重置为默认值，避免读取失败时沿用旧值
         AppDbConfig::useFast() = false;
-        AppRedisConfig::useFast() = false;
         numberOfThreads_ = 0;
 
         // 1. 查找配置文件
@@ -149,7 +147,6 @@ private:
 
         validateListeners(root, errors);
         validateDbClients(root, errors, warnings);
-        validateRedisClients(root, errors, warnings);
         validateJwt(root, errors, warnings);
         validateAgent(root, errors, warnings);
 
@@ -213,34 +210,6 @@ private:
             if (!db.isMember("passwd") || !db["passwd"].isString()) {
                 errors.push_back(prefix + "缺少 passwd 字段");
             } else if (isPlaceholder(db["passwd"].asString())) {
-                warnings.push_back(prefix + "passwd 看起来是占位符，请填入实际密码");
-            }
-        }
-    }
-
-    static void validateRedisClients(const Json::Value& root,
-                                     std::vector<std::string>& errors,
-                                     std::vector<std::string>& warnings) {
-        if (!root.isMember("redis_clients") || !root["redis_clients"].isArray() ||
-            root["redis_clients"].empty()) {
-            errors.emplace_back("[redis_clients] 缺少 Redis 配置，需要至少一个 Redis 连接");
-            return;
-        }
-
-        for (Json::ArrayIndex i = 0; i < root["redis_clients"].size(); ++i) {
-            const auto& redis = root["redis_clients"][i];
-            auto prefix = "[redis_clients[" + std::to_string(i) + "]] ";
-
-            if (!redis.isMember("host") || !redis["host"].isString() ||
-                redis["host"].asString().empty()) {
-                errors.push_back(prefix + "缺少 host 字段");
-            }
-
-            validatePort(redis, prefix, errors);
-
-            // Redis 密码可以为空（本地开发），但检测占位符
-            if (redis.isMember("passwd") && redis["passwd"].isString() &&
-                isPlaceholder(redis["passwd"].asString())) {
                 warnings.push_back(prefix + "passwd 看起来是占位符，请填入实际密码");
             }
         }
@@ -323,10 +292,6 @@ private:
         if (root.isMember("db_clients") && root["db_clients"].isArray() &&
             !root["db_clients"].empty()) {
             AppDbConfig::useFast() = root["db_clients"][0].get("is_fast", false).asBool();
-        }
-        if (root.isMember("redis_clients") && root["redis_clients"].isArray() &&
-            !root["redis_clients"].empty()) {
-            AppRedisConfig::useFast() = root["redis_clients"][0].get("is_fast", false).asBool();
         }
         if (root.isMember("app") && root["app"].isMember("number_of_threads")) {
             numberOfThreads_ = static_cast<size_t>(root["app"]["number_of_threads"].asUInt());

@@ -9,7 +9,7 @@
  * 统一管理 IO 线程分配策略，避免各组件硬编码 getIOLoop(0) 导致单线程过载。
  *
  * 使用场景：
- * - getNext(): 无串行化需求的独立任务（Redis 写入、协议重加载等）
+ * - getNext(): 无串行化需求的独立任务（协议重加载等）
  * - fixed(0):  需要单线程串行化的操作（攒批写入）
  */
 class DrogonLoopSelector {

@@ -1092,7 +1092,7 @@ public:
         auto deviceDataMap = co_await realtimeCache.getBatch(deviceIds);
         auto latestTimeMap = co_await realtimeCache.getLatestReportTimes(deviceIds);
 
-        // 检测 Redis 中缺失数据的设备（TTL 过期或从未加载），从 DB 补加载
+        // 检测缓存中缺失数据的设备，从 DB 补加载
         std::vector<int> missingIds;
         for (int id : deviceIds) {
             if (deviceDataMap.find(id) == deviceDataMap.end()) {

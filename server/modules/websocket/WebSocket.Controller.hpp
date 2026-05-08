@@ -53,7 +53,7 @@ public:
             return;
         }
 
-        // 异步验证 token（需要查询 Redis 黑名单）
+        // 异步验证 token（检查本进程 token 黑名单）
         drogon::async_run([this, token, conn]() mutable -> Task<void> {
             try {
                 bool isBlacklisted = co_await this->authCache_.isTokenBlacklisted(token);

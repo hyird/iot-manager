@@ -26,11 +26,6 @@ inline constexpr int CACHE_TTL_USER_ROLES = 3600;
 /** 登录失败限流窗口（秒）- 15分钟 */
 inline constexpr int LOGIN_FAILURE_WINDOW = 900;
 
-// ==================== Redis 相关 ====================
-
-/** 实时数据 Redis TTL（秒）- 24小时 */
-inline constexpr int REDIS_TTL_REALTIME_DATA = 86400;
-
 // ==================== 协议相关 ====================
 
 /** SL651 多包会话超时（毫秒）- 15分钟 */

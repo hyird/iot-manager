@@ -404,27 +404,6 @@ export const ServiceHealthCard = memo(function ServiceHealthCard({
           <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded">
             <div className="flex items-center justify-between mb-2">
               <Space>
-                <Badge status={monitor?.redis.status === "ok" ? "success" : "error"} />
-                <Text strong>Redis</Text>
-              </Space>
-              <Space>
-                <Tag color="blue">{monitor?.redis.hitRate?.toFixed(1) ?? 0}% 命中</Tag>
-                <Tag color="green">{monitor?.redis.opsPerSec ?? 0} ops/s</Tag>
-              </Space>
-            </div>
-            <InfoRow
-              label="内存使用"
-              value={`${monitor?.redis.usedMemory ?? "N/A"} / ${monitor?.redis.keyCount ?? 0} keys`}
-            />
-            <InfoRow label="连接数" value={monitor?.redis.connectedClients ?? 0} />
-            {monitor?.redis.uptimeSeconds != null && (
-              <InfoRow label="运行时间" value={formatUptime(monitor.redis.uptimeSeconds)} />
-            )}
-          </div>
-
-          <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded">
-            <div className="flex items-center justify-between mb-2">
-              <Space>
                 <Badge status={monitor?.postgres.status === "ok" ? "success" : "error"} />
                 <Text strong>PostgreSQL</Text>
               </Space>
