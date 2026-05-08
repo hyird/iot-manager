@@ -22,6 +22,8 @@ export * from "./device";
 export * from "./device-group";
 // EdgeNode
 export * from "./edgenode";
+// GB28181
+export * from "./gb28181";
 // Home
 export * from "./home";
 // Link

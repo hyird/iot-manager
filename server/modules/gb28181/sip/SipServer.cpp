@@ -623,9 +623,7 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
     if (cmdType == "Keepalive") {
         const auto status = xmlText(root, "Status");
         if (statusOnline(status)) {
-            const auto existing = deviceRegistry_.findDevice(deviceId);
-            const auto shouldQueryCatalog = !existing.has_value() || existing->channels.empty();
-            deviceRegistry_.updateKeepalive(deviceId, peerToString(remote));
+            const auto shouldQueryCatalog = deviceRegistry_.updateKeepaliveAndNeedsCatalog(deviceId, peerToString(remote));
             if (shouldQueryCatalog) {
                 scheduleCatalogQuery(deviceId);
             }

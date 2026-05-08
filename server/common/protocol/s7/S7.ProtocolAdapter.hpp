@@ -1897,8 +1897,48 @@ private:
             attemptId = ++runtime->connectGeneration;
         }
 
+        if (tcpServerMode) {
+            auto probingSession = acquireDiscoverySession(linkId, deviceId);
+            if (!probingSession || probingSession->clientAddr.empty() || probingSession->linkId <= 0) {
+                {
+                    std::lock_guard runtimeLock(runtime->mutex);
+                    if (runtime->connectGeneration == attemptId) {
+                        runtime->connectInProgress = false;
+                        runtime->connected = false;
+                        runtime->sessionDiscoveryInFlight = false;
+                        runtime->sessionDiscoveryStartedAt = {};
+                        runtime->pendingSessionToDtu.clear();
+                        runtime->lastConnectAttempt = now;
+                    }
+                }
+                LOG_DEBUG << "[S7][Adapter] Skip TCP server connect; no eligible DTU session: "
+                          << deviceLabel(*runtime) << "(id=" << deviceId << ")"
+                          << ", linkId=" << linkId;
+                return false;
+            }
+
+            bool generationChanged = false;
+            {
+                std::lock_guard runtimeLock(runtime->mutex);
+                generationChanged = runtime->connectGeneration != attemptId;
+                if (!generationChanged) {
+                    runtime->sessionDiscoveryInFlight = true;
+                    runtime->sessionDiscoveryStartedAt = now;
+                }
+            }
+            if (generationChanged) {
+                if (sessionManager_) {
+                    sessionManager_->releaseProbingSession(deviceId, false);
+                }
+                return false;
+            }
+        }
+
         auto client = std::unique_ptr<Client>(new (std::nothrow) Client());
         if (!client) {
+            if (tcpServerMode) {
+                clearDiscoveryState(runtime, false);
+            }
             std::lock_guard runtimeLock(runtime->mutex);
             if (runtime->connectGeneration == attemptId) {
                 runtime->connectInProgress = false;
@@ -1952,6 +1992,9 @@ private:
                          << "(id=" << deviceId << ")"
                          << ", host=" << connection.host;
                 destroyClient(client);
+                if (tcpServerMode) {
+                    clearDiscoveryState(runtime, false);
+                }
                 std::lock_guard runtimeLock(runtime->mutex);
                 if (runtime->connectGeneration == attemptId) {
                     runtime->connectInProgress = false;
@@ -1967,6 +2010,9 @@ private:
                          << "(id=" << deviceId << ")"
                          << ", type=" << connection.connectionType;
                 destroyClient(client);
+                if (tcpServerMode) {
+                    clearDiscoveryState(runtime, false);
+                }
                 std::lock_guard runtimeLock(runtime->mutex);
                 if (runtime->connectGeneration == attemptId) {
                     runtime->connectInProgress = false;
@@ -1978,7 +2024,7 @@ private:
             rc = client->connectTo(connection.host.c_str(), connection.rack, connection.slot);
         }
 
-        const bool preserveTimedOutTransport = (rc == kS7ErrTimeout) && client->transportOpen();
+        const bool transportWasOpen = client->transportOpen();
         const bool connected = (rc == 0) && client->connected();
         {
             std::scoped_lock runtimeLock(runtime->clientMutex, runtime->mutex);
@@ -1990,7 +2036,7 @@ private:
             runtime->connectInProgress = false;
             runtime->connected = connected;
 
-            if (connected || preserveTimedOutTransport) {
+            if (connected) {
                 runtime->client = std::move(client);
             }
         }
@@ -2002,10 +2048,8 @@ private:
                      << " (" << explainClientRc(rc) << ")"
                      << ", host=" << connection.host
                      << ", mode=" << connection.mode
-                     << ", transportOpen=" << (preserveTimedOutTransport ? "yes" : "no");
-            if (!preserveTimedOutTransport) {
-                destroyClient(client);
-            }
+                     << ", transportOpen=" << (transportWasOpen ? "yes" : "no");
+            destroyClient(client);
             if (tcpServerMode) {
                 bool advanceCursor = false;
                 std::size_t droppedQueuedFrames = 0;
@@ -2547,12 +2591,35 @@ private:
         }
 
         bool hasAreas = false;
+        bool tcpServerMode = false;
+        bool sessionBound = false;
+        int linkId = 0;
         {
             std::lock_guard runtimeLock(runtime->mutex);
             hasAreas = !runtime->areas.empty();
+            tcpServerMode = runtime->tcpServerMode;
+            sessionBound = runtime->sessionBound;
+            linkId = runtime->linkId;
         }
         if (!hasAreas) {
             return false;
+        }
+        if (tcpServerMode && !sessionBound) {
+            bool hasSessionCandidate = false;
+            if (sessionManager_) {
+                auto sessions = sessionManager_->listSessions();
+                hasSessionCandidate = std::any_of(
+                    sessions.begin(),
+                    sessions.end(),
+                    [linkId](const S7DtuSession& session) {
+                        return session.linkId == linkId
+                            && !session.clientAddr.empty()
+                            && session.bindState != SessionBindState::Bound;
+                    });
+            }
+            if (!hasSessionCandidate) {
+                return false;
+            }
         }
 
         drogon::async_run([this, deviceId]() -> Task<> {

@@ -13,6 +13,7 @@
 #include "migration/migrations/V006_DeviceSharePermissionJsonb.hpp"
 #include "migration/migrations/V007_DeviceShareTargetInPermission.hpp"
 #include "migration/migrations/V008_DeviceShareDropTargetColumns.hpp"
+#include "migration/migrations/V009_Gb28181Menu.hpp"
 #include <cstdlib>
 
 /**
@@ -49,6 +50,7 @@ private:
         registry.add<V006_DeviceSharePermissionJsonb>();
         registry.add<V007_DeviceShareTargetInPermission>();
         registry.add<V008_DeviceShareDropTargetColumns>();
+        registry.add<V009_Gb28181Menu>();
         // 新增迁移在此处注册，例如：
         // registry.add<V003_AddDeviceTags>();
         return registry;
@@ -227,15 +229,21 @@ private:
         co_await insertButton(db, "编辑分组", deviceId, "iot:device-group:edit", 7);
         co_await insertButton(db, "删除分组", deviceId, "iot:device-group:delete", 8);
 
+        // GB28181
+        int gb28181Id = co_await insertMenu(db, "GB28181", 0, Constants::MENU_TYPE_PAGE, "/iot/gb28181", "GB28181", "", "VideoCameraOutlined", false, 4);
+        co_await insertButton(db, "查询国标", gb28181Id, "iot:gb28181:query", 1);
+        co_await insertButton(db, "国标控制", gb28181Id, "iot:gb28181:control", 2);
+        co_await insertButton(db, "录像回放", gb28181Id, "iot:gb28181:record", 3);
+
         // 开放接入
-        int openAccessId = co_await insertMenu(db, "开放接入", 0, Constants::MENU_TYPE_PAGE, "/iot/open-access", "OpenAccess", "", "CloudServerOutlined", false, 4);
+        int openAccessId = co_await insertMenu(db, "开放接入", 0, Constants::MENU_TYPE_PAGE, "/iot/open-access", "OpenAccess", "", "CloudServerOutlined", false, 5);
         co_await insertButton(db, "查询开放接入", openAccessId, "iot:open-access:query", 1);
         co_await insertButton(db, "新增开放接入", openAccessId, "iot:open-access:add", 2);
         co_await insertButton(db, "编辑开放接入", openAccessId, "iot:open-access:edit", 3);
         co_await insertButton(db, "删除开放接入", openAccessId, "iot:open-access:delete", 4);
 
         // 告警管理
-        int alertId = co_await insertMenu(db, "告警管理", 0, Constants::MENU_TYPE_MENU, "/alert", "", "", "AlertOutlined", false, 5);
+        int alertId = co_await insertMenu(db, "告警管理", 0, Constants::MENU_TYPE_MENU, "/alert", "", "", "AlertOutlined", false, 6);
 
         int alertPageId = co_await insertMenu(db, "告警管理", alertId, Constants::MENU_TYPE_PAGE, "/alert", "Alert", "", "AlertOutlined", false, 1);
         co_await insertButton(db, "查询", alertPageId, "iot:alert:query", 1);

@@ -382,9 +382,7 @@ public:
 
         rc = sendConnectionRequest();
         if (rc != kS7Ok) {
-            if (!(rc == kS7ErrTimeout && transportOpen())) {
-                closeSocketOnly();
-            }
+            closeSocketOnly();
             return rc;
         }
 

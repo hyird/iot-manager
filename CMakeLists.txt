@@ -1,12 +1,47 @@
 cmake_minimum_required(VERSION 3.20)
 
-# 自动检测 vcpkg（仅通过环境变量）
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
-    set(_vcpkg_toolchain "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
-    if(EXISTS "${_vcpkg_toolchain}")
-        set(CMAKE_TOOLCHAIN_FILE "${_vcpkg_toolchain}" CACHE STRING "vcpkg toolchain file")
-        message(STATUS "Using vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
+# Auto-detect vcpkg before project() so IDE configure runs can find packages.
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE OR "${CMAKE_TOOLCHAIN_FILE}" STREQUAL "")
+    set(_IOT_MANAGER_VCPKG_ROOT_CANDIDATES "")
+
+    foreach(_IOT_MANAGER_VCPKG_ENV IN ITEMS VCPKG_ROOT VCPKG_INSTALLATION_ROOT)
+        if(DEFINED ENV{${_IOT_MANAGER_VCPKG_ENV}} AND NOT "$ENV{${_IOT_MANAGER_VCPKG_ENV}}" STREQUAL "")
+            file(TO_CMAKE_PATH "$ENV{${_IOT_MANAGER_VCPKG_ENV}}" _IOT_MANAGER_VCPKG_ROOT)
+            list(APPEND _IOT_MANAGER_VCPKG_ROOT_CANDIDATES "${_IOT_MANAGER_VCPKG_ROOT}")
+        endif()
+    endforeach()
+
+    find_program(_IOT_MANAGER_VCPKG_EXE vcpkg)
+    if(_IOT_MANAGER_VCPKG_EXE)
+        get_filename_component(_IOT_MANAGER_VCPKG_ROOT "${_IOT_MANAGER_VCPKG_EXE}" DIRECTORY)
+        list(APPEND _IOT_MANAGER_VCPKG_ROOT_CANDIDATES "${_IOT_MANAGER_VCPKG_ROOT}")
     endif()
+
+    list(APPEND _IOT_MANAGER_VCPKG_ROOT_CANDIDATES
+        "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg"
+        "D:/Dev/vcpkg"
+        "C:/vcpkg"
+    )
+
+    foreach(_IOT_MANAGER_VCPKG_ROOT IN LISTS _IOT_MANAGER_VCPKG_ROOT_CANDIDATES)
+        set(_IOT_MANAGER_VCPKG_TOOLCHAIN "${_IOT_MANAGER_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+        if(EXISTS "${_IOT_MANAGER_VCPKG_TOOLCHAIN}")
+            set(CMAKE_TOOLCHAIN_FILE "${_IOT_MANAGER_VCPKG_TOOLCHAIN}" CACHE FILEPATH "vcpkg toolchain file")
+            message(STATUS "Using vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
+            break()
+        endif()
+    endforeach()
+
+    unset(_IOT_MANAGER_VCPKG_ENV)
+    unset(_IOT_MANAGER_VCPKG_EXE)
+    unset(_IOT_MANAGER_VCPKG_ROOT)
+    unset(_IOT_MANAGER_VCPKG_ROOT_CANDIDATES)
+    unset(_IOT_MANAGER_VCPKG_TOOLCHAIN)
+endif()
+
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE OR "${CMAKE_TOOLCHAIN_FILE}" STREQUAL "")
+    message(STATUS "vcpkg toolchain not configured; set VCPKG_ROOT or CMAKE_TOOLCHAIN_FILE if dependencies are missing.")
 endif()
 
 # vcpkg overlay triplets（项目内自定义 triplet 优先）
@@ -150,14 +185,12 @@ endif()
 # Release 优化
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_CONFIGURATION_TYPES)
     if(MSVC)
-        # /Ox = 完整优化（比 /O2 更激进）
-        add_compile_options("$<$<CONFIG:Release>:/Ox>")
-        # /GL = Whole Program Optimization（开启 LTO）
-        add_compile_options("$<$<CONFIG:Release>:/GL>")
-        # /ipo = 显式启用链接时优化（/LTCG 已启用，此处显式声明）
-        add_link_options("$<$<CONFIG:Release>:/ipo>")
-        # /arch:AVX2 = 启用 AVX2 SIMD 指令集（现代 Intel/AMD CPU 支持）
-        add_compile_options("$<$<CONFIG:Release>:/arch:AVX2>")
+        # 不启用 /GL + /LTCG。当前工程静态链接 Drogon/trantor/vcpkg 依赖，
+        # MSVC 18 Release LTCG 下会在启动后的异步网络任务中触发 0xc0000409。
+        # 使用 CMake/MSVC 默认 Release /O2，避免 /Ox 对现有异步代码中的 UB
+        # 进行更激进优化；Release 也生成 PDB，方便现场 dump 直接定位到源码行。
+        add_compile_options("$<$<CONFIG:Release>:/Zi>")
+        add_link_options("$<$<CONFIG:Release>:/DEBUG:FULL>")
     else()
         add_compile_options("$<$<CONFIG:Release>:-O3>")
         # LTO (Link-Time Optimization)
@@ -167,6 +200,53 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_CONFIGURATION_TYPES)
             set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         endif()
     endif()
+endif()
+
+# Drogon 1.9.x ships custom FindJsoncpp/FindBrotli modules that use plain
+# find_library(). With Visual Studio multi-config generators and vcpkg manifest
+# mode this can cache debug libraries into Release link lines, so pin the
+# config-specific vcpkg libraries before Drogon resolves its dependencies.
+if(WIN32 AND DEFINED VCPKG_TARGET_TRIPLET)
+    if(DEFINED VCPKG_INSTALLED_DIR)
+        set(_IOT_MANAGER_VCPKG_INSTALLED_DIR "${VCPKG_INSTALLED_DIR}")
+    else()
+        set(_IOT_MANAGER_VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed")
+    endif()
+    set(_IOT_MANAGER_VCPKG_TRIPLET_DIR
+        "${_IOT_MANAGER_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}"
+    )
+
+    if(EXISTS "${_IOT_MANAGER_VCPKG_TRIPLET_DIR}/include/json/json.h"
+       AND EXISTS "${_IOT_MANAGER_VCPKG_TRIPLET_DIR}/lib/jsoncpp.lib"
+       AND EXISTS "${_IOT_MANAGER_VCPKG_TRIPLET_DIR}/debug/lib/jsoncpp.lib")
+        set(JSONCPP_INCLUDE_DIRS
+            "${_IOT_MANAGER_VCPKG_TRIPLET_DIR}/include"
+            CACHE PATH "jsoncpp include dir" FORCE
+        )
+        set(JSONCPP_LIBRARIES
+            "$<$<CONFIG:Debug>:${_IOT_MANAGER_VCPKG_TRIPLET_DIR}/debug/lib/jsoncpp.lib>;$<$<NOT:$<CONFIG:Debug>>:${_IOT_MANAGER_VCPKG_TRIPLET_DIR}/lib/jsoncpp.lib>"
+            CACHE STRING "jsoncpp libraries" FORCE
+        )
+    endif()
+
+    if(EXISTS "${_IOT_MANAGER_VCPKG_TRIPLET_DIR}/include/brotli/decode.h")
+        set(BROTLI_INCLUDE_DIR
+            "${_IOT_MANAGER_VCPKG_TRIPLET_DIR}/include"
+            CACHE PATH "brotli include dir" FORCE
+        )
+        foreach(_IOT_MANAGER_BROTLI_LIB IN ITEMS brotlidec brotlienc brotlicommon)
+            string(TOUPPER "${_IOT_MANAGER_BROTLI_LIB}" _IOT_MANAGER_BROTLI_VAR)
+            set("${_IOT_MANAGER_BROTLI_VAR}_LIBRARY"
+                "$<$<CONFIG:Debug>:${_IOT_MANAGER_VCPKG_TRIPLET_DIR}/debug/lib/${_IOT_MANAGER_BROTLI_LIB}.lib>;$<$<NOT:$<CONFIG:Debug>>:${_IOT_MANAGER_VCPKG_TRIPLET_DIR}/lib/${_IOT_MANAGER_BROTLI_LIB}.lib>"
+                CACHE STRING "${_IOT_MANAGER_BROTLI_LIB} libraries" FORCE
+            )
+        endforeach()
+        unset(_IOT_MANAGER_BROTLI_LIB)
+        unset(_IOT_MANAGER_BROTLI_VAR)
+    endif()
+
+    unset(_IOT_MANAGER_VCPKG_INSTALLED_DIR)
+    unset(_IOT_MANAGER_VCPKG_TRIPLET_DIR)
 endif()
 
 # 查找 Drogon (通过 vcpkg)

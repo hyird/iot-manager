@@ -12,6 +12,7 @@ class DeviceRegistry {
 public:
     void upsertRegistration(const std::string& deviceId, const std::string& remoteAddress);
     void updateKeepalive(const std::string& deviceId, const std::string& remoteAddress);
+    bool updateKeepaliveAndNeedsCatalog(const std::string& deviceId, const std::string& remoteAddress);
     void updateCatalog(const std::string& deviceId, std::vector<Channel> channels);
     void updateRecords(const std::string& deviceId, std::vector<RecordItem> records);
     std::vector<Device> listDevices() const;

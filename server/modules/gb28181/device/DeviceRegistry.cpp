@@ -27,6 +27,22 @@ void DeviceRegistry::updateKeepalive(const std::string& deviceId, const std::str
     device.lastSeen = std::chrono::system_clock::now();
 }
 
+bool DeviceRegistry::updateKeepaliveAndNeedsCatalog(const std::string& deviceId, const std::string& remoteAddress) {
+    std::lock_guard lock(mutex_);
+    const auto iter = devices_.find(deviceId);
+    const auto needsCatalog = iter == devices_.end() || iter->second.channels.empty();
+
+    auto& device = devices_[deviceId];
+    device.id = deviceId;
+    if (device.name.empty()) {
+        device.name = deviceId;
+    }
+    device.remoteAddress = remoteAddress;
+    device.online = true;
+    device.lastSeen = std::chrono::system_clock::now();
+    return needsCatalog;
+}
+
 void DeviceRegistry::updateCatalog(const std::string& deviceId, std::vector<Channel> channels) {
     std::lock_guard lock(mutex_);
     auto& device = devices_[deviceId];

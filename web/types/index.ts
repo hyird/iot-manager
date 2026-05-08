@@ -14,6 +14,8 @@ export * from "./device";
 export * from "./deviceGroup";
 // EdgeNode 模块类型
 export * from "./edgenode";
+// GB28181 模块类型
+export * from "./gb28181";
 // 链路管理模块类型
 export * from "./link";
 // 开放接入模块类型

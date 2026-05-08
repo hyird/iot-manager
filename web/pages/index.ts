@@ -108,6 +108,20 @@ registerPage({
   permissions: [{ code: "iot:link:query", name: "查询边缘节点", action: "query" }],
 });
 
+// GB28181
+registerPage({
+  component: "GB28181",
+  name: "GB28181",
+  module: "IOT管理",
+  description: "国标设备、通道、预览、云台、录像和流状态管理",
+  loader: () => import("./gb28181/Gb28181"),
+  permissions: [
+    { code: "iot:gb28181:query", name: "查询国标", action: "query" },
+    { code: "iot:gb28181:control", name: "国标控制", action: "control" },
+    { code: "iot:gb28181:record", name: "录像回放", action: "record" },
+  ],
+});
+
 // SL651 协议配置
 registerPage({
   component: "SL651Config",
