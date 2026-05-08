@@ -773,9 +773,7 @@ export default function Gb28181Page() {
         <Title level={4} className="!mb-0">
           GB28181
         </Title>
-        <Tag color={healthQuery.isError ? "error" : "success"}>
-          {healthQuery.isError ? "模块异常" : healthQuery.data?.status || "运行中"}
-        </Tag>
+        {healthQuery.isError && <Tag color="error">模块异常</Tag>}
       </Space>
       <Space wrap>
         <Input.Search
