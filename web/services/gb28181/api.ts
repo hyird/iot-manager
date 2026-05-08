@@ -5,6 +5,20 @@ const BASE = "/api/gb28181";
 
 const pathPart = (value: string) => encodeURIComponent(value);
 
+export function stopPreviewKeepalive(sessionId: string, token?: string | null) {
+  const headers = new Headers();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  void fetch(`${BASE}/previews/${pathPart(sessionId)}/stop`, {
+    method: "POST",
+    headers,
+    credentials: "same-origin",
+    keepalive: true,
+  }).catch(() => undefined);
+}
+
 export function getHealth() {
   return request.get<GB28181.Health>(`${BASE}/health`, { _silent: true });
 }

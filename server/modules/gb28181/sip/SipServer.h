@@ -56,6 +56,7 @@ public:
     std::optional<PreviewStartResult> startPlayback(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime);
     std::optional<PreviewStopResult> stopPreview(const std::string& sessionId);
     std::optional<PreviewStopResult> stopPreviewByStream(const std::string& streamId);
+    bool forceCloseRtpServer(const std::string& streamId);
     void markStreamOnline(const std::string& streamId, bool online);
 
     enum class SipTransport {

@@ -1206,6 +1206,14 @@ std::optional<SipServer::PreviewStopResult> SipServer::stopPreviewByStream(const
     return stopPreview(sessionId);
 }
 
+bool SipServer::forceCloseRtpServer(const std::string& streamId) {
+    if (streamId.empty()) {
+        return false;
+    }
+    closeRtpServerAsync(streamId);
+    return true;
+}
+
 void SipServer::sendResponse(const SipMessage& request, const SipPeer& remote, int statusCode, const std::string& reason, const std::string& extraHeaders) {
     std::ostringstream response;
     response << "SIP/2.0 " << statusCode << ' ' << reason << "\r\n";

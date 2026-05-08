@@ -371,6 +371,9 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                         LOG_INFO << "ZLM stream none reader closed GB28181 session, stream=" << stream
                                  << ", bye_sent=" << stopResult->byeSent
                                  << ", rtp_server_closed=" << stopResult->rtpServerClosed;
+                    } else if (app == "rtp" && (stream.rfind("gb_", 0) == 0 || stream.rfind("gb_playback_", 0) == 0)) {
+                        closeStream = sipServer_.forceCloseRtpServer(stream);
+                        LOG_INFO << "ZLM stream none reader closed orphan GB28181 RTP stream, stream=" << stream;
                     } else {
                         LOG_INFO << "ZLM stream none reader for unmanaged stream, stream=" << stream;
                     }

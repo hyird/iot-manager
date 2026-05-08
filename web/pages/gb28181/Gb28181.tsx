@@ -32,7 +32,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import Hls from "hls.js";
 import mpegts from "mpegts.js";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Endpoint, Events } from "zlmrtc-client";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission } from "@/hooks";
@@ -47,7 +47,9 @@ import {
   useGb28181PreviewStart,
   useGb28181PreviewStop,
   useGb28181Ptz,
+  stopPreviewKeepalive,
 } from "@/services";
+import { useAppSelector } from "@/store/hooks";
 import type { GB28181 } from "@/types";
 
 const { Text, Title } = Typography;
@@ -548,12 +550,15 @@ export default function Gb28181Page() {
   const { message } = App.useApp();
   const canQuery = usePermission("iot:gb28181:query");
   const canControl = usePermission("iot:gb28181:control");
+  const token = useAppSelector((state) => state.auth.token);
 
   const [keyword, setKeyword] = useState("");
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>();
   const [selectedChannelId, setSelectedChannelId] = useState<string>();
   const [activeSession, setActiveSession] = useState<GB28181.PreviewStartResult | null>(null);
   const [ptzSpeed, setPtzSpeed] = useState(80);
+  const activeSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
+  const tokenRef = useRef<string | null>(token);
 
   const healthQuery = useGb28181Health({ enabled: canQuery });
   const devicesQuery = useGb28181Devices({ enabled: canQuery });
@@ -564,6 +569,32 @@ export default function Gb28181Page() {
   const ptzMutation = useGb28181Ptz();
 
   const devices = devicesQuery.data?.items ?? [];
+
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
+
+  const releaseActiveSession = useCallback(() => {
+    const session = activeSessionRef.current;
+    if (!session) return;
+    activeSessionRef.current = null;
+    stopPreviewKeepalive(session.session_id, tokenRef.current);
+  }, []);
+
+  useEffect(() => {
+    activeSessionRef.current = activeSession;
+  }, [activeSession]);
+
+  useEffect(() => {
+    const handlePageHide = () => releaseActiveSession();
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("beforeunload", handlePageHide);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("beforeunload", handlePageHide);
+      releaseActiveSession();
+    };
+  }, [releaseActiveSession]);
 
   const filteredDevices = useMemo(() => {
     const text = keyword.trim().toLowerCase();
@@ -656,6 +687,11 @@ export default function Gb28181Page() {
       target,
       {
         onSuccess: (result) => {
+          const previousSession = activeSessionRef.current;
+          if (previousSession && previousSession.session_id !== result.session_id) {
+            stopPreviewKeepalive(previousSession.session_id, tokenRef.current);
+          }
+          activeSessionRef.current = result;
           setActiveSession(result);
         },
       }
@@ -671,6 +707,7 @@ export default function Gb28181Page() {
       { sessionId: activeSession.session_id },
       {
         onSuccess: () => {
+          activeSessionRef.current = null;
           setActiveSession(null);
         },
       }
