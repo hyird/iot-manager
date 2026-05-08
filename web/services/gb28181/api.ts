@@ -33,13 +33,7 @@ export function queryCatalog(deviceId: string) {
 
 export function startPreview(payload: GB28181.StartPreviewPayload) {
   return request.post<GB28181.PreviewStartResult>(
-    `${BASE}/devices/${pathPart(payload.deviceId)}/channels/${pathPart(payload.channelId)}/preview/start`,
-    undefined,
-    {
-      params: payload.previousSessionId
-        ? { previous_session_id: payload.previousSessionId }
-        : undefined,
-    }
+    `${BASE}/devices/${pathPart(payload.deviceId)}/channels/${pathPart(payload.channelId)}/preview/start`
   );
 }
 

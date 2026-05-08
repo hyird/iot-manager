@@ -653,10 +653,7 @@ export default function Gb28181Page() {
     const target = currentTarget();
     if (!target) return;
     previewStartMutation.mutate(
-      {
-        ...target,
-        previousSessionId: activeSession?.session_id,
-      },
+      target,
       {
         onSuccess: (result) => {
           setActiveSession(result);

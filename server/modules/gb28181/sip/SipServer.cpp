@@ -1188,6 +1188,24 @@ std::optional<SipServer::PreviewStopResult> SipServer::stopPreview(const std::st
     };
 }
 
+std::optional<SipServer::PreviewStopResult> SipServer::stopPreviewByStream(const std::string& streamId) {
+    std::string sessionId;
+    {
+        std::lock_guard lock(sessionMutex_);
+        for (const auto& [candidateSessionId, session] : previewSessions_) {
+            if (session.streamId == streamId) {
+                sessionId = candidateSessionId;
+                break;
+            }
+        }
+    }
+
+    if (sessionId.empty()) {
+        return std::nullopt;
+    }
+    return stopPreview(sessionId);
+}
+
 void SipServer::sendResponse(const SipMessage& request, const SipPeer& remote, int statusCode, const std::string& reason, const std::string& extraHeaders) {
     std::ostringstream response;
     response << "SIP/2.0 " << statusCode << ' ' << reason << "\r\n";

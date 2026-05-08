@@ -195,15 +195,11 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
 
     drogon::app().registerHandler(
         prefix + "/devices/{1}/channels/{2}/preview/start",
-        [this](const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& deviceId, const std::string& channelId) {
-            const auto previousSessionId = request->getParameter("previous_session_id");
+        [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& deviceId, const std::string& channelId) {
             const auto result = sipServer_.startPreview(deviceId, channelId);
             if (!result.has_value()) {
                 callback(jsonNotFound("设备或通道不可用"));
                 return;
-            }
-            if (!previousSessionId.empty() && previousSessionId != result->sessionId) {
-                sipServer_.stopPreview(previousSessionId);
             }
             callback(jsonResponse({
                 {"sent", true},
@@ -359,6 +355,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
     drogon::app().registerHandler(
         prefix + "/zlm/hook/on_stream_none_reader",
         [this](const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            bool closeStream = false;
             boost::system::error_code error;
             const auto value = boost::json::parse(std::string(request->body()), error);
             if (!error && value.is_object()) {
@@ -368,10 +365,18 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 const auto schema = jsonString(object, "schema");
                 if (!stream.empty()) {
                     streamRegistry_.updateNoneReader(app, stream, schema);
-                    LOG_INFO << "ZLM stream none reader, stream=" << stream;
+                    const auto stopResult = sipServer_.stopPreviewByStream(stream);
+                    if (stopResult.has_value()) {
+                        closeStream = true;
+                        LOG_INFO << "ZLM stream none reader closed GB28181 session, stream=" << stream
+                                 << ", bye_sent=" << stopResult->byeSent
+                                 << ", rtp_server_closed=" << stopResult->rtpServerClosed;
+                    } else {
+                        LOG_INFO << "ZLM stream none reader for unmanaged stream, stream=" << stream;
+                    }
                 }
             }
-            callback(jsonBody({{"code", 0}, {"close", false}}));
+            callback(jsonBody({{"code", 0}, {"close", closeStream}}));
         },
         {drogon::Post});
 }

@@ -102,7 +102,6 @@ export namespace GB28181 {
   export interface StartPreviewPayload {
     deviceId: string;
     channelId: string;
-    previousSessionId?: string;
   }
 
   export interface StopPreviewPayload {

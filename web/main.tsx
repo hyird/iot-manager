@@ -38,6 +38,16 @@ function AppReadyMarker() {
   return null;
 }
 
+// Keep Ant Design portal targets stable. Returning a freshly-created node here
+// can make @rc-component/portal update state on every effect pass.
+const getAntdPopupContainer = () => document.body;
+
+const antdTheme = {
+  token: {
+    colorPrimary: "#1677ff",
+  },
+};
+
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Root element #root not found in DOM");
 
@@ -47,14 +57,7 @@ ReactDOM.createRoot(rootElement).render(
       <AppReadyMarker />
       <ErrorBoundary>
         <StyleProvider hashPriority="low" layer>
-          <ConfigProvider
-            locale={zhCN}
-            theme={{
-              token: {
-                colorPrimary: "#1677ff",
-              },
-            }}
-          >
+          <ConfigProvider locale={zhCN} getPopupContainer={getAntdPopupContainer} theme={antdTheme}>
             <AntdApp>
               <AntdMessageHolder />
               <TanstackQuery>
