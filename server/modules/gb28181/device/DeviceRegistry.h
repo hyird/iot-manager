@@ -2,6 +2,7 @@
 
 #include "device/Device.h"
 
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -15,6 +16,8 @@ public:
     bool updateKeepaliveAndNeedsCatalog(const std::string& deviceId, const std::string& remoteAddress);
     void updateCatalog(const std::string& deviceId, std::vector<Channel> channels);
     void updateRecords(const std::string& deviceId, std::vector<RecordItem> records);
+    void forEachDevice(const std::function<void(const Device&)>& visitor) const;
+    bool visitDevice(const std::string& deviceId, const std::function<void(const Device&)>& visitor) const;
     std::vector<Device> listDevices() const;
     std::optional<Device> findDevice(const std::string& deviceId) const;
     void markOffline(const std::string& deviceId);

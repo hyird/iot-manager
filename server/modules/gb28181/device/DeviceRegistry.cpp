@@ -67,6 +67,23 @@ void DeviceRegistry::updateRecords(const std::string& deviceId, std::vector<Reco
     device.records = std::move(records);
 }
 
+void DeviceRegistry::forEachDevice(const std::function<void(const Device&)>& visitor) const {
+    std::lock_guard lock(mutex_);
+    for (const auto& [_, device] : devices_) {
+        visitor(device);
+    }
+}
+
+bool DeviceRegistry::visitDevice(const std::string& deviceId, const std::function<void(const Device&)>& visitor) const {
+    std::lock_guard lock(mutex_);
+    const auto iter = devices_.find(deviceId);
+    if (iter == devices_.end()) {
+        return false;
+    }
+    visitor(iter->second);
+    return true;
+}
+
 std::vector<Device> DeviceRegistry::listDevices() const {
     std::lock_guard lock(mutex_);
     std::vector<Device> result;

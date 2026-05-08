@@ -127,9 +127,9 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
         prefix + "/devices",
         [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             boost::json::array devices;
-            for (const auto& device : deviceRegistry_.listDevices()) {
+            deviceRegistry_.forEachDevice([&](const Device& device) {
                 devices.push_back(deviceToJson(device));
-            }
+            });
             callback(jsonResponse({{"items", devices}}));
         },
         {drogon::Get});
@@ -137,14 +137,16 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
     drogon::app().registerHandler(
         prefix + "/devices/{1}",
         [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& deviceId) {
-            const auto device = deviceRegistry_.findDevice(deviceId);
-            if (!device.has_value()) {
+            boost::json::object device;
+            if (!deviceRegistry_.visitDevice(deviceId, [&](const Device& existing) {
+                    device = deviceToJson(existing);
+                })) {
                 auto response = jsonResponse({{"error", "device_not_found"}});
                 response->setStatusCode(drogon::k404NotFound);
                 callback(response);
                 return;
             }
-            callback(jsonResponse(deviceToJson(*device)));
+            callback(jsonResponse(device));
         },
         {drogon::Get});
 
