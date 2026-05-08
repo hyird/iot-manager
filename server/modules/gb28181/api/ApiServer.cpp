@@ -33,6 +33,20 @@ bool jsonBoolish(const boost::json::object& object, const char* key, bool fallba
     return fallback;
 }
 
+std::string firstJsonString(const boost::json::object& object, std::initializer_list<const char*> keys) {
+    for (const auto* key : keys) {
+        const auto value = jsonString(object, key);
+        if (!value.empty()) {
+            return value;
+        }
+    }
+    return {};
+}
+
+bool isGb28181StreamId(const std::string& streamId) {
+    return streamId.rfind("gb_", 0) == 0 || streamId.rfind("gb_playback_", 0) == 0;
+}
+
 std::string remoteIp(const std::string& remoteAddress) {
     const auto colon = remoteAddress.rfind(':');
     if (colon == std::string::npos) {
@@ -371,7 +385,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                         LOG_INFO << "ZLM stream none reader closed GB28181 session, stream=" << stream
                                  << ", bye_sent=" << stopResult->byeSent
                                  << ", rtp_server_closed=" << stopResult->rtpServerClosed;
-                    } else if (app == "rtp" && (stream.rfind("gb_", 0) == 0 || stream.rfind("gb_playback_", 0) == 0)) {
+                    } else if (app == "rtp" && isGb28181StreamId(stream)) {
                         closeStream = sipServer_.forceCloseRtpServer(stream);
                         LOG_INFO << "ZLM stream none reader closed orphan GB28181 RTP stream, stream=" << stream;
                     } else {
@@ -380,6 +394,63 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 }
             }
             callback(jsonBody({{"code", 0}, {"close", closeStream}}));
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        prefix + "/zlm/hook/on_rtp_server_timeout",
+        [this](const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            bool closed = false;
+            boost::system::error_code error;
+            const auto value = boost::json::parse(std::string(request->body()), error);
+            if (!error && value.is_object()) {
+                const auto object = value.as_object();
+                const auto stream = firstJsonString(object, {"stream_id", "stream"});
+                const auto ssrc = jsonString(object, "ssrc");
+                const auto localPort = object.if_contains("local_port");
+                if (!stream.empty()) {
+                    const auto stopResult = sipServer_.stopPreviewByStream(stream);
+                    if (stopResult.has_value()) {
+                        closed = true;
+                        LOG_WARN << "ZLM RTP server timeout closed GB28181 session, stream=" << stream
+                                 << ", ssrc=" << ssrc
+                                 << ", bye_sent=" << stopResult->byeSent
+                                 << ", rtp_server_closed=" << stopResult->rtpServerClosed;
+                    } else if (isGb28181StreamId(stream)) {
+                        closed = sipServer_.forceCloseRtpServer(stream);
+                        LOG_WARN << "ZLM RTP server timeout closed orphan GB28181 RTP stream, stream=" << stream
+                                 << ", ssrc=" << ssrc;
+                    } else {
+                        LOG_INFO << "ZLM RTP server timeout for unmanaged stream, stream=" << stream
+                                 << ", ssrc=" << ssrc;
+                    }
+                    if (localPort != nullptr && localPort->is_int64()) {
+                        LOG_INFO << "ZLM RTP server timeout local_port=" << localPort->as_int64()
+                                 << ", stream=" << stream;
+                    }
+                }
+            }
+            callback(jsonBody({{"code", 0}, {"closed", closed}}));
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        prefix + "/zlm/hook/on_send_rtp_stopped",
+        [](const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+            boost::system::error_code error;
+            const auto value = boost::json::parse(std::string(request->body()), error);
+            if (!error && value.is_object()) {
+                const auto object = value.as_object();
+                const auto stream = firstJsonString(object, {"stream_id", "stream"});
+                const auto app = jsonString(object, "app");
+                const auto ssrc = jsonString(object, "ssrc");
+                const auto dstUrl = firstJsonString(object, {"dst_url", "dstUrl", "dst_ip"});
+                LOG_INFO << "ZLM send RTP stopped, app=" << app
+                         << ", stream=" << stream
+                         << ", ssrc=" << ssrc
+                         << ", dst=" << dstUrl;
+            }
+            callback(jsonBody({{"code", 0}}));
         },
         {drogon::Post});
 }
