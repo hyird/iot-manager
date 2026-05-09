@@ -1257,10 +1257,12 @@ private:
 
         std::unique_lock lock(mutex_);
         auto& queue = recentEventsByAgent_[agentId];
+        recentEventsTouched_[agentId] = std::chrono::steady_clock::now();
         queue.push_front(item);
         while (queue.size() > MAX_RECENT_EVENTS_PER_AGENT) {
             queue.pop_back();
         }
+        trimRecentEventsLocked();
 
         const auto serializedDetail = JsonHelper::serialize(
             detail.isObject() ? detail : Json::Value(Json::objectValue)
@@ -1282,13 +1284,42 @@ private:
         });
     }
 
+    void trimRecentEventsLocked() {
+        for (auto it = recentEventsTouched_.begin(); it != recentEventsTouched_.end();) {
+            if (recentEventsByAgent_.find(it->first) == recentEventsByAgent_.end()) {
+                it = recentEventsTouched_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        while (recentEventsByAgent_.size() > MAX_RECENT_EVENT_AGENTS) {
+            int oldestAgentId = 0;
+            auto oldestTouched = std::chrono::steady_clock::time_point::max();
+            for (const auto& [agentId, touched] : recentEventsTouched_) {
+                if (recentEventsByAgent_.find(agentId) != recentEventsByAgent_.end()
+                    && touched < oldestTouched) {
+                    oldestAgentId = agentId;
+                    oldestTouched = touched;
+                }
+            }
+            if (oldestAgentId <= 0) {
+                break;
+            }
+            recentEventsByAgent_.erase(oldestAgentId);
+            recentEventsTouched_.erase(oldestAgentId);
+        }
+    }
+
 private:
     static constexpr size_t MAX_RECENT_EVENTS_PER_AGENT = 20;
+    static constexpr size_t MAX_RECENT_EVENT_AGENTS = 1024;
     mutable std::shared_mutex mutex_;
     std::unordered_map<std::string, std::shared_ptr<Session>> sessionsByCode_;
     std::unordered_map<std::string, Json::Value> endpointStatuses_;       // endpointId → status
     std::unordered_map<int, agent::ConfigVersion> configVersions_;
     std::unordered_map<int, std::deque<Json::Value>> recentEventsByAgent_;
+    std::unordered_map<int, std::chrono::steady_clock::time_point> recentEventsTouched_;
     DeviceDataHandler dataHandler_;
     ParsedDataHandler parsedDataHandler_;
     EndpointConnectionHandler connectionHandler_;

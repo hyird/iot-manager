@@ -1,5 +1,6 @@
 #pragma once
 
+#include <shared_mutex>
 #include <unordered_map>
 #include <utility>
 
@@ -66,15 +67,21 @@ public:
         }
 
         // 2. 执行自定义订阅者
-        auto it = handlers_.find(std::type_index(typeid(event)));
-        if (it != handlers_.end()) {
-            for (const auto& handler : it->second) {
-                try {
-                    co_await handler(event);
-                } catch (const std::exception& e) {
-                    LOG_ERROR << "EventBus: Handler failed for " << event.type
-                              << ": " << e.what();
-                }
+        std::vector<EventHandler> handlers;
+        {
+            std::shared_lock lock(handlersMutex_);
+            auto it = handlers_.find(std::type_index(typeid(event)));
+            if (it != handlers_.end()) {
+                handlers = it->second;
+            }
+        }
+
+        for (const auto& handler : handlers) {
+            try {
+                co_await handler(event);
+            } catch (const std::exception& e) {
+                LOG_ERROR << "EventBus: Handler failed for " << event.type
+                          << ": " << e.what();
             }
         }
     }
@@ -86,6 +93,7 @@ public:
     void subscribe(std::function<Task<void>(const E&)> handler) {
         static_assert(std::is_base_of_v<DomainEvent, E>, "E must derive from DomainEvent");
 
+        std::unique_lock lock(handlersMutex_);
         handlers_[std::type_index(typeid(E))].push_back(
             [handler = std::move(handler)](const DomainEvent& e) -> Task<void> {
                 co_await handler(static_cast<const E&>(e));
@@ -97,6 +105,7 @@ public:
      * @brief 注销所有事件处理器（服务关闭时调用，防止内存泄漏）
      */
     void unsubscribeAll() {
+        std::unique_lock lock(handlersMutex_);
         handlers_.clear();
         LOG_INFO << "EventBus: All handlers unsubscribed";
     }
@@ -105,6 +114,7 @@ private:
     EventBus() {
         registerBuiltinEffects();
     }
+    mutable std::shared_mutex handlersMutex_;
     std::map<std::type_index, std::vector<EventHandler>> handlers_;
     std::unordered_map<std::string, BuiltinEffectHandler> builtinHandlers_;
     AuthCache authCache_;
@@ -159,27 +169,52 @@ private:
         });
 
         registerBuiltinEffect("Device", [](const DomainEvent& event) -> Task<void> {
-            DeviceCache::instance().markStale();
-            RealtimeDataCache::instance().invalidate(event.aggregateId);
-            ResourceVersion::instance().incrementVersion("device");
+            if (event.type == "DeviceCreated"
+                || event.type == "DeviceUpdated"
+                || event.type == "DeviceDeleted") {
+                try {
+                    co_await DeviceCache::instance().refreshDevice(event.aggregateId);
+                } catch (const std::exception& e) {
+                    LOG_WARN << "EventBus: incremental device cache refresh failed for Device#"
+                             << event.aggregateId << ": " << e.what()
+                             << ", falling back to stale refresh";
+                    DeviceCache::instance().markStale();
+                }
+                RealtimeDataCache::instance().invalidate(event.aggregateId);
+                ResourceVersion::instance().incrementVersion("device");
 
-            LOG_DEBUG << "EventBus: Invalidated device cache for Device#" << event.aggregateId;
+                LOG_DEBUG << "EventBus: Refreshed device cache for Device#" << event.aggregateId;
+            }
             co_return;
         });
 
         registerBuiltinEffect("Link", [](const DomainEvent& event) -> Task<void> {
-            DeviceCache::instance().markStale();
+            try {
+                co_await DeviceCache::instance().refreshDevicesByLinkId(event.aggregateId);
+            } catch (const std::exception& e) {
+                LOG_WARN << "EventBus: incremental device cache refresh failed for Link#"
+                         << event.aggregateId << ": " << e.what()
+                         << ", falling back to stale refresh";
+                DeviceCache::instance().markStale();
+            }
             ResourceVersion::instance().incrementVersion("link");
 
-            LOG_DEBUG << "EventBus: Invalidated device cache for Link#" << event.aggregateId;
+            LOG_DEBUG << "EventBus: Refreshed device cache for Link#" << event.aggregateId;
             co_return;
         });
 
         registerBuiltinEffect("ProtocolConfig", [](const DomainEvent& event) -> Task<void> {
-            DeviceCache::instance().markStale();
+            try {
+                co_await DeviceCache::instance().refreshDevicesByProtocolConfigId(event.aggregateId);
+            } catch (const std::exception& e) {
+                LOG_WARN << "EventBus: incremental device cache refresh failed for ProtocolConfig#"
+                         << event.aggregateId << ": " << e.what()
+                         << ", falling back to stale refresh";
+                DeviceCache::instance().markStale();
+            }
             ResourceVersion::instance().incrementVersion("protocol");
 
-            LOG_DEBUG << "EventBus: Invalidated device cache for ProtocolConfig#"
+            LOG_DEBUG << "EventBus: Refreshed device cache for ProtocolConfig#"
                       << event.aggregateId;
             co_return;
         });

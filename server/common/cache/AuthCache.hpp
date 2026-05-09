@@ -85,7 +85,7 @@ public:
             co_return false;
         }
 
-        std::unique_lock lock(mutex_);
+        std::unique_lock lock(tokenBlacklistMutex_);
         tokenBlacklist_["blacklist:token:" + hashToken(token)] = {makeExpiry(ttl)};
         co_return true;
     }
@@ -95,7 +95,7 @@ public:
             co_return false;
         }
 
-        std::unique_lock lock(mutex_);
+        std::unique_lock lock(tokenBlacklistMutex_);
         auto key = "blacklist:token:" + hashToken(token);
         auto it = tokenBlacklist_.find(key);
         if (it == tokenBlacklist_.end()) {
@@ -184,7 +184,9 @@ private:
     inline static std::unordered_map<std::string, JsonEntry> jsonCache_;
     inline static std::unordered_map<std::string, ExpiringFlag> tokenBlacklist_;
     inline static std::unordered_map<std::string, CounterEntry> counters_;
-    inline static std::shared_mutex mutex_;
+    inline static std::shared_mutex jsonCacheMutex_;
+    inline static std::shared_mutex tokenBlacklistMutex_;
+    inline static std::shared_mutex countersMutex_;
 
     static TimePoint makeExpiry(int ttlSeconds) {
         return Clock::now() + std::chrono::seconds(std::max(1, ttlSeconds));
@@ -206,13 +208,13 @@ private:
     }
 
     static bool setJson(const std::string& key, const Json::Value& value, int ttl) {
-        std::unique_lock lock(mutex_);
+        std::unique_lock lock(jsonCacheMutex_);
         jsonCache_[key] = {value, makeExpiry(ttl)};
         return true;
     }
 
     static std::optional<Json::Value> getJson(const std::string& key) {
-        std::unique_lock lock(mutex_);
+        std::unique_lock lock(jsonCacheMutex_);
         auto it = jsonCache_.find(key);
         if (it == jsonCache_.end()) {
             return std::nullopt;
@@ -225,12 +227,12 @@ private:
     }
 
     static bool eraseJson(const std::string& key) {
-        std::unique_lock lock(mutex_);
+        std::unique_lock lock(jsonCacheMutex_);
         return jsonCache_.erase(key) > 0;
     }
 
     static int eraseJsonByPrefix(const std::string& prefix) {
-        std::unique_lock lock(mutex_);
+        std::unique_lock lock(jsonCacheMutex_);
         int count = 0;
         for (auto it = jsonCache_.begin(); it != jsonCache_.end();) {
             if (it->first.rfind(prefix, 0) == 0) {
@@ -244,7 +246,7 @@ private:
     }
 
     static int64_t incrementCounter(const std::string& key, int windowSeconds) {
-        std::unique_lock lock(mutex_);
+        std::unique_lock lock(countersMutex_);
         auto now = Clock::now();
         auto& entry = counters_[key];
         if (entry.count == 0 || now >= entry.expiresAt) {
@@ -257,7 +259,7 @@ private:
     }
 
     static int64_t getCounter(const std::string& key) {
-        std::unique_lock lock(mutex_);
+        std::unique_lock lock(countersMutex_);
         auto it = counters_.find(key);
         if (it == counters_.end()) {
             return 0;
@@ -270,7 +272,7 @@ private:
     }
 
     static bool eraseCounter(const std::string& key) {
-        std::unique_lock lock(mutex_);
+        std::unique_lock lock(countersMutex_);
         return counters_.erase(key) > 0;
     }
 };

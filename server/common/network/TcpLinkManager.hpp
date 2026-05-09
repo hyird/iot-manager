@@ -2,6 +2,9 @@
 
 #include "LinkState.hpp"
 
+#include <cstddef>
+#include <latch>
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -413,6 +416,7 @@ public:
             toStop.swap(runtimes_);
         }
 
+        auto done = std::make_shared<std::latch>(static_cast<std::ptrdiff_t>(toStop.size()));
         for (auto& [id, runtime] : toStop) {
             {
                 std::lock_guard<std::mutex> lock(runtime->connMutex);
@@ -420,21 +424,29 @@ public:
             }
 
             if (runtime->loop) {
-                runtime->loop->runInLoop([runtime, id]() {
-                    if (runtime->server) {
-                        runtime->server->stop();
-                        LOG_INFO << "[Link " << id << "] TCP Server stopped";
+                runtime->loop->runInLoop([runtime, id, done]() {
+                    try {
+                        if (runtime->server) {
+                            runtime->server->stop();
+                            LOG_INFO << "[Link " << id << "] TCP Server stopped";
+                        }
+                        if (runtime->client) {
+                            runtime->client->disconnect();
+                            LOG_INFO << "[Link " << id << "] TCP Client stopped";
+                        }
+                    } catch (const std::exception& e) {
+                        LOG_ERROR << "[Link " << id << "] stopAll callback failed: " << e.what();
+                    } catch (...) {
+                        LOG_ERROR << "[Link " << id << "] stopAll callback failed with unknown exception";
                     }
-                if (runtime->client) {
-                    runtime->client->disconnect();
-                    LOG_INFO << "[Link " << id << "] TCP Client stopped";
-                }
+                    done->count_down();
                 });
+            } else {
+                done->count_down();
             }
         }
 
-        // 无需阻塞等待：lambda 通过 shared_ptr 拷贝捕获 runtime，
-        // IO 线程回调完成后自动释放，生命周期由引用计数保证
+        done->wait();
     }
 
     bool isRunning(int linkId) {

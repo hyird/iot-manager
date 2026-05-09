@@ -5,6 +5,7 @@
 #include "common/cache/DeviceCache.hpp"
 #include "common/protocol/FrameResult.hpp"
 #include "common/utils/DeviceSummaryHelper.hpp"
+#include "common/utils/DrogonLoopSelector.hpp"
 #include "common/utils/OperationFieldHelper.hpp"
 
 class OpenWebhookDispatcher {
@@ -322,7 +323,7 @@ private:
             );
             try {
                 auto parsedUrl = OpenAccess::parseWebhookUrl(target.url);
-                auto client = drogon::HttpClient::newHttpClient(parsedUrl.baseUrl, drogon::app().getLoop());
+                auto client = drogon::HttpClient::newHttpClient(parsedUrl.baseUrl, DrogonLoopSelector::getNext());
                 client->setUserAgent("iot-manager-webhook/1.0");
 
                 auto req = drogon::HttpRequest::newHttpRequest();

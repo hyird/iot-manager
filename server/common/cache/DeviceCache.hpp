@@ -70,7 +70,7 @@ public:
             std::unique_lock lock(mutex_);
             auto now = std::chrono::steady_clock::now();
             // 缓存有效，直接返回
-            if (!devices_.empty() &&
+            if (loaded_ &&
                 std::chrono::duration_cast<std::chrono::seconds>(now - lastRefresh_).count() < CACHE_TTL_SECONDS) {
                 co_return devices_;
             }
@@ -108,104 +108,7 @@ public:
      * @brief 强制刷新缓存
      */
     Task<void> refreshCache() {
-        DatabaseService dbService;
-
-        std::string sql = R"(
-            SELECT d.id, d.name, d.created_by, d.link_id, d.protocol_config_id, d.group_id,
-                   d.status, d.protocol_params, d.remark, d.created_at,
-                   p.name as protocol_name, p.protocol as protocol_type, p.config as protocol_config,
-                   l.name as link_name, l.mode as link_mode, l.ip as link_ip, l.port as link_port
-            FROM device d
-            LEFT JOIN protocol_config p ON d.protocol_config_id = p.id AND p.deleted_at IS NULL
-            LEFT JOIN link l ON d.link_id = l.id AND l.deleted_at IS NULL
-            WHERE d.deleted_at IS NULL
-            ORDER BY d.id ASC
-        )";
-
-        auto result = co_await dbService.execSqlCoro(sql);
-
-        std::vector<CachedDevice> newDevices;
-        Json::CharReaderBuilder readerBuilder;
-
-        for (const auto& row : result) {
-            CachedDevice device;
-            device.id = FieldHelper::getInt(row["id"]);
-            device.name = FieldHelper::getString(row["name"], "");
-            device.createdBy = row["created_by"].isNull() ? 0 : FieldHelper::getInt(row["created_by"]);
-            device.linkId = row["link_id"].isNull() ? 0 : FieldHelper::getInt(row["link_id"]);
-            device.protocolConfigId = row["protocol_config_id"].isNull() ? 0 : FieldHelper::getInt(row["protocol_config_id"]);
-            device.groupId = row["group_id"].isNull() ? 0 : FieldHelper::getInt(row["group_id"]);
-            device.status = FieldHelper::getString(row["status"], Constants::USER_STATUS_ENABLED);
-            device.remark = FieldHelper::getString(row["remark"], "");
-            device.createdAt = FieldHelper::getString(row["created_at"], "");
-            device.linkName = FieldHelper::getString(row["link_name"], "");
-            device.linkMode = FieldHelper::getString(row["link_mode"], "");
-            device.linkIp = FieldHelper::getString(row["link_ip"], "");
-            device.linkPort = row["link_port"].isNull() ? 0 : FieldHelper::getInt(row["link_port"]);
-            device.protocolName = FieldHelper::getString(row["protocol_name"], "");
-            device.protocolType = FieldHelper::getString(row["protocol_type"], "");
-
-            // 解析 protocol_params JSONB
-            std::string ppStr = FieldHelper::getString(row["protocol_params"], "");
-            if (!ppStr.empty()) {
-                Json::Value pp;
-                std::string errs;
-                std::istringstream ppIss(ppStr);
-                if (Json::parseFromStream(readerBuilder, ppIss, &pp, &errs)) {
-                    device.deviceCode = pp.get("device_code", "").asString();
-                    device.onlineTimeout = pp.get("online_timeout", 300).asInt();
-                    device.remoteControl = pp.get("remote_control", true).asBool();
-                    device.timezone = pp.get("timezone", "+08:00").asString();
-                    device.slaveId = static_cast<uint8_t>(pp.get("slave_id", 1).asInt());
-                    device.modbusMode = pp.get("modbus_mode", "").asString();
-                    device.agentId = pp.get("agent_id", 0).asInt();
-
-                    // 心跳包配置
-                    if (pp.isMember("heartbeat") && pp["heartbeat"].isObject()) {
-                        const auto& hb = pp["heartbeat"];
-                        device.heartbeatMode = hb.get("mode", "OFF").asString();
-                        if (device.heartbeatMode != "OFF") {
-                            device.heartbeatContent = hb.get("content", "").asString();
-                            device.heartbeatBytes = parsePacketContent(
-                                device.heartbeatMode, device.heartbeatContent);
-                        }
-                    }
-
-                    // 注册包配置
-                    if (pp.isMember("registration") && pp["registration"].isObject()) {
-                        const auto& reg = pp["registration"];
-                        device.registrationMode = reg.get("mode", "OFF").asString();
-                        if (device.registrationMode != "OFF") {
-                            device.registrationContent = reg.get("content", "").asString();
-                            device.registrationBytes = parsePacketContent(
-                                device.registrationMode, device.registrationContent);
-                        }
-                    }
-                }
-            } else {
-                device.onlineTimeout = 300;
-                device.remoteControl = true;
-                device.timezone = "+08:00";
-            }
-
-            // 解析协议配置 JSON
-            std::string configStr = FieldHelper::getString(row["protocol_config"], "");
-            if (!configStr.empty()) {
-                std::string errs;
-                std::istringstream iss(configStr);
-                Json::parseFromStream(readerBuilder, iss, &device.protocolConfig, &errs);
-            }
-
-            device.onlineTimeout = DeviceConnectionStateHelper::resolveEffectiveTimeout(
-                DeviceConnectionStateHelper::resolveProtocolIntervalSec(
-                    device.protocolType,
-                    device.protocolConfig
-                ),
-                device.onlineTimeout
-            );
-
-            newDevices.push_back(std::move(device));
-        }
+        auto newDevices = co_await loadDevicesFromDb("", {});
 
         {
             std::unique_lock lock(mutex_);
@@ -213,13 +116,93 @@ public:
             // 重建所有索引
             rebuildIndicesLocked();
             lastRefresh_ = std::chrono::steady_clock::now();
+            loaded_ = true;
         }
 
         LOG_DEBUG << "[DeviceCache] Refreshed cache with " << devices_.size() << " devices";
     }
 
     /**
-     * @brief 清除全部缓存（协议配置/链路更新时调用）
+     * @brief 增量刷新单个设备；如果设备已删除，则从缓存中移除。
+     */
+    Task<void> refreshDevice(int deviceId) {
+        if (deviceId <= 0 || !isLoaded()) {
+            co_return;
+        }
+
+        auto refreshed = co_await loadDevicesFromDb(" AND d.id = ?", {std::to_string(deviceId)});
+        std::unique_lock lock(mutex_);
+        if (!loaded_) {
+            co_return;
+        }
+
+        eraseDevicesIfLocked([deviceId](const CachedDevice& device) {
+            return device.id == deviceId;
+        });
+        if (!refreshed.empty()) {
+            devices_.push_back(std::move(refreshed.front()));
+        }
+        rebuildIndicesLocked();
+        lastRefresh_ = std::chrono::steady_clock::now();
+        LOG_DEBUG << "[DeviceCache] Incrementally refreshed device " << deviceId;
+    }
+
+    /**
+     * @brief 增量刷新受某条链路影响的设备。
+     */
+    Task<void> refreshDevicesByLinkId(int linkId) {
+        if (linkId <= 0 || !isLoaded()) {
+            co_return;
+        }
+
+        auto refreshed = co_await loadDevicesFromDb(" AND d.link_id = ?", {std::to_string(linkId)});
+        std::unique_lock lock(mutex_);
+        if (!loaded_) {
+            co_return;
+        }
+
+        eraseDevicesIfLocked([linkId](const CachedDevice& device) {
+            return device.linkId == linkId;
+        });
+        for (auto& device : refreshed) {
+            devices_.push_back(std::move(device));
+        }
+        rebuildIndicesLocked();
+        lastRefresh_ = std::chrono::steady_clock::now();
+        LOG_DEBUG << "[DeviceCache] Incrementally refreshed devices for link " << linkId;
+    }
+
+    /**
+     * @brief 增量刷新受某个协议配置影响的设备。
+     */
+    Task<void> refreshDevicesByProtocolConfigId(int protocolConfigId) {
+        if (protocolConfigId <= 0 || !isLoaded()) {
+            co_return;
+        }
+
+        auto refreshed = co_await loadDevicesFromDb(
+            " AND d.protocol_config_id = ?",
+            {std::to_string(protocolConfigId)}
+        );
+        std::unique_lock lock(mutex_);
+        if (!loaded_) {
+            co_return;
+        }
+
+        eraseDevicesIfLocked([protocolConfigId](const CachedDevice& device) {
+            return device.protocolConfigId == protocolConfigId;
+        });
+        for (auto& device : refreshed) {
+            devices_.push_back(std::move(device));
+        }
+        rebuildIndicesLocked();
+        lastRefresh_ = std::chrono::steady_clock::now();
+        LOG_DEBUG << "[DeviceCache] Incrementally refreshed devices for protocol config "
+                  << protocolConfigId;
+    }
+
+    /**
+     * @brief 清除全部缓存（全局失效或增量刷新失败兜底时调用）
      */
     void invalidate() {
         std::unique_lock lock(mutex_);
@@ -227,6 +210,7 @@ public:
         deviceIndex_.clear();
         deviceCodeIndex_.clear();
         linkDeviceIndex_.clear();
+        loaded_ = false;
         LOG_DEBUG << "[DeviceCache] Cache fully invalidated";
     }
 
@@ -415,6 +399,135 @@ public:
 private:
     DeviceCache() = default;
 
+    Task<std::vector<CachedDevice>> loadDevicesFromDb(
+        std::string extraWhere,
+        std::vector<std::string> params
+    ) {
+        DatabaseService dbService;
+
+        std::string sql = R"(
+            SELECT d.id, d.name, d.created_by, d.link_id, d.protocol_config_id, d.group_id,
+                   d.status, d.protocol_params, d.remark, d.created_at,
+                   p.name as protocol_name, p.protocol as protocol_type, p.config as protocol_config,
+                   l.name as link_name, l.mode as link_mode, l.ip as link_ip, l.port as link_port
+            FROM device d
+            LEFT JOIN protocol_config p ON d.protocol_config_id = p.id AND p.deleted_at IS NULL
+            LEFT JOIN link l ON d.link_id = l.id AND l.deleted_at IS NULL
+            WHERE d.deleted_at IS NULL
+        )";
+        sql += extraWhere;
+        sql += " ORDER BY d.id ASC";
+
+        std::vector<CachedDevice> devices;
+        Json::CharReaderBuilder readerBuilder;
+
+        if (params.empty()) {
+            auto result = co_await dbService.execSqlCoro(sql);
+            devices.reserve(result.size());
+            for (const auto& row : result) {
+                devices.push_back(buildCachedDevice(row, readerBuilder));
+            }
+            co_return devices;
+        }
+
+        auto result = co_await dbService.execSqlCoro(sql, params);
+        devices.reserve(result.size());
+        for (const auto& row : result) {
+            devices.push_back(buildCachedDevice(row, readerBuilder));
+        }
+        co_return devices;
+    }
+
+    template<typename Row>
+    static CachedDevice buildCachedDevice(const Row& row, Json::CharReaderBuilder& readerBuilder) {
+        CachedDevice device;
+        device.id = FieldHelper::getInt(row["id"]);
+        device.name = FieldHelper::getString(row["name"], "");
+        device.createdBy = row["created_by"].isNull() ? 0 : FieldHelper::getInt(row["created_by"]);
+        device.linkId = row["link_id"].isNull() ? 0 : FieldHelper::getInt(row["link_id"]);
+        device.protocolConfigId = row["protocol_config_id"].isNull()
+            ? 0
+            : FieldHelper::getInt(row["protocol_config_id"]);
+        device.groupId = row["group_id"].isNull() ? 0 : FieldHelper::getInt(row["group_id"]);
+        device.status = FieldHelper::getString(row["status"], Constants::USER_STATUS_ENABLED);
+        device.onlineTimeout = 300;
+        device.remoteControl = true;
+        device.timezone = "+08:00";
+        device.remark = FieldHelper::getString(row["remark"], "");
+        device.createdAt = FieldHelper::getString(row["created_at"], "");
+        device.linkName = FieldHelper::getString(row["link_name"], "");
+        device.linkMode = FieldHelper::getString(row["link_mode"], "");
+        device.linkIp = FieldHelper::getString(row["link_ip"], "");
+        device.linkPort = row["link_port"].isNull() ? 0 : FieldHelper::getInt(row["link_port"]);
+        device.protocolName = FieldHelper::getString(row["protocol_name"], "");
+        device.protocolType = FieldHelper::getString(row["protocol_type"], "");
+
+        std::string ppStr = FieldHelper::getString(row["protocol_params"], "");
+        if (!ppStr.empty()) {
+            Json::Value pp;
+            std::string errs;
+            std::istringstream ppIss(ppStr);
+            if (Json::parseFromStream(readerBuilder, ppIss, &pp, &errs)) {
+                device.deviceCode = pp.get("device_code", "").asString();
+                device.onlineTimeout = pp.get("online_timeout", 300).asInt();
+                device.remoteControl = pp.get("remote_control", true).asBool();
+                device.timezone = pp.get("timezone", "+08:00").asString();
+                device.slaveId = static_cast<uint8_t>(pp.get("slave_id", 1).asInt());
+                device.modbusMode = pp.get("modbus_mode", "").asString();
+                device.agentId = pp.get("agent_id", 0).asInt();
+
+                if (pp.isMember("heartbeat") && pp["heartbeat"].isObject()) {
+                    const auto& hb = pp["heartbeat"];
+                    device.heartbeatMode = hb.get("mode", "OFF").asString();
+                    if (device.heartbeatMode != "OFF") {
+                        device.heartbeatContent = hb.get("content", "").asString();
+                        device.heartbeatBytes = parsePacketContent(
+                            device.heartbeatMode,
+                            device.heartbeatContent
+                        );
+                    }
+                }
+
+                if (pp.isMember("registration") && pp["registration"].isObject()) {
+                    const auto& reg = pp["registration"];
+                    device.registrationMode = reg.get("mode", "OFF").asString();
+                    if (device.registrationMode != "OFF") {
+                        device.registrationContent = reg.get("content", "").asString();
+                        device.registrationBytes = parsePacketContent(
+                            device.registrationMode,
+                            device.registrationContent
+                        );
+                    }
+                }
+            }
+        }
+
+        std::string configStr = FieldHelper::getString(row["protocol_config"], "");
+        if (!configStr.empty()) {
+            std::string errs;
+            std::istringstream iss(configStr);
+            Json::parseFromStream(readerBuilder, iss, &device.protocolConfig, &errs);
+        }
+
+        device.onlineTimeout = DeviceConnectionStateHelper::resolveEffectiveTimeout(
+            DeviceConnectionStateHelper::resolveProtocolIntervalSec(
+                device.protocolType,
+                device.protocolConfig
+            ),
+            device.onlineTimeout
+        );
+
+        return device;
+    }
+
+    template<typename Predicate>
+    void eraseDevicesIfLocked(Predicate predicate) {
+        devices_.erase(
+            std::remove_if(devices_.begin(), devices_.end(), predicate),
+            devices_.end()
+        );
+    }
+
     /** 重建所有索引（调用方必须持有 unique_lock） */
     void rebuildIndicesLocked() {
         deviceIndex_.clear();
@@ -502,7 +615,7 @@ private:
     };
 
     // 缓存有效期 10 分钟（安全网 TTL）
-    // 实际失效由 EventBus 事件驱动：invalidate()/invalidateById()/markStale()
+    // 实际失效由 EventBus 事件驱动：增量 refresh*()/invalidate()/markStale()
     // 设备/协议配置变更时事件总线立即清缓存，无需频繁轮询 DB
     static constexpr int CACHE_TTL_SECONDS = 600;
 
@@ -512,6 +625,7 @@ private:
     std::unordered_map<int, std::vector<size_t>> linkDeviceIndex_;  // linkId -> indices in devices_
     std::chrono::steady_clock::time_point lastRefresh_;
     mutable std::shared_mutex mutex_;
+    bool loaded_ = false;
     bool refreshing_ = false;       // 防止多协程同时刷新缓存
     RefreshNotifier refreshNotifier_;  // 零轮询等待通知
 
@@ -581,6 +695,6 @@ public:
      */
     bool isLoaded() const {
         std::shared_lock lock(mutex_);
-        return !devices_.empty();
+        return loaded_;
     }
 };

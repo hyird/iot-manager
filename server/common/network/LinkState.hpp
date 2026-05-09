@@ -50,7 +50,9 @@ public:
         delay = (std::min)(delay, Constants::RECONNECT_MAX_DELAY_SEC);
 
         // ±20% 随机抖动
-        thread_local std::mt19937 rng{std::random_device{}()};
+        static thread_local std::mt19937 rng = [] {
+            return std::mt19937{std::random_device{}()};
+        }();
         std::uniform_real_distribution<double> dist(
             -Constants::RECONNECT_JITTER_RATIO, Constants::RECONNECT_JITTER_RATIO);
         delay *= (1.0 + dist(rng));
