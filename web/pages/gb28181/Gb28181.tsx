@@ -303,7 +303,7 @@ export default function Gb28181Page() {
               </Space>
             }
           >
-            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_280px] gap-4 items-start">
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_280px] gap-4 items-center">
               <div className="relative aspect-video bg-black rounded overflow-hidden">
                 {activeSession ? (
                   <Gb28181LivePlayer key={activeSession.session_id} session={activeSession} />

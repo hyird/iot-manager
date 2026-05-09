@@ -36,7 +36,7 @@ type PtzPanelProps = {
 
 export function PtzPanel({ speed, disabled, loading, onSpeedChange, onAction }: PtzPanelProps) {
   return (
-    <div className="space-y-4 xl:border-l xl:pl-4">
+    <div className="space-y-4 self-center">
       <div className="flex items-center justify-between">
         <Text strong>云台</Text>
         <Text type="secondary" className="text-xs">
