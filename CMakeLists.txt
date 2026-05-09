@@ -99,9 +99,12 @@ if(BUILD_L2CONFIG)
     add_subdirectory(l2config)
 endif()
 
-set(APP_CONFIG_SOURCE "${PROJECT_SOURCE_DIR}/config/config.json")
 if(EXISTS "${PROJECT_SOURCE_DIR}/config/config.local.json")
     set(APP_CONFIG_SOURCE "${PROJECT_SOURCE_DIR}/config/config.local.json")
+elseif(EXISTS "${PROJECT_SOURCE_DIR}/config/config.json")
+    set(APP_CONFIG_SOURCE "${PROJECT_SOURCE_DIR}/config/config.json")
+else()
+    set(APP_CONFIG_SOURCE "${PROJECT_SOURCE_DIR}/config/config.example.json")
 endif()
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
