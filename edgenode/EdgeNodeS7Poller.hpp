@@ -4,8 +4,12 @@
 #include "common/protocol/FrameResult.hpp"
 #include "common/protocol/s7/S7.Client.hpp"
 #include "common/utils/Constants.hpp"
+#include "common/utils/CoroutineExecutor.hpp"
+
+#include <drogon/drogon.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -67,35 +71,31 @@ public:
         std::cout << "[EdgeNodeS7Poller] Loaded " << devices_.size() << " S7 device(s)" << std::endl;
     }
 
-    void tick() {
+    drogon::Task<> tickCoro() {
+        bool expected = false;
+        if (!tickRunning_.compare_exchange_strong(expected, true)) {
+            co_return;
+        }
+        struct TickGuard {
+            std::atomic_bool& running;
+            ~TickGuard() { running.store(false); }
+        } guard{tickRunning_};
+
         std::vector<ParsedFrameResult> batch;
-        auto now = std::chrono::steady_clock::now();
-
-        std::lock_guard lock(mutex_);
-        for (auto& [deviceId, runtime] : devices_) {
-            (void)deviceId;
-            if (now < runtime.nextPollAt) {
-                continue;
-            }
-
-            if (!ensureConnected(runtime, now)) {
-                runtime.nextPollAt = now + std::chrono::milliseconds(runtime.connection.retryDelayMs);
-                continue;
-            }
-
-            auto one = pollDevice(runtime);
-            if (one.has_value()) {
-                batch.push_back(std::move(*one));
-                runtime.nextPollAt = now + std::chrono::seconds(runtime.connection.pollIntervalSec);
-            } else {
-                // 失败后按 retryDelay 快速重试；失败分支里已经断开连接
-                runtime.nextPollAt = now + std::chrono::milliseconds(runtime.connection.retryDelayMs);
-            }
+        try {
+            batch = co_await CoroutineExecutor::instance().submit([this]() {
+                return tickBlocking();
+            });
+        } catch (const std::exception& e) {
+            std::cout << "[WARN] [EdgeNodeS7Poller] async tick failed: " << e.what() << std::endl;
+        } catch (...) {
+            std::cout << "[WARN] [EdgeNodeS7Poller] async tick failed: <unknown>" << std::endl;
         }
 
         if (!batch.empty() && dataCallback_) {
             dataCallback_(std::move(batch));
         }
+        co_return;
     }
 
     void clear() {
@@ -575,9 +575,38 @@ private:
         return buildPollReadResult(runtime.deviceId, std::move(aggregatedData));
     }
 
+    std::vector<ParsedFrameResult> tickBlocking() {
+        std::vector<ParsedFrameResult> batch;
+        auto now = std::chrono::steady_clock::now();
+
+        std::lock_guard lock(mutex_);
+        for (auto& [deviceId, runtime] : devices_) {
+            (void)deviceId;
+            if (now < runtime.nextPollAt) {
+                continue;
+            }
+
+            if (!ensureConnected(runtime, now)) {
+                runtime.nextPollAt = now + std::chrono::milliseconds(runtime.connection.retryDelayMs);
+                continue;
+            }
+
+            auto one = pollDevice(runtime);
+            if (one.has_value()) {
+                batch.push_back(std::move(*one));
+                runtime.nextPollAt = now + std::chrono::seconds(runtime.connection.pollIntervalSec);
+            } else {
+                // 失败后按 retryDelay 快速重试；失败分支里已经断开连接
+                runtime.nextPollAt = now + std::chrono::milliseconds(runtime.connection.retryDelayMs);
+            }
+        }
+        return batch;
+    }
+
     std::mutex mutex_;
     std::map<int, DeviceRuntime> devices_;
     DataCallback dataCallback_;
+    std::atomic_bool tickRunning_{false};
 };
 
 using AgentS7Poller = EdgeNodeS7Poller;

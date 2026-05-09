@@ -365,7 +365,6 @@ public:
                 scheduleReconnect(linkId, runtimeWeak);
             });
 
-            client->enableRetry();
             client->connect();
 
             LOG_INFO << "[Link " << linkId << "] TCP Client connecting to " << ip << ":" << port;

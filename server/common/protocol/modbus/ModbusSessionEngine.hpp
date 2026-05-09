@@ -387,8 +387,34 @@ inline bool ModbusSessionEngine::sendFrame(
 }
 
 inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& clientAddr) {
-    bool dispatched = false;
+    struct DispatchCandidate {
+        DtuSession session;
+        ModbusDeviceDef device;
+        ModbusJob job;
+    };
+
+    auto markDiscoveryFailure = [](DtuSession& session) {
+        session.discoveryRequested = false;
+        if (session.bindState != SessionBindState::Bound) {
+            session.bindState = SessionBindState::Unknown;
+        }
+        session.nextDiscoveryTime = std::chrono::steady_clock::now() + DISCOVERY_RETRY_DELAY;
+    };
+
+    auto sameInflightJob = [](const InflightRequest& inflight, const ModbusJob& job) {
+        return inflight.job.kind == job.kind
+            && inflight.job.deviceId == job.deviceId
+            && inflight.job.slaveId == job.slaveId
+            && inflight.job.readGroupIndex == job.readGroupIndex
+            && inflight.job.commandKey == job.commandKey
+            && inflight.transactionId == job.transactionId
+            && inflight.functionCode == job.requestFunctionCode;
+    };
+
+    std::optional<DispatchCandidate> candidate;
     std::optional<ModbusJob> failedReadJob;
+    std::optional<ModbusJob> failedWriteJob;
+
     sessions_.mutateSession(linkId, clientAddr, [&](DtuSession& session) {
         if (session.inflight) return;
 
@@ -402,11 +428,7 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
                 failedReadJob = job;
             }
             if (job.kind == ModbusJobKind::DiscoveryRead) {
-                session.discoveryRequested = false;
-                if (session.bindState != SessionBindState::Bound) {
-                    session.bindState = SessionBindState::Unknown;
-                }
-                session.nextDiscoveryTime = std::chrono::steady_clock::now() + DISCOVERY_RETRY_DELAY;
+                markDiscoveryFailure(session);
             }
             queue->pop_front();
             return;
@@ -417,34 +439,12 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
             if (job.kind == ModbusJobKind::PollRead) {
                 failedReadJob = job;
             }
-            if (job.kind == ModbusJobKind::WriteRegisters && commandCompletionCallback_) {
-                commandCompletionCallback_(job.commandKey, FUNC_WRITE, false, 0, job.deviceId);
+            if (job.kind == ModbusJobKind::WriteRegisters) {
+                failedWriteJob = job;
             }
             if (job.kind == ModbusJobKind::DiscoveryRead) {
-                session.discoveryRequested = false;
-                if (session.bindState != SessionBindState::Bound) {
-                    session.bindState = SessionBindState::Unknown;
-                }
-                session.nextDiscoveryTime = std::chrono::steady_clock::now() + DISCOVERY_RETRY_DELAY;
+                markDiscoveryFailure(session);
             }
-            return;
-        }
-
-        if (!sendFrame(session, *deviceOpt, job.requestFrame, job.kind)) {
-            if (job.kind == ModbusJobKind::PollRead) {
-                failedReadJob = job;
-            }
-            if (job.kind == ModbusJobKind::WriteRegisters && commandCompletionCallback_) {
-                commandCompletionCallback_(job.commandKey, FUNC_WRITE, false, 0, job.deviceId);
-            }
-            if (job.kind == ModbusJobKind::DiscoveryRead) {
-                session.discoveryRequested = false;
-                if (session.bindState != SessionBindState::Bound) {
-                    session.bindState = SessionBindState::Unknown;
-                }
-                session.nextDiscoveryTime = std::chrono::steady_clock::now() + DISCOVERY_RETRY_DELAY;
-            }
-            queue->pop_front();
             return;
         }
 
@@ -454,10 +454,37 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
         inflight.transactionId = job.transactionId;
         inflight.sentTime = std::chrono::steady_clock::now();
 
-        session.inflight = std::move(inflight);
+        session.inflight = inflight;
         queue->pop_front();
-        dispatched = true;
+        candidate = DispatchCandidate{session, *deviceOpt, std::move(job)};
     });
+
+    if (candidate) {
+        const bool sent = sendFrame(
+            candidate->session,
+            candidate->device,
+            candidate->job.requestFrame,
+            candidate->job.kind);
+        if (sent) {
+            return true;
+        }
+
+        if (candidate->job.kind == ModbusJobKind::PollRead) {
+            failedReadJob = candidate->job;
+        }
+        if (candidate->job.kind == ModbusJobKind::WriteRegisters) {
+            failedWriteJob = candidate->job;
+        }
+
+        sessions_.mutateSession(linkId, clientAddr, [&](DtuSession& session) {
+            if (session.inflight && sameInflightJob(*session.inflight, candidate->job)) {
+                session.inflight.reset();
+            }
+            if (candidate->job.kind == ModbusJobKind::DiscoveryRead) {
+                markDiscoveryFailure(session);
+            }
+        });
+    }
 
     if (failedReadJob) {
         clearPollCycle(failedReadJob->deviceId);
@@ -469,7 +496,16 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
         }
     }
 
-    return dispatched;
+    if (failedWriteJob && commandCompletionCallback_) {
+        commandCompletionCallback_(
+            failedWriteJob->commandKey,
+            FUNC_WRITE,
+            false,
+            0,
+            failedWriteJob->deviceId);
+    }
+
+    return false;
 }
 
 inline std::vector<ModbusJob> ModbusSessionEngine::buildWriteJobs(

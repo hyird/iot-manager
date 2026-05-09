@@ -9,6 +9,7 @@
 #include "common/network/LinkTransportFacade.hpp"
 #include "common/protocol/ProtocolAdapter.hpp"
 #include "common/utils/Constants.hpp"
+#include "common/utils/CoroutineExecutor.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -405,7 +406,10 @@ public:
                 co_return CommandResult::offline("S7 设备离线");
             }
 
-            if (!ensureConnected(runtime, std::chrono::steady_clock::now())) {
+            const bool connected = co_await CoroutineExecutor::instance().submit([this, runtime]() {
+                return ensureConnected(runtime, std::chrono::steady_clock::now());
+            });
+            if (!connected) {
                 co_return CommandResult::offline("S7 设备离线");
             }
 
@@ -429,8 +433,8 @@ public:
                 deviceId, linkId, Constants::PROTOCOL_S7,
                 req.funcCode, "S7 写入", "", req.userId, req.elements);
 
-            std::string failure;
-            {
+            auto failure = co_await CoroutineExecutor::instance().submit([this, runtime, elements = req.elements]() {
+                std::string failure;
                 if (!ensureConnected(runtime, std::chrono::steady_clock::now())) {
                     failure = "S7 设备离线";
                 } else {
@@ -442,7 +446,7 @@ public:
                     }
 
                     if (failure.empty()) {
-                        for (const auto& elem : req.elements) {
+                        for (const auto& elem : elements) {
                             if (!elem.isObject()) continue;
                             const auto* areaDef = findAreaDefinition(*runtime, elem);
                             if (!areaDef) {
@@ -497,7 +501,8 @@ public:
                         }
                     }
                 }
-            }
+                return failure;
+            });
 
             if (!failure.empty()) {
                 co_await runtimeContext_.commandStore.updateCommandStatus(downCommandId, "SEND_FAILED", failure);
@@ -2629,32 +2634,42 @@ private:
     }
 
     Task<> runScheduledPoll(int deviceId) {
-        bool success = false;
-        std::vector<ParsedFrameResult> results;
-        std::string deviceName = "S7-unknown";
+        struct ScheduledPollOutcome {
+            bool success = false;
+            std::vector<ParsedFrameResult> results;
+            std::string deviceName = "S7-unknown";
+            std::string error;
+        };
 
-        try {
-            auto runtime = findRuntimeLocked(deviceId);
-            if (runtime) {
-                deviceName = runtime->deviceName.empty() ? "S7-unknown" : runtime->deviceName;
+        auto outcome = co_await CoroutineExecutor::instance().submit([this, deviceId]() {
+            ScheduledPollOutcome result;
+            try {
+                auto runtime = findRuntimeLocked(deviceId);
+                if (runtime) {
+                    result.deviceName = runtime->deviceName.empty() ? "S7-unknown" : runtime->deviceName;
+                }
+                if (runtime && ensureConnected(runtime, std::chrono::steady_clock::now())) {
+                    result.success = pollDevice(runtime, result.results);
+                }
+            } catch (const std::exception& e) {
+                result.error = e.what();
+            } catch (...) {
+                result.error = "<unknown>";
             }
-            if (runtime && ensureConnected(runtime, std::chrono::steady_clock::now())) {
-                success = pollDevice(runtime, results);
-            }
+            return result;
+        });
 
-            if (!results.empty() && runtimeContext_.submitParsedResults) {
-                runtimeContext_.submitParsedResults(std::move(results));
-            }
-        } catch (const std::exception& e) {
-            LOG_WARN << "[S7][Adapter] Scheduled poll failed: " << deviceName
-                     << "(id=" << deviceId << "), error=" << e.what();
-        } catch (...) {
-            LOG_WARN << "[S7][Adapter] Scheduled poll failed: " << deviceName
-                     << "(id=" << deviceId << "), error=<unknown>";
+        if (!outcome.error.empty()) {
+            LOG_WARN << "[S7][Adapter] Scheduled poll failed: " << outcome.deviceName
+                     << "(id=" << deviceId << "), error=" << outcome.error;
+        }
+
+        if (!outcome.results.empty() && runtimeContext_.submitParsedResults) {
+            runtimeContext_.submitParsedResults(std::move(outcome.results));
         }
 
         if (pollScheduler_) {
-            pollScheduler_->onPollCompleted(deviceId, success);
+            pollScheduler_->onPollCompleted(deviceId, outcome.success);
         }
         co_return;
     }

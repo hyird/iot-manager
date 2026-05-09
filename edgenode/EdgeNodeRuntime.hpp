@@ -14,6 +14,7 @@
 #include "common/network/TcpLinkManager.hpp"
 
 #include <drogon/WebSocketClient.h>
+#include <drogon/drogon.h>
 
 #include <iostream>
 
@@ -49,24 +50,40 @@ public:
         TcpLinkManager::instance().initialize(static_cast<size_t>(config_.ioThreads));
         TcpLinkManager::instance().setDataCallbackWithClient(
             [this](int epKey, const std::string& clientAddr, const std::string& data) {
-                onEndpointData(epKey, clientAddr, data);
+                auto* loop = loop_;
+                if (!loop) return;
+                loop->queueInLoop([this, epKey, clientAddr, data]() {
+                    onEndpointData(epKey, clientAddr, data);
+                });
             }
         );
         TcpLinkManager::instance().setConnectionCallback(
             [this](int epKey, const std::string& clientAddr, bool connected) {
-                onEndpointConnection(epKey, clientAddr, connected);
+                auto* loop = loop_;
+                if (!loop) return;
+                loop->queueInLoop([this, epKey, clientAddr, connected]() {
+                    onEndpointConnection(epKey, clientAddr, connected);
+                });
             }
         );
 
         // 串口链路回调
         EdgeNodeSerialLinkManager::instance().setDataCallback(
             [this](int epKey, const std::string& data) {
-                onEndpointData(epKey, /*clientAddr=*/"serial", data);
+                auto* loop = loop_;
+                if (!loop) return;
+                loop->queueInLoop([this, epKey, data]() {
+                    onEndpointData(epKey, /*clientAddr=*/"serial", data);
+                });
             }
         );
         EdgeNodeSerialLinkManager::instance().setConnectionCallback(
             [this](int epKey, bool connected) {
-                onEndpointConnection(epKey, "serial", connected);
+                auto* loop = loop_;
+                if (!loop) return;
+                loop->queueInLoop([this, epKey, connected]() {
+                    onEndpointConnection(epKey, "serial", connected);
+                });
             }
         );
 
@@ -111,7 +128,9 @@ public:
         });
         // S7 轮询定时器：每 200ms tick 一次
         loop_->runEvery(0.2, [this]() {
-            s7Poller_.tick();
+            drogon::async_run([this]() -> drogon::Task<> {
+                co_await s7Poller_.tickCoro();
+            });
         });
         // SQLite 缓存清理：每小时清理已确认的旧数据
         loop_->runEvery(3600.0, [this]() {

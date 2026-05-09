@@ -6,6 +6,7 @@
 #include "sip/SipMessage.h"
 
 #include <atomic>
+#include <drogon/drogon.h>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -52,11 +53,11 @@ public:
     bool queryCatalog(const std::string& deviceId);
     bool queryRecords(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime);
     bool sendPtzControl(const std::string& deviceId, const std::string& channelId, const std::string& action, uint8_t speed);
-    std::optional<PreviewStartResult> startPreview(const std::string& deviceId, const std::string& channelId);
-    std::optional<PreviewStartResult> startPlayback(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime);
-    std::optional<PreviewStopResult> stopPreview(const std::string& sessionId);
-    std::optional<PreviewStopResult> stopPreviewByStream(const std::string& streamId);
-    bool forceCloseRtpServer(const std::string& streamId);
+    drogon::Task<std::optional<PreviewStartResult>> startPreviewCoro(const std::string& deviceId, const std::string& channelId);
+    drogon::Task<std::optional<PreviewStartResult>> startPlaybackCoro(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime);
+    drogon::Task<std::optional<PreviewStopResult>> stopPreviewCoro(const std::string& sessionId);
+    drogon::Task<std::optional<PreviewStopResult>> stopPreviewByStreamCoro(const std::string& streamId);
+    drogon::Task<bool> forceCloseRtpServerCoro(const std::string& streamId);
     void markStreamOnline(const std::string& streamId, bool online);
 
     enum class SipTransport {
@@ -131,5 +132,4 @@ private:
     void sendRequest(const std::string& request, const SipPeer& remote);
     std::optional<SipPeer> peerFromAddress(const std::string& remoteAddress) const;
     void scheduleCatalogQuery(const std::string& deviceId);
-    void closeRtpServerAsync(const std::string& streamId);
 };

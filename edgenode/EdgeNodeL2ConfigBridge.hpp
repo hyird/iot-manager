@@ -16,8 +16,16 @@
 #endif
 
 #include <atomic>
+#include <cstring>
 #include <functional>
+#include <iostream>
+#include <map>
+#include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace agent_app {
 
@@ -135,9 +143,11 @@ public:
             recvThread_.join();
         }
 
+        std::vector<std::thread> tunnelThreads;
         {
             std::lock_guard<std::mutex> lock(tunnelMutex_);
             for (auto& [connId, conn] : tunnels_) {
+                (void)connId;
                 conn.running = false;
 #ifdef __linux__
                 if (conn.tcpFd >= 0) {
@@ -147,10 +157,19 @@ public:
                 }
 #endif
                 if (conn.readThread.joinable()) {
-                    conn.readThread.join();
+                    if (conn.readThread.get_id() == std::this_thread::get_id()) {
+                        conn.readThread.detach();
+                    } else {
+                        tunnelThreads.push_back(std::move(conn.readThread));
+                    }
                 }
             }
             tunnels_.clear();
+        }
+        for (auto& thread : tunnelThreads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
         }
 
         interfaces_.clear();

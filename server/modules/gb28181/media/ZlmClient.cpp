@@ -4,9 +4,6 @@
 #include <trantor/utils/Logger.h>
 #include <drogon/drogon.h>
 
-#include <chrono>
-#include <future>
-#include <memory>
 #include <sstream>
 #include <utility>
 
@@ -64,7 +61,7 @@ ZlmClient::ZlmClient(MediaConfig config)
     nextRtpPort_.store(config_.rtpPortRangeStart);
 }
 
-std::optional<OpenRtpServerResult> ZlmClient::openRtpServer(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& mode) {
+drogon::Task<std::optional<OpenRtpServerResult>> ZlmClient::openRtpServerCoro(const std::string& deviceId, const std::string& channelId, const std::string& ssrc, const std::string& mode) {
     const auto baseUrl = trimTrailingSlash(config_.zlmBaseUrl);
     const auto streamId = makeStreamId(deviceId, channelId, ssrc, mode);
     const auto requestedPort = allocateRtpPort();
@@ -80,47 +77,34 @@ std::optional<OpenRtpServerResult> ZlmClient::openRtpServer(const std::string& d
     request->setMethod(drogon::Get);
     request->setPath(path.str());
 
-    auto promise = std::make_shared<std::promise<std::optional<OpenRtpServerResult>>>();
-    auto future = promise->get_future();
-
-    client->sendRequest(request, [this, streamId, requestedPort, promise](drogon::ReqResult result, const drogon::HttpResponsePtr& response) {
-        if (result != drogon::ReqResult::Ok || response == nullptr) {
-            LOG_WARN << "ZLM openRtpServer request failed";
-            promise->set_value(std::nullopt);
-            return;
-        }
-
-        const auto parsed = parseObject(std::string(response->body()));
-        if (!parsed.has_value()) {
-            LOG_WARN << "ZLM openRtpServer returned invalid JSON: " << response->body();
-            promise->set_value(std::nullopt);
-            return;
-        }
-
-        const auto& object = *parsed;
-        const auto code = object.if_contains("code");
-        const auto port = object.if_contains("port");
-        if (code == nullptr || !code->is_int64() || code->as_int64() != 0) {
-            LOG_WARN << "ZLM openRtpServer failed: " << response->body();
-            promise->set_value(std::nullopt);
-            return;
-        }
-
-        OpenRtpServerResult openResult;
-        openResult.streamId = streamId;
-        openResult.port = port != nullptr && port->is_int64() ? static_cast<uint16_t>(port->as_int64()) : requestedPort;
-        openResult.playUrls = buildPlayUrls(streamId);
-        promise->set_value(openResult);
-    });
-
-    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
-        LOG_WARN << "ZLM openRtpServer timed out";
-        return std::nullopt;
+    auto response = co_await client->sendRequestCoro(request, 3.0);
+    if (response == nullptr) {
+        LOG_WARN << "ZLM openRtpServer request failed";
+        co_return std::nullopt;
     }
-    return future.get();
+
+    const auto parsed = parseObject(std::string(response->body()));
+    if (!parsed.has_value()) {
+        LOG_WARN << "ZLM openRtpServer returned invalid JSON: " << response->body();
+        co_return std::nullopt;
+    }
+
+    const auto& object = *parsed;
+    const auto code = object.if_contains("code");
+    const auto port = object.if_contains("port");
+    if (code == nullptr || !code->is_int64() || code->as_int64() != 0) {
+        LOG_WARN << "ZLM openRtpServer failed: " << response->body();
+        co_return std::nullopt;
+    }
+
+    OpenRtpServerResult openResult;
+    openResult.streamId = streamId;
+    openResult.port = port != nullptr && port->is_int64() ? static_cast<uint16_t>(port->as_int64()) : requestedPort;
+    openResult.playUrls = buildPlayUrls(streamId);
+    co_return openResult;
 }
 
-bool ZlmClient::closeRtpServer(const std::string& streamId) {
+drogon::Task<bool> ZlmClient::closeRtpServerCoro(const std::string& streamId) {
     const auto baseUrl = trimTrailingSlash(config_.zlmBaseUrl);
     auto client = drogon::HttpClient::newHttpClient(baseUrl);
 
@@ -132,17 +116,8 @@ bool ZlmClient::closeRtpServer(const std::string& streamId) {
     request->setMethod(drogon::Get);
     request->setPath(path.str());
 
-    auto promise = std::make_shared<std::promise<bool>>();
-    auto future = promise->get_future();
-    client->sendRequest(request, [promise](drogon::ReqResult result, const drogon::HttpResponsePtr& response) {
-        promise->set_value(result == drogon::ReqResult::Ok && response != nullptr);
-    });
-
-    if (future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
-        LOG_WARN << "ZLM closeRtpServer timed out";
-        return false;
-    }
-    return future.get();
+    auto response = co_await client->sendRequestCoro(request, 3.0);
+    co_return response != nullptr;
 }
 
 PlayUrls ZlmClient::buildPlayUrls(const std::string& streamId) const {

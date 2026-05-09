@@ -865,25 +865,25 @@ bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& c
     return true;
 }
 
-std::optional<SipServer::PreviewStartResult> SipServer::startPreview(const std::string& deviceId, const std::string& channelId) {
+drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPreviewCoro(const std::string& deviceId, const std::string& channelId) {
     const auto route = deviceRegistry_.findRouteSnapshot(deviceId, channelId);
     if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
-        return std::nullopt;
+        co_return std::nullopt;
     }
     if (route->hasChannels && !route->channelExists) {
-        return std::nullopt;
+        co_return std::nullopt;
     }
 
     const auto colon = route->remoteAddress.rfind(':');
     if (colon == std::string::npos) {
-        return std::nullopt;
+        co_return std::nullopt;
     }
 
     const auto host = route->remoteAddress.substr(0, colon);
     const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
     auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
-        return std::nullopt;
+        co_return std::nullopt;
     }
 
     LOG_INFO << "Preview start requested, device=" << deviceId << ", channel=" << channelId;
@@ -900,7 +900,7 @@ std::optional<SipServer::PreviewStartResult> SipServer::startPreview(const std::
                 ++session.viewerCount;
                 previewViewers_[viewerId] = session.sessionId;
                 LOG_INFO << "Preview stream reused, device=" << deviceId << ", channel=" << channelId << ", viewer_session=" << viewerId << ", stream_session=" << session.sessionId << ", viewers=" << session.viewerCount;
-                return PreviewStartResult{
+                co_return PreviewStartResult{
                     viewerId,
                     session.deviceId,
                     session.channelId,
@@ -914,7 +914,7 @@ std::optional<SipServer::PreviewStartResult> SipServer::startPreview(const std::
     }
 
     for (const auto& staleSessionId : staleSessionIds) {
-        const auto result = stopPreview(staleSessionId);
+        const auto result = co_await stopPreviewCoro(staleSessionId);
         if (result.has_value()) {
             LOG_INFO << "Closed stale preview session before restart, session=" << staleSessionId << ", stream_id=" << result->streamId;
         }
@@ -930,9 +930,9 @@ std::optional<SipServer::PreviewStartResult> SipServer::startPreview(const std::
     const auto nowMs = static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     const auto ssrcNumber = 1000000000ULL + ((nowMs + cseq) % 899999999ULL);
     const auto ssrc = std::to_string(ssrcNumber);
-    const auto rtpServer = zlmClient_.openRtpServer(deviceId, channelId, ssrc);
+    const auto rtpServer = co_await zlmClient_.openRtpServerCoro(deviceId, channelId, ssrc);
     if (!rtpServer.has_value()) {
-        return std::nullopt;
+        co_return std::nullopt;
     }
     LOG_INFO << "ZLM RTP server opened for preview, stream_id=" << rtpServer->streamId << ", rtp_port=" << rtpServer->port;
 
@@ -992,7 +992,7 @@ std::optional<SipServer::PreviewStartResult> SipServer::startPreview(const std::
     sendRequest(request.str(), *remote);
     LOG_INFO << "Preview INVITE sent, device=" << deviceId << ", channel=" << channelId << ", stream_id=" << rtpServer->streamId << ", rtp_port=" << rtpServer->port << ", ssrc=" << ssrc;
 
-    return PreviewStartResult{
+    co_return PreviewStartResult{
         viewerId,
         session.deviceId,
         session.channelId,
@@ -1013,22 +1013,22 @@ void SipServer::markStreamOnline(const std::string& streamId, bool online) {
     }
 }
 
-std::optional<SipServer::PreviewStartResult> SipServer::startPlayback(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
+drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlaybackCoro(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
     const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
     if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
-        return std::nullopt;
+        co_return std::nullopt;
     }
 
     const auto colon = route->remoteAddress.rfind(':');
     if (colon == std::string::npos) {
-        return std::nullopt;
+        co_return std::nullopt;
     }
 
     const auto host = route->remoteAddress.substr(0, colon);
     const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
     auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
-        return std::nullopt;
+        co_return std::nullopt;
     }
 
     const auto cseq = cseq_.fetch_add(1);
@@ -1041,9 +1041,9 @@ std::optional<SipServer::PreviewStartResult> SipServer::startPlayback(const std:
     const auto nowMs = static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     const auto ssrcNumber = 2000000000ULL + ((nowMs + cseq) % 899999999ULL);
     const auto ssrc = std::to_string(ssrcNumber);
-    const auto rtpServer = zlmClient_.openRtpServer(deviceId, channelId, ssrc, "playback");
+    const auto rtpServer = co_await zlmClient_.openRtpServerCoro(deviceId, channelId, ssrc, "playback");
     if (!rtpServer.has_value()) {
-        return std::nullopt;
+        co_return std::nullopt;
     }
 
     const auto startSeconds = gbTimeToUnixSeconds(startTime);
@@ -1102,7 +1102,7 @@ std::optional<SipServer::PreviewStartResult> SipServer::startPlayback(const std:
     sendRequest(request.str(), *remote);
     LOG_INFO << "Playback INVITE sent, device=" << deviceId << ", channel=" << channelId << ", stream_id=" << rtpServer->streamId << ", rtp_port=" << rtpServer->port << ", ssrc=" << ssrc;
 
-    return PreviewStartResult{
+    co_return PreviewStartResult{
         session.sessionId,
         session.deviceId,
         session.channelId,
@@ -1112,8 +1112,7 @@ std::optional<SipServer::PreviewStartResult> SipServer::startPlayback(const std:
         session.playUrls,
     };
 }
-
-std::optional<SipServer::PreviewStopResult> SipServer::stopPreview(const std::string& sessionId) {
+drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreviewCoro(const std::string& sessionId) {
     PreviewSession session;
     std::string streamSessionId = sessionId;
     {
@@ -1126,13 +1125,13 @@ std::optional<SipServer::PreviewStopResult> SipServer::stopPreview(const std::st
 
         const auto iter = previewSessions_.find(streamSessionId);
         if (iter == previewSessions_.end()) {
-            return std::nullopt;
+            co_return std::nullopt;
         }
 
         if (iter->second.mode == "preview" && iter->second.viewerCount > 1 && streamSessionId != sessionId) {
             --iter->second.viewerCount;
             LOG_INFO << "Preview viewer released, viewer_session=" << sessionId << ", stream_session=" << streamSessionId << ", viewers=" << iter->second.viewerCount;
-            return PreviewStopResult{
+            co_return PreviewStopResult{
                 sessionId,
                 iter->second.streamId,
                 false,
@@ -1178,17 +1177,17 @@ std::optional<SipServer::PreviewStopResult> SipServer::stopPreview(const std::st
         LOG_INFO << "Preview session was not established; skip BYE, session=" << streamSessionId;
     }
 
-    closeRtpServerAsync(session.streamId);
+    const bool rtpServerClosed = co_await zlmClient_.closeRtpServerCoro(session.streamId);
 
-    return PreviewStopResult{
+    co_return PreviewStopResult{
         sessionId,
         session.streamId,
         byeSent,
-        true,
+        rtpServerClosed,
     };
 }
 
-std::optional<SipServer::PreviewStopResult> SipServer::stopPreviewByStream(const std::string& streamId) {
+drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreviewByStreamCoro(const std::string& streamId) {
     std::string sessionId;
     {
         std::lock_guard lock(sessionMutex_);
@@ -1201,17 +1200,16 @@ std::optional<SipServer::PreviewStopResult> SipServer::stopPreviewByStream(const
     }
 
     if (sessionId.empty()) {
-        return std::nullopt;
+        co_return std::nullopt;
     }
-    return stopPreview(sessionId);
+    co_return co_await stopPreviewCoro(sessionId);
 }
 
-bool SipServer::forceCloseRtpServer(const std::string& streamId) {
+drogon::Task<bool> SipServer::forceCloseRtpServerCoro(const std::string& streamId) {
     if (streamId.empty()) {
-        return false;
+        co_return false;
     }
-    closeRtpServerAsync(streamId);
-    return true;
+    co_return co_await zlmClient_.closeRtpServerCoro(streamId);
 }
 
 void SipServer::sendResponse(const SipMessage& request, const SipPeer& remote, int statusCode, const std::string& reason, const std::string& extraHeaders) {
@@ -1280,7 +1278,6 @@ void SipServer::sendRequest(const std::string& request, const SipPeer& remote) {
         }
     });
 }
-
 std::optional<SipServer::SipPeer> SipServer::peerFromAddress(const std::string& remoteAddress) const {
     const auto colon = remoteAddress.rfind(':');
     if (colon == std::string::npos) {
@@ -1316,15 +1313,5 @@ void SipServer::scheduleCatalogQuery(const std::string& deviceId) {
         if (queryCatalog(deviceId)) {
             LOG_INFO << "Catalog query sent, device=" << deviceId;
         }
-    });
-}
-
-void SipServer::closeRtpServerAsync(const std::string& streamId) {
-    if (ioLoop_ == nullptr) {
-        zlmClient_.closeRtpServer(streamId);
-        return;
-    }
-    ioLoop_->queueInLoop([this, streamId]() {
-        zlmClient_.closeRtpServer(streamId);
     });
 }

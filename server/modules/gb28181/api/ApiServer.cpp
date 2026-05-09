@@ -210,28 +210,30 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
     drogon::app().registerHandler(
         prefix + "/devices/{1}/channels/{2}/preview/start",
         [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& deviceId, const std::string& channelId) {
-            const auto result = sipServer_.startPreview(deviceId, channelId);
-            if (!result.has_value()) {
-                callback(jsonNotFound("设备或通道不可用"));
-                return;
-            }
-            callback(jsonResponse({
-                {"sent", true},
-                {"session_id", result->sessionId},
-                {"device_id", result->deviceId},
-                {"channel_id", result->channelId},
-                {"stream_id", result->streamId},
-                {"ssrc", result->ssrc},
-                {"rtp_port", result->rtpPort},
-                {"play_urls", {
-                    {"http_flv", result->playUrls.httpFlv},
-                    {"ws_flv", result->playUrls.wsFlv},
-                    {"http_ts", result->playUrls.httpTs},
-                    {"hls", result->playUrls.hls},
-                    {"webrtc", result->playUrls.webRtc},
-                    {"rtsp", result->playUrls.rtsp},
-                }},
-            }));
+            drogon::async_run([this, callback = std::move(callback), deviceId, channelId]() -> drogon::Task<> {
+                const auto result = co_await sipServer_.startPreviewCoro(deviceId, channelId);
+                if (!result.has_value()) {
+                    callback(jsonNotFound("设备或通道不可用"));
+                    co_return;
+                }
+                callback(jsonResponse({
+                    {"sent", true},
+                    {"session_id", result->sessionId},
+                    {"device_id", result->deviceId},
+                    {"channel_id", result->channelId},
+                    {"stream_id", result->streamId},
+                    {"ssrc", result->ssrc},
+                    {"rtp_port", result->rtpPort},
+                    {"play_urls", {
+                        {"http_flv", result->playUrls.httpFlv},
+                        {"ws_flv", result->playUrls.wsFlv},
+                        {"http_ts", result->playUrls.httpTs},
+                        {"hls", result->playUrls.hls},
+                        {"webrtc", result->playUrls.webRtc},
+                        {"rtsp", result->playUrls.rtsp},
+                    }},
+                }));
+            });
         },
         {drogon::Post});
 
@@ -279,28 +281,30 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 callback(jsonBadRequest("缺少时间范围"));
                 return;
             }
-            const auto result = sipServer_.startPlayback(deviceId, channelId, startTime, endTime);
-            if (!result.has_value()) {
-                callback(jsonNotFound("设备或通道不可用"));
-                return;
-            }
-            callback(jsonResponse({
-                {"sent", true},
-                {"session_id", result->sessionId},
-                {"device_id", result->deviceId},
-                {"channel_id", result->channelId},
-                {"stream_id", result->streamId},
-                {"ssrc", result->ssrc},
-                {"rtp_port", result->rtpPort},
-                {"play_urls", {
-                    {"http_flv", result->playUrls.httpFlv},
-                    {"ws_flv", result->playUrls.wsFlv},
-                    {"http_ts", result->playUrls.httpTs},
-                    {"hls", result->playUrls.hls},
-                    {"webrtc", result->playUrls.webRtc},
-                    {"rtsp", result->playUrls.rtsp},
-                }},
-            }));
+            drogon::async_run([this, callback = std::move(callback), deviceId, channelId, startTime, endTime]() -> drogon::Task<> {
+                const auto result = co_await sipServer_.startPlaybackCoro(deviceId, channelId, startTime, endTime);
+                if (!result.has_value()) {
+                    callback(jsonNotFound("设备或通道不可用"));
+                    co_return;
+                }
+                callback(jsonResponse({
+                    {"sent", true},
+                    {"session_id", result->sessionId},
+                    {"device_id", result->deviceId},
+                    {"channel_id", result->channelId},
+                    {"stream_id", result->streamId},
+                    {"ssrc", result->ssrc},
+                    {"rtp_port", result->rtpPort},
+                    {"play_urls", {
+                        {"http_flv", result->playUrls.httpFlv},
+                        {"ws_flv", result->playUrls.wsFlv},
+                        {"http_ts", result->playUrls.httpTs},
+                        {"hls", result->playUrls.hls},
+                        {"webrtc", result->playUrls.webRtc},
+                        {"rtsp", result->playUrls.rtsp},
+                    }},
+                }));
+            });
         },
         {drogon::Post});
 
@@ -318,18 +322,20 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
     drogon::app().registerHandler(
         prefix + "/previews/{1}/stop",
         [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& sessionId) {
-            const auto result = sipServer_.stopPreview(sessionId);
-            if (!result.has_value()) {
-                callback(jsonNotFound("预览会话不存在"));
-                return;
-            }
-            callback(jsonResponse({
-                {"stopped", true},
-                {"session_id", result->sessionId},
-                {"stream_id", result->streamId},
-                {"bye_sent", result->byeSent},
-                {"rtp_server_closed", result->rtpServerClosed},
-            }));
+            drogon::async_run([this, callback = std::move(callback), sessionId]() -> drogon::Task<> {
+                const auto result = co_await sipServer_.stopPreviewCoro(sessionId);
+                if (!result.has_value()) {
+                    callback(jsonNotFound("预览会话不存在"));
+                    co_return;
+                }
+                callback(jsonResponse({
+                    {"stopped", true},
+                    {"session_id", result->sessionId},
+                    {"stream_id", result->streamId},
+                    {"bye_sent", result->byeSent},
+                    {"rtp_server_closed", result->rtpServerClosed},
+                }));
+            });
         },
         {drogon::Post});
 
@@ -369,68 +375,72 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
     drogon::app().registerHandler(
         prefix + "/zlm/hook/on_stream_none_reader",
         [this](const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-            bool closeStream = false;
-            boost::system::error_code error;
-            const auto value = boost::json::parse(std::string(request->body()), error);
-            if (!error && value.is_object()) {
-                const auto object = value.as_object();
-                const auto app = jsonString(object, "app");
-                const auto stream = jsonString(object, "stream");
-                const auto schema = jsonString(object, "schema");
-                if (!stream.empty()) {
-                    streamRegistry_.updateNoneReader(app, stream, schema);
-                    const auto stopResult = sipServer_.stopPreviewByStream(stream);
-                    if (stopResult.has_value()) {
-                        closeStream = true;
-                        LOG_INFO << "ZLM stream none reader closed GB28181 session, stream=" << stream
-                                 << ", bye_sent=" << stopResult->byeSent
-                                 << ", rtp_server_closed=" << stopResult->rtpServerClosed;
-                    } else if (app == "rtp" && isGb28181StreamId(stream)) {
-                        closeStream = sipServer_.forceCloseRtpServer(stream);
-                        LOG_INFO << "ZLM stream none reader closed orphan GB28181 RTP stream, stream=" << stream;
-                    } else {
-                        LOG_INFO << "ZLM stream none reader for unmanaged stream, stream=" << stream;
+            drogon::async_run([this, callback = std::move(callback), body = std::string(request->body())]() -> drogon::Task<> {
+                bool closeStream = false;
+                boost::system::error_code error;
+                const auto value = boost::json::parse(body, error);
+                if (!error && value.is_object()) {
+                    const auto object = value.as_object();
+                    const auto app = jsonString(object, "app");
+                    const auto stream = jsonString(object, "stream");
+                    const auto schema = jsonString(object, "schema");
+                    if (!stream.empty()) {
+                        streamRegistry_.updateNoneReader(app, stream, schema);
+                        const auto stopResult = co_await sipServer_.stopPreviewByStreamCoro(stream);
+                        if (stopResult.has_value()) {
+                            closeStream = true;
+                            LOG_INFO << "ZLM stream none reader closed GB28181 session, stream=" << stream
+                                     << ", bye_sent=" << stopResult->byeSent
+                                     << ", rtp_server_closed=" << stopResult->rtpServerClosed;
+                        } else if (app == "rtp" && isGb28181StreamId(stream)) {
+                            closeStream = co_await sipServer_.forceCloseRtpServerCoro(stream);
+                            LOG_INFO << "ZLM stream none reader closed orphan GB28181 RTP stream, stream=" << stream;
+                        } else {
+                            LOG_INFO << "ZLM stream none reader for unmanaged stream, stream=" << stream;
+                        }
                     }
                 }
-            }
-            callback(jsonBody({{"code", 0}, {"close", closeStream}}));
+                callback(jsonBody({{"code", 0}, {"close", closeStream}}));
+            });
         },
         {drogon::Post});
 
     drogon::app().registerHandler(
         prefix + "/zlm/hook/on_rtp_server_timeout",
         [this](const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
-            bool closed = false;
-            boost::system::error_code error;
-            const auto value = boost::json::parse(std::string(request->body()), error);
-            if (!error && value.is_object()) {
-                const auto object = value.as_object();
-                const auto stream = firstJsonString(object, {"stream_id", "stream"});
-                const auto ssrc = jsonString(object, "ssrc");
-                const auto localPort = object.if_contains("local_port");
-                if (!stream.empty()) {
-                    const auto stopResult = sipServer_.stopPreviewByStream(stream);
-                    if (stopResult.has_value()) {
-                        closed = true;
-                        LOG_WARN << "ZLM RTP server timeout closed GB28181 session, stream=" << stream
-                                 << ", ssrc=" << ssrc
-                                 << ", bye_sent=" << stopResult->byeSent
-                                 << ", rtp_server_closed=" << stopResult->rtpServerClosed;
-                    } else if (isGb28181StreamId(stream)) {
-                        closed = sipServer_.forceCloseRtpServer(stream);
-                        LOG_WARN << "ZLM RTP server timeout closed orphan GB28181 RTP stream, stream=" << stream
-                                 << ", ssrc=" << ssrc;
-                    } else {
-                        LOG_INFO << "ZLM RTP server timeout for unmanaged stream, stream=" << stream
-                                 << ", ssrc=" << ssrc;
-                    }
-                    if (localPort != nullptr && localPort->is_int64()) {
-                        LOG_INFO << "ZLM RTP server timeout local_port=" << localPort->as_int64()
-                                 << ", stream=" << stream;
+            drogon::async_run([this, callback = std::move(callback), body = std::string(request->body())]() -> drogon::Task<> {
+                bool closed = false;
+                boost::system::error_code error;
+                const auto value = boost::json::parse(body, error);
+                if (!error && value.is_object()) {
+                    const auto object = value.as_object();
+                    const auto stream = firstJsonString(object, {"stream_id", "stream"});
+                    const auto ssrc = jsonString(object, "ssrc");
+                    const auto localPort = object.if_contains("local_port");
+                    if (!stream.empty()) {
+                        const auto stopResult = co_await sipServer_.stopPreviewByStreamCoro(stream);
+                        if (stopResult.has_value()) {
+                            closed = true;
+                            LOG_WARN << "ZLM RTP server timeout closed GB28181 session, stream=" << stream
+                                     << ", ssrc=" << ssrc
+                                     << ", bye_sent=" << stopResult->byeSent
+                                     << ", rtp_server_closed=" << stopResult->rtpServerClosed;
+                        } else if (isGb28181StreamId(stream)) {
+                            closed = co_await sipServer_.forceCloseRtpServerCoro(stream);
+                            LOG_WARN << "ZLM RTP server timeout closed orphan GB28181 RTP stream, stream=" << stream
+                                     << ", ssrc=" << ssrc;
+                        } else {
+                            LOG_INFO << "ZLM RTP server timeout for unmanaged stream, stream=" << stream
+                                     << ", ssrc=" << ssrc;
+                        }
+                        if (localPort != nullptr && localPort->is_int64()) {
+                            LOG_INFO << "ZLM RTP server timeout local_port=" << localPort->as_int64()
+                                     << ", stream=" << stream;
+                        }
                     }
                 }
-            }
-            callback(jsonBody({{"code", 0}, {"closed", closed}}));
+                callback(jsonBody({{"code", 0}, {"closed", closed}}));
+            });
         },
         {drogon::Post});
 
