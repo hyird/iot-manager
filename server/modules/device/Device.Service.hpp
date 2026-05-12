@@ -651,11 +651,11 @@ public:
             std::unordered_map<int, std::string> sharePermissions;
             sharePermissions[device.id()] =
                 co_await ResourcePermission::getSingleDeviceSharePermission(device.id(), userId);
+            DeviceCache::CachedDevice cachedDevice{};
+            cachedDevice.id = device.id();
+            cachedDevice.createdBy = device.createdBy();
             auto access = resolveDeviceAccessLevel(
-                DeviceCache::CachedDevice{
-                    .id = device.id(),
-                    .createdBy = device.createdBy()
-                },
+                cachedDevice,
                 userId,
                 isSuperAdmin,
                 sharePermissions
