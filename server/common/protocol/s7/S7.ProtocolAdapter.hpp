@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -233,19 +234,6 @@ public:
     }
 
     void onConnectionChanged(int linkId, const std::string& clientAddr, bool connected) override {
-        if (!sessionRegistry_ || sessionRegistry_->empty()) {
-            return;
-        }
-
-        auto definitions = sessionRegistry_->getDefinitionsByLink(linkId);
-        if (definitions.empty()) {
-            return;
-        }
-
-        LOG_INFO << "[S7][Adapter] Session link " << linkId
-                 << (connected ? " connected: " : " disconnected: ")
-                 << clientAddr;
-
         std::optional<S7DtuSession> previousSession;
         if (sessionManager_) {
             previousSession = sessionManager_->getSession(linkId, clientAddr);
@@ -258,6 +246,19 @@ public:
                 sessionManager_->onDisconnected(linkId, clientAddr);
             }
         }
+
+        if (!sessionRegistry_ || sessionRegistry_->empty()) {
+            return;
+        }
+
+        auto definitions = sessionRegistry_->getDefinitionsByLink(linkId);
+        if (definitions.empty()) {
+            return;
+        }
+
+        LOG_INFO << "[S7][Adapter] Session link " << linkId
+                 << (connected ? " connected: " : " disconnected: ")
+                 << clientAddr;
 
         if (!connected && previousSession) {
             if (previousSession->bindState == SessionBindState::Bound
@@ -1752,20 +1753,50 @@ private:
     }
 
     /**
-     * @brief 清理当前 session binding 绑定和底层连接
+     * @brief 清理当前 session binding 状态，保留底层 TCP 连接。
      */
     void clearSessionBindings() {
         if (!sessionManager_) {
             return;
         }
 
-        auto sessions = sessionManager_->listSessions();
-        for (const auto& session : sessions) {
-            if (session.linkId > 0 && !session.clientAddr.empty()) {
-                LinkTransportFacade::instance().disconnectServerClient(session.linkId, session.clientAddr);
+        sessionManager_->clearAllSessions();
+    }
+
+    void syncActiveServerSessionsFromTransport() {
+        if (!sessionRegistry_ || !sessionManager_) {
+            return;
+        }
+
+        auto definitions = sessionRegistry_->getAllDefinitions();
+        std::set<int> linkIds;
+        for (const auto& definition : definitions) {
+            if (definition.linkId > 0) {
+                linkIds.insert(definition.linkId);
             }
         }
-        sessionManager_->clearAllSessions();
+
+        for (int linkId : linkIds) {
+            auto status = LinkTransportFacade::instance().getStatus(linkId);
+            const auto& clients = status["clients"];
+            if (!clients.isArray()) {
+                continue;
+            }
+
+            int synced = 0;
+            for (const auto& client : clients) {
+                const std::string clientAddr = client.asString();
+                if (clientAddr.empty()) {
+                    continue;
+                }
+                sessionManager_->onConnected(linkId, clientAddr);
+                ++synced;
+            }
+            if (synced > 0) {
+                LOG_INFO << "[S7][Adapter] Synced active TCP server session(s): linkId="
+                         << linkId << ", count=" << synced;
+            }
+        }
     }
 
     /**
@@ -1811,7 +1842,7 @@ private:
     /**
      * @brief 刷新 S7 运行态
      *
-     * 先清理旧 session binding，再按最新配置重建 runtime 和轮询表。
+     * 先清理旧 session binding 并同步当前 TCP 连接，再按最新配置重建 runtime 和轮询表。
      */
     Task<> refreshDevices() {
         if (sessionRegistry_) {
@@ -1819,6 +1850,7 @@ private:
         }
 
         clearSessionBindings();
+        syncActiveServerSessionsFromTransport();
 
         auto devices = co_await DeviceCache::instance().getDevices();
         std::unordered_map<int, std::shared_ptr<S7DeviceRuntime>> next;
@@ -1907,8 +1939,7 @@ private:
         }
 
         if (tcpServerMode && !sessionBound) {
-            auto probingSession = acquireDiscoverySession(linkId, deviceId);
-            if (!probingSession || probingSession->clientAddr.empty() || probingSession->linkId <= 0) {
+            if (!hasDiscoverySession(linkId)) {
                 {
                     std::lock_guard runtimeLock(runtime->mutex);
                     if (runtime->connectGeneration == attemptId) {
@@ -2241,6 +2272,26 @@ private:
         return sessionManager_->acquireProbingSession(linkId, deviceId, discoveryOrder);
     }
 
+    std::vector<S7DtuSession> listDiscoverySessions(int linkId) const {
+        std::vector<S7DtuSession> candidates;
+        if (!sessionManager_ || linkId <= 0) {
+            return candidates;
+        }
+
+        auto sessions = sessionManager_->listSessions();
+        for (const auto& session : sessions) {
+            if (session.linkId != linkId) continue;
+            if (session.clientAddr.empty()) continue;
+            if (session.bindState == SessionBindState::Bound) continue;
+            candidates.push_back(session);
+        }
+        return candidates;
+    }
+
+    bool hasDiscoverySession(int linkId) const {
+        return !listDiscoverySessions(linkId).empty();
+    }
+
     void clearDiscoveryState(const std::shared_ptr<S7DeviceRuntime>& runtime, bool advanceCursor) {
         if (!runtime) {
             return;
@@ -2292,8 +2343,8 @@ private:
         }
 
         if (!sessionBound || sessionClientAddr.empty() || sessionLinkId <= 0) {
-            auto probingSession = acquireDiscoverySession(requestLinkId, deviceId);
-            if (!probingSession || probingSession->clientAddr.empty() || probingSession->linkId <= 0) {
+            auto discoverySessions = listDiscoverySessions(requestLinkId);
+            if (discoverySessions.empty()) {
                 clearDiscoveryState(runtime, false);
 
                 bool droppedOldest = false;
@@ -2318,25 +2369,35 @@ private:
                 runtime->sessionDiscoveryStartedAt = std::chrono::steady_clock::now();
             }
 
-            sessionLinkId = probingSession->linkId;
-            sessionClientAddr = probingSession->clientAddr;
+            std::size_t sentCount = 0;
+            std::size_t failedCount = 0;
+            for (const auto& session : discoverySessions) {
+                LOG_DEBUG << "[S7][Adapter] TX discovery probe to session linkId=" << session.linkId
+                          << ", client=" << session.clientAddr
+                          << ", device=" << deviceLabel(*runtime) << "(id=" << deviceId << ")"
+                          << ", bytes=" << bytes.size()
+                          << ", hex=" << bytesToHex(bytes);
 
-            LOG_DEBUG << "[S7][Adapter] TX probe to session linkId=" << sessionLinkId
-                      << ", client=" << sessionClientAddr
-                      << ", device=" << deviceLabel(*runtime) << "(id=" << deviceId << ")"
-                      << ", bytes=" << bytes.size()
-                      << ", hex=" << bytesToHex(bytes);
-            if (LinkTransportFacade::instance().sendToClient(sessionLinkId, sessionClientAddr, payload)) {
-                LOG_INFO << "[S7][Adapter] Targeted discovery probe: " << deviceLabel(*runtime)
+                if (LinkTransportFacade::instance().sendToClient(session.linkId, session.clientAddr, payload)) {
+                    ++sentCount;
+                    continue;
+                }
+
+                ++failedCount;
+                LinkTransportFacade::instance().forceDisconnectServerClient(session.linkId, session.clientAddr);
+            }
+
+            if (sentCount > 0) {
+                LOG_INFO << "[S7][Adapter] Broadcast discovery probe: " << deviceLabel(*runtime)
                          << "(id=" << deviceId << ")"
-                         << ", linkId=" << sessionLinkId
-                         << ", client=" << sessionClientAddr
+                         << ", linkId=" << requestLinkId
+                         << ", sent=" << sentCount
+                         << ", failed=" << failedCount
                          << ", bytes=" << bytes.size();
                 return kS7Ok;
             }
 
-            LinkTransportFacade::instance().forceDisconnectServerClient(sessionLinkId, sessionClientAddr);
-            clearDiscoveryState(runtime, true);
+            clearDiscoveryState(runtime, false);
 
             bool droppedOldest = false;
             const std::size_t pendingToDtu = queuePendingSessionPayload(runtime, std::move(bytes), droppedOldest);
@@ -2346,10 +2407,10 @@ private:
                          << ", linkId=" << requestLinkId
                          << ", limit=" << kMaxPendingSessionFrames;
             }
-            LOG_WARN << "[S7][Adapter] Failed to forward discovery payload to probing session: "
+            LOG_WARN << "[S7][Adapter] Failed to forward discovery payload to any session: "
                      << deviceLabel(*runtime) << "(id=" << deviceId << ")"
-                     << ", linkId=" << sessionLinkId
-                     << ", client=" << sessionClientAddr
+                     << ", linkId=" << requestLinkId
+                     << ", candidates=" << discoverySessions.size()
                      << ", pendingToDtu=" << pendingToDtu;
             return kS7Ok;
         }
