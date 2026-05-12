@@ -1863,6 +1863,7 @@ private:
         int deviceId = 0;
         int linkId = 0;
         bool tcpServerMode = false;
+        bool sessionBound = false;
         S7ConnectionConfig connection;
         std::uint64_t attemptId = 0;
 
@@ -1878,6 +1879,9 @@ private:
             deviceId = runtime->deviceId;
             linkId = runtime->linkId;
             tcpServerMode = runtime->tcpServerMode;
+            sessionBound = runtime->sessionBound
+                && runtime->sessionLinkId > 0
+                && !runtime->sessionClientAddr.empty();
             connection = runtime->connection;
             if (runtime->lastConnectAttempt != std::chrono::steady_clock::time_point{}
                 && connection.retryDelayMs > 0
@@ -1902,7 +1906,7 @@ private:
             attemptId = ++runtime->connectGeneration;
         }
 
-        if (tcpServerMode) {
+        if (tcpServerMode && !sessionBound) {
             auto probingSession = acquireDiscoverySession(linkId, deviceId);
             if (!probingSession || probingSession->clientAddr.empty() || probingSession->linkId <= 0) {
                 {
