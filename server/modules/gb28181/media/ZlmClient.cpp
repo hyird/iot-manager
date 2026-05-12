@@ -54,6 +54,31 @@ std::optional<boost::json::object> parseObject(const std::string& body) {
     return value.as_object();
 }
 
+std::string compactForLog(std::string value, std::size_t limit = 512) {
+    const auto truncated = value.size() > limit;
+    if (truncated) {
+        value.resize(limit);
+    }
+
+    std::string output;
+    output.reserve(value.size());
+    for (const auto ch : value) {
+        if (ch == '\r') {
+            output += "\\r";
+        } else if (ch == '\n') {
+            output += "\\n";
+        } else if (ch == '\t') {
+            output += "\\t";
+        } else {
+            output.push_back(ch);
+        }
+    }
+    if (truncated) {
+        output += "...";
+    }
+    return output;
+}
+
 } // namespace
 
 ZlmClient::ZlmClient(MediaConfig config)
@@ -77,15 +102,30 @@ drogon::Task<std::optional<OpenRtpServerResult>> ZlmClient::openRtpServerCoro(co
     request->setMethod(drogon::Get);
     request->setPath(path.str());
 
+    LOG_INFO << "[GB28181][ZLM] openRtpServer request, device=" << deviceId
+             << ", channel=" << channelId
+             << ", mode=" << mode
+             << ", stream_id=" << streamId
+             << ", ssrc=" << ssrc
+             << ", requested_port=" << requestedPort
+             << ", base_url=" << baseUrl;
+
     auto response = co_await client->sendRequestCoro(request, 3.0);
     if (response == nullptr) {
-        LOG_WARN << "ZLM openRtpServer request failed";
+        LOG_WARN << "[GB28181][ZLM] openRtpServer request failed, stream_id=" << streamId
+                 << ", requested_port=" << requestedPort;
         co_return std::nullopt;
     }
 
+    LOG_DEBUG << "[GB28181][ZLM] openRtpServer response, stream_id=" << streamId
+              << ", http_status=" << static_cast<int>(response->getStatusCode())
+              << ", body=\"" << compactForLog(std::string(response->body()), 800) << "\"";
+
     const auto parsed = parseObject(std::string(response->body()));
     if (!parsed.has_value()) {
-        LOG_WARN << "ZLM openRtpServer returned invalid JSON: " << response->body();
+        LOG_WARN << "[GB28181][ZLM] openRtpServer returned invalid JSON, stream_id=" << streamId
+                 << ", http_status=" << static_cast<int>(response->getStatusCode())
+                 << ", body=\"" << compactForLog(std::string(response->body()), 800) << "\"";
         co_return std::nullopt;
     }
 
@@ -93,7 +133,9 @@ drogon::Task<std::optional<OpenRtpServerResult>> ZlmClient::openRtpServerCoro(co
     const auto code = object.if_contains("code");
     const auto port = object.if_contains("port");
     if (code == nullptr || !code->is_int64() || code->as_int64() != 0) {
-        LOG_WARN << "ZLM openRtpServer failed: " << response->body();
+        LOG_WARN << "[GB28181][ZLM] openRtpServer failed, stream_id=" << streamId
+                 << ", http_status=" << static_cast<int>(response->getStatusCode())
+                 << ", body=\"" << compactForLog(std::string(response->body()), 800) << "\"";
         co_return std::nullopt;
     }
 
@@ -101,6 +143,11 @@ drogon::Task<std::optional<OpenRtpServerResult>> ZlmClient::openRtpServerCoro(co
     openResult.streamId = streamId;
     openResult.port = port != nullptr && port->is_int64() ? static_cast<uint16_t>(port->as_int64()) : requestedPort;
     openResult.playUrls = buildPlayUrls(streamId);
+    LOG_INFO << "[GB28181][ZLM] openRtpServer success, stream_id=" << streamId
+             << ", requested_port=" << requestedPort
+             << ", actual_port=" << openResult.port
+             << ", http_flv=" << openResult.playUrls.httpFlv
+             << ", ws_flv=" << openResult.playUrls.wsFlv;
     co_return openResult;
 }
 
@@ -116,8 +163,19 @@ drogon::Task<bool> ZlmClient::closeRtpServerCoro(const std::string& streamId) {
     request->setMethod(drogon::Get);
     request->setPath(path.str());
 
+    LOG_INFO << "[GB28181][ZLM] closeRtpServer request, stream_id=" << streamId
+             << ", base_url=" << baseUrl;
+
     auto response = co_await client->sendRequestCoro(request, 3.0);
-    co_return response != nullptr;
+    if (response == nullptr) {
+        LOG_WARN << "[GB28181][ZLM] closeRtpServer request failed, stream_id=" << streamId;
+        co_return false;
+    }
+
+    LOG_INFO << "[GB28181][ZLM] closeRtpServer response, stream_id=" << streamId
+             << ", http_status=" << static_cast<int>(response->getStatusCode())
+             << ", body=\"" << compactForLog(std::string(response->body()), 800) << "\"";
+    co_return true;
 }
 
 PlayUrls ZlmClient::buildPlayUrls(const std::string& streamId) const {

@@ -135,11 +135,12 @@ void ensureWindowsFirewallRules(const AppConfig& config) {
     }
 
     if (missing.empty()) {
-        LOG_INFO << "Windows firewall rules already exist";
+        LOG_INFO << "[GB28181][Firewall] Windows firewall rules already exist";
         return;
     }
 
-    LOG_INFO << "Requesting Windows firewall authorization for " << missing.size() << " inbound rule(s)";
+    LOG_INFO << "[GB28181][Firewall] Requesting Windows firewall authorization for "
+             << missing.size() << " inbound rule(s)";
 
     const auto script = buildPowerShellScript(missing);
     const auto parameters = std::string("-NoProfile -ExecutionPolicy Bypass -Command \"") + script + "\"";
@@ -154,11 +155,12 @@ void ensureWindowsFirewallRules(const AppConfig& config) {
         SW_SHOWNORMAL));
 
     if (result <= 32) {
-        LOG_WARN << "Could not request Windows firewall authorization, ShellExecute error: " << static_cast<long long>(result);
+        LOG_WARN << "[GB28181][Firewall] Could not request Windows firewall authorization, ShellExecute error: "
+                 << static_cast<long long>(result);
         return;
     }
 
-    LOG_INFO << "Windows firewall authorization prompt started";
+    LOG_INFO << "[GB28181][Firewall] Windows firewall authorization prompt started";
 #else
     (void)config;
 #endif

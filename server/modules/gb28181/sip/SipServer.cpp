@@ -43,6 +43,11 @@ struct TcpConnectionContext {
     SipServer::SipPeer peer;
 };
 
+struct RemoteEndpoint {
+    std::string host;
+    uint16_t port{0};
+};
+
 std::string extractUserFromSipUri(const std::string& value) {
     const auto sip = value.find("sip:");
     if (sip == std::string::npos) {
@@ -111,6 +116,93 @@ std::optional<std::size_t> contentLengthOf(const std::string& headerText) {
         }
     }
     return 0;
+}
+
+std::string compactForLog(std::string value, std::size_t limit = 512) {
+    const auto truncated = value.size() > limit;
+    if (truncated) {
+        value.resize(limit);
+    }
+
+    std::string output;
+    output.reserve(value.size());
+    for (const auto ch : value) {
+        if (ch == '\r') {
+            output += "\\r";
+        } else if (ch == '\n') {
+            output += "\\n";
+        } else if (ch == '\t') {
+            output += "\\t";
+        } else {
+            output.push_back(ch);
+        }
+    }
+    if (truncated) {
+        output += "...";
+    }
+    return output;
+}
+
+std::optional<RemoteEndpoint> parseRemoteEndpoint(const std::string& remoteAddress) {
+    const auto colon = remoteAddress.rfind(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= remoteAddress.size()) {
+        return std::nullopt;
+    }
+
+    try {
+        const auto port = std::stoi(remoteAddress.substr(colon + 1));
+        if (port <= 0 || port > 65535) {
+            return std::nullopt;
+        }
+        return RemoteEndpoint{
+            remoteAddress.substr(0, colon),
+            static_cast<uint16_t>(port),
+        };
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::string routeUnavailableReason(const std::optional<DeviceRouteSnapshot>& route) {
+    if (!route.has_value()) {
+        return "device_not_registered";
+    }
+    if (!route->online) {
+        return "device_offline";
+    }
+    if (route->remoteAddress.empty()) {
+        return "remote_address_empty";
+    }
+    return {};
+}
+
+void logSipPacket(const char* direction, const SipMessage& message, const SipServer::SipPeer& remote, std::size_t bytes) {
+    LOG_DEBUG << "[GB28181][SIP][" << direction << "] " << transportName(remote.transport)
+              << " " << peerToString(remote)
+              << ", start_line=\"" << message.startLine << "\""
+              << ", call_id=" << message.header("Call-ID")
+              << ", cseq=\"" << message.header("CSeq") << "\""
+              << ", bytes=" << bytes
+              << ", body_bytes=" << message.body.size();
+
+    if (!message.body.empty()) {
+        LOG_TRACE << "[GB28181][SIP][" << direction << "_BODY] " << transportName(remote.transport)
+                  << " " << peerToString(remote)
+                  << ", call_id=" << message.header("Call-ID")
+                  << ", body=\"" << compactForLog(message.body, 2048) << "\"";
+    }
+}
+
+void logSipSend(const std::string& packet, const SipServer::SipPeer& remote) {
+    const auto message = SipMessage::parse(packet);
+    if (!message.has_value()) {
+        LOG_DEBUG << "[GB28181][SIP][TX] " << transportName(remote.transport)
+                  << " " << peerToString(remote)
+                  << ", bytes=" << packet.size()
+                  << ", first_bytes=\"" << compactForLog(packet, 160) << "\"";
+        return;
+    }
+    logSipPacket("TX", *message, remote, packet.size());
 }
 
 std::string xmlText(const pugi::xml_node& node, const char* name) {
@@ -282,8 +374,17 @@ SipServer::~SipServer() {
 
 void SipServer::start() {
     if (running_.exchange(true)) {
+        LOG_INFO << "[GB28181][SIP] Start skipped: server already running";
         return;
     }
+
+    LOG_INFO << "[GB28181][SIP] Starting, listen=" << sipConfig_.host << ":" << sipConfig_.port
+             << ", domain=" << sipConfig_.domain
+             << ", sip_id=" << sipConfig_.id
+             << ", public_ip=" << sipConfig_.publicIp
+             << ", media_rtp_ip=" << mediaConfig_.rtpPublicIp
+             << ", rtp_port_range=" << mediaConfig_.rtpPortRangeStart << "-" << mediaConfig_.rtpPortRangeEnd
+             << ", zlm_base_url=" << mediaConfig_.zlmBaseUrl;
 
     ioLoop_ = TcpLinkManager::instance().getNextIoLoop();
     if (ioLoop_->isInLoopThread()) {
@@ -312,12 +413,15 @@ void SipServer::start() {
 
 void SipServer::stop() {
     if (!running_.exchange(false)) {
+        LOG_INFO << "[GB28181][SIP] Stop skipped: server is not running";
         return;
     }
 
     if (ioLoop_ == nullptr) {
+        LOG_INFO << "[GB28181][SIP] Stop skipped: IO loop is not available";
         return;
     }
+    LOG_INFO << "[GB28181][SIP] Stopping";
     if (ioLoop_->isInLoopThread()) {
         stopInLoop();
     } else {
@@ -370,11 +474,19 @@ void SipServer::startInLoop() {
     });
     tcpServer_->start();
 
-    LOG_INFO << "SIP UDP listening on " << sipConfig_.host << ":" << sipConfig_.port << " via TcpIoPool";
-    LOG_INFO << "SIP TCP listening on " << sipConfig_.host << ":" << sipConfig_.port << " via TcpIoPool";
+    LOG_INFO << "[GB28181][SIP] UDP listening on " << sipConfig_.host << ":" << sipConfig_.port << " via TcpIoPool";
+    LOG_INFO << "[GB28181][SIP] TCP listening on " << sipConfig_.host << ":" << sipConfig_.port << " via TcpIoPool";
 }
 
 void SipServer::stopInLoop() {
+    std::size_t sessionCount = 0;
+    std::size_t viewerCount = 0;
+    {
+        std::lock_guard lock(sessionMutex_);
+        sessionCount = previewSessions_.size();
+        viewerCount = previewViewers_.size();
+    }
+
     if (udpChannel_) {
         udpChannel_->disableAll();
         udpChannel_->remove();
@@ -388,8 +500,10 @@ void SipServer::stopInLoop() {
         tcpServer_.reset();
     }
 
+    std::size_t tcpConnectionCount = 0;
     {
         std::lock_guard lock(tcpConnectionsMutex_);
+        tcpConnectionCount = tcpConnections_.size();
         for (auto& [_, connection] : tcpConnections_) {
             if (connection && connection->connected()) {
                 connection->forceClose();
@@ -397,6 +511,10 @@ void SipServer::stopInLoop() {
         }
         tcpConnections_.clear();
     }
+
+    LOG_INFO << "[GB28181][SIP] Stopped, active_sessions=" << sessionCount
+             << ", active_viewers=" << viewerCount
+             << ", tcp_connections=" << tcpConnectionCount;
 }
 
 void SipServer::handleUdpReadable() {
@@ -413,7 +531,7 @@ void SipServer::handleUdpReadable() {
             &remoteLength);
         if (size < 0) {
             if (!wouldBlock() && running_) {
-                LOG_WARN << "SIP UDP receive failed: " << socketErrorMessage();
+                LOG_WARN << "[GB28181][SIP] UDP receive failed: " << socketErrorMessage();
             }
             return;
         }
@@ -423,6 +541,8 @@ void SipServer::handleUdpReadable() {
         peer.udp = remoteAddress;
         peer.address = socketAddressToIp(remoteAddress);
         peer.port = ntohs(remoteAddress.sin_port);
+        LOG_DEBUG << "[GB28181][SIP][UDP_RX] remote=" << peerToString(peer)
+                  << ", bytes=" << size;
         handlePacket(std::string(buffer.data(), static_cast<size_t>(size)), peer);
     }
 }
@@ -444,7 +564,7 @@ void SipServer::handleTcpConnection(const trantor::TcpConnectionPtr& connection)
             std::lock_guard lock(tcpConnectionsMutex_);
             tcpConnections_[key] = connection;
         }
-        LOG_INFO << "SIP TCP connected from " << key;
+        LOG_INFO << "[GB28181][SIP] TCP connected from " << key;
         return;
     }
 
@@ -456,7 +576,7 @@ void SipServer::handleTcpConnection(const trantor::TcpConnectionPtr& connection)
         }
     }
     connection->clearContext();
-    LOG_INFO << "SIP TCP disconnected from " << key;
+    LOG_INFO << "[GB28181][SIP] TCP disconnected from " << key;
 }
 
 void SipServer::handleTcpMessage(const trantor::TcpConnectionPtr& connection, trantor::MsgBuffer* buffer) {
@@ -469,6 +589,8 @@ void SipServer::handleTcpMessage(const trantor::TcpConnectionPtr& connection, tr
     buffer->retrieveAll();
 
     const auto key = connection->peerAddr().toIpPort();
+    LOG_DEBUG << "[GB28181][SIP][TCP_RX] remote=" << key
+              << ", pending_bytes=" << context->pending.size();
     while (true) {
         const auto headerEnd = context->pending.find("\r\n\r\n");
         if (headerEnd == std::string::npos) {
@@ -476,7 +598,8 @@ void SipServer::handleTcpMessage(const trantor::TcpConnectionPtr& connection, tr
         }
         const auto contentLength = contentLengthOf(context->pending.substr(0, headerEnd));
         if (!contentLength.has_value()) {
-            LOG_WARN << "SIP TCP message with invalid Content-Length from " << key;
+            LOG_WARN << "[GB28181][SIP] TCP message with invalid Content-Length from " << key
+                     << ", header=\"" << compactForLog(context->pending.substr(0, headerEnd), 300) << "\"";
             context->pending.clear();
             break;
         }
@@ -493,9 +616,14 @@ void SipServer::handleTcpMessage(const trantor::TcpConnectionPtr& connection, tr
 void SipServer::handlePacket(const std::string& packet, const SipPeer& remote) {
     const auto message = SipMessage::parse(packet);
     if (!message.has_value()) {
-        LOG_WARN << "Ignored malformed SIP packet from " << transportName(remote.transport) << " " << peerToString(remote);
+        LOG_WARN << "[GB28181][SIP] Ignored malformed packet from " << transportName(remote.transport)
+                 << " " << peerToString(remote)
+                 << ", bytes=" << packet.size()
+                 << ", first_bytes=\"" << compactForLog(packet, 200) << "\"";
         return;
     }
+
+    logSipPacket("RX", *message, remote, packet.size());
 
     if (message->statusCode > 0) {
         handleResponse(*message, remote);
@@ -512,6 +640,10 @@ void SipServer::handlePacket(const std::string& packet, const SipPeer& remote) {
         return;
     }
 
+    LOG_WARN << "[GB28181][SIP] Unsupported method, method=" << message->method
+             << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+             << ", call_id=" << message->header("Call-ID")
+             << ", cseq=\"" << message->header("CSeq") << "\"";
     sendResponse(*message, remote, 405, "Method Not Allowed");
 }
 
@@ -522,13 +654,27 @@ void SipServer::handleResponse(const SipMessage& message, const SipPeer& remote)
         return;
     }
 
-    LOG_DEBUG << "Unhandled SIP response " << message.statusCode << " from " << transportName(remote.transport) << " " << peerToString(remote) << ", CSeq=" << cseq;
+    if (message.statusCode >= 300) {
+        LOG_WARN << "[GB28181][SIP] Error response, status=" << message.statusCode
+                 << ", reason=\"" << message.reasonPhrase << "\""
+                 << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+                 << ", call_id=" << message.header("Call-ID")
+                 << ", cseq=\"" << cseq << "\""
+                 << ", body=\"" << compactForLog(message.body, 300) << "\"";
+        return;
+    }
+
+    LOG_DEBUG << "[GB28181][SIP] Unhandled response, status=" << message.statusCode
+              << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+              << ", call_id=" << message.header("Call-ID")
+              << ", cseq=\"" << cseq << "\"";
 }
 
 void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote) {
     const auto callId = message.header("Call-ID");
     if (callId.empty()) {
-        LOG_WARN << "INVITE 200 OK without Call-ID from " << transportName(remote.transport) << " " << peerToString(remote);
+        LOG_WARN << "[GB28181][Invite] 200 OK without Call-ID from "
+                 << transportName(remote.transport) << " " << peerToString(remote);
         return;
     }
 
@@ -546,7 +692,9 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
     }
 
     if (!found) {
-        LOG_WARN << "INVITE 200 OK for unknown Call-ID: " << callId;
+        LOG_WARN << "[GB28181][Invite] 200 OK for unknown Call-ID, call_id=" << callId
+                 << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+                 << ", cseq=\"" << message.header("CSeq") << "\"";
         return;
     }
 
@@ -554,7 +702,13 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
     const auto cseq = extractCSeqNumber(message.header("CSeq"));
     const auto toTag = extractTag(to);
     if (!message.body.empty()) {
-        LOG_INFO << "INVITE 200 OK SDP, call_id=" << callId << ", body=" << message.body;
+        LOG_INFO << "[GB28181][Invite] 200 OK SDP received, session=" << session.sessionId
+                 << ", mode=" << session.mode
+                 << ", device=" << session.deviceId
+                 << ", channel=" << session.channelId
+                 << ", stream_id=" << session.streamId
+                 << ", call_id=" << callId
+                 << ", body=\"" << compactForLog(message.body, 1200) << "\"";
     }
     {
         std::lock_guard lock(sessionMutex_);
@@ -586,7 +740,15 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
         << "Content-Length: 0\r\n\r\n";
 
     sendRequest(ack.str(), remote);
-    LOG_INFO << "Preview ACK sent, call_id=" << callId << ", to_tag=" << toTag;
+    LOG_INFO << "[GB28181][Invite] ACK sent, session=" << session.sessionId
+             << ", mode=" << session.mode
+             << ", device=" << session.deviceId
+             << ", channel=" << session.channelId
+             << ", stream_id=" << session.streamId
+             << ", call_id=" << callId
+             << ", cseq=" << cseq
+             << ", to_tag=" << toTag
+             << ", remote=" << transportName(remote.transport) << " " << peerToString(remote);
 }
 
 void SipServer::handleRegister(const SipMessage& message, const SipPeer& remote) {
@@ -597,6 +759,11 @@ void SipServer::handleRegister(const SipMessage& message, const SipPeer& remote)
              << "\", nonce=\"" << nonce
              << "\", algorithm=MD5, qop=\"auth\"\r\n";
         sendResponse(message, remote, 401, "Unauthorized", auth.str());
+        LOG_INFO << "[GB28181][Register] Auth challenge sent, device_hint="
+                 << extractUserFromSipUri(message.header("From"))
+                 << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+                 << ", call_id=" << message.header("Call-ID")
+                 << ", cseq=\"" << message.header("CSeq") << "\"";
         return;
     }
 
@@ -609,7 +776,12 @@ void SipServer::handleRegister(const SipMessage& message, const SipPeer& remote)
     }
 
     deviceRegistry_.upsertRegistration(deviceId, peerToString(remote));
-    LOG_INFO << "GB28181 device registered: " << deviceId << " from " << transportName(remote.transport) << " " << peerToString(remote);
+    LOG_INFO << "[GB28181][Register] Device registered, device=" << deviceId
+             << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+             << ", contact=\"" << message.header("Contact") << "\""
+             << ", expires=\"" << message.header("Expires") << "\""
+             << ", call_id=" << message.header("Call-ID")
+             << ", cseq=\"" << message.header("CSeq") << "\"";
 
     sendResponse(message, remote, 200, "OK");
 
@@ -622,7 +794,10 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
     pugi::xml_document document;
     const auto result = document.load_string(message.body.c_str());
     if (!result) {
-        LOG_WARN << "Ignored MESSAGE with invalid XML from " << transportName(remote.transport) << " " << peerToString(remote) << ": " << result.description();
+        LOG_WARN << "[GB28181][Message] Ignored invalid XML from " << transportName(remote.transport)
+                 << " " << peerToString(remote)
+                 << ", error=" << result.description()
+                 << ", body=\"" << compactForLog(message.body, 500) << "\"";
         return;
     }
 
@@ -630,27 +805,40 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
     const auto cmdType = xmlText(root, "CmdType");
     auto deviceId = xmlText(root, "DeviceID");
     if (deviceId.empty()) {
-        LOG_WARN << "Ignored MESSAGE without DeviceID from " << transportName(remote.transport) << " " << peerToString(remote);
+        LOG_WARN << "[GB28181][Message] Ignored MESSAGE without DeviceID, cmd_type=" << cmdType
+                 << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+                 << ", body=\"" << compactForLog(message.body, 500) << "\"";
         return;
     }
     const auto snText = xmlText(root, "SN");
+    LOG_INFO << "[GB28181][Message] Received, cmd_type=" << cmdType
+             << ", device=" << deviceId
+             << ", sn=" << snText
+             << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+             << ", body_bytes=" << message.body.size();
 
     if (cmdType == "Keepalive") {
         const auto status = xmlText(root, "Status");
+        bool shouldQueryCatalog = false;
         if (statusOnline(status)) {
-            const auto shouldQueryCatalog = deviceRegistry_.updateKeepaliveAndNeedsCatalog(deviceId, peerToString(remote));
+            shouldQueryCatalog = deviceRegistry_.updateKeepaliveAndNeedsCatalog(deviceId, peerToString(remote));
             if (shouldQueryCatalog) {
                 scheduleCatalogQuery(deviceId);
             }
         } else {
             deviceRegistry_.markOffline(deviceId);
         }
-        LOG_DEBUG << "Keepalive from " << deviceId << ", status=" << status;
+        LOG_INFO << "[GB28181][Keepalive] device=" << deviceId
+                 << ", status=" << status
+                 << ", online=" << statusOnline(status)
+                 << ", catalog_scheduled=" << shouldQueryCatalog
+                 << ", remote=" << transportName(remote.transport) << " " << peerToString(remote);
         return;
     }
 
     if (cmdType == "Catalog") {
         std::vector<Channel> channels;
+        std::size_t onlineCount = 0;
         for (auto item : root.child("DeviceList").children("Item")) {
             Channel channel;
             channel.id = xmlText(item, "DeviceID");
@@ -659,15 +847,30 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
             channel.online = statusOnline(xmlText(item, "Status"));
             channel.ptzType = xmlInt(item, "PTZType");
             if (!channel.id.empty()) {
+                if (channel.online) {
+                    ++onlineCount;
+                }
+                LOG_DEBUG << "[GB28181][Catalog] Channel, device=" << deviceId
+                          << ", channel=" << channel.id
+                          << ", name=\"" << channel.name << "\""
+                          << ", manufacturer=\"" << channel.manufacturer << "\""
+                          << ", online=" << channel.online
+                          << ", ptz_type=" << channel.ptzType;
                 channels.push_back(std::move(channel));
             }
         }
+        const auto channelCount = channels.size();
         deviceRegistry_.updateCatalog(deviceId, std::move(channels));
-        LOG_INFO << "Catalog updated for " << deviceId;
+        LOG_INFO << "[GB28181][Catalog] Updated, device=" << deviceId
+                 << ", sn=" << snText
+                 << ", channels=" << channelCount
+                 << ", online_channels=" << onlineCount
+                 << ", remote=" << transportName(remote.transport) << " " << peerToString(remote);
         return;
     }
 
     if (cmdType == "RecordInfo") {
+        auto originalDeviceId = deviceId;
         if (!snText.empty()) {
             try {
                 const auto sn = static_cast<unsigned int>(std::stoul(snText));
@@ -692,32 +895,55 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
             record.type = xmlText(item, "Type");
             record.recorderId = xmlText(item, "RecorderID");
             if (!record.deviceId.empty()) {
+                LOG_DEBUG << "[GB28181][Record] Item, device=" << deviceId
+                          << ", channel=" << record.deviceId
+                          << ", name=\"" << record.name << "\""
+                          << ", start_time=" << record.startTime
+                          << ", end_time=" << record.endTime
+                          << ", type=" << record.type;
                 records.push_back(std::move(record));
             }
         }
+        const auto recordCount = records.size();
         deviceRegistry_.updateRecords(deviceId, std::move(records));
-        LOG_INFO << "RecordInfo updated for " << deviceId;
+        LOG_INFO << "[GB28181][Record] Updated, device=" << deviceId
+                 << ", reported_device=" << originalDeviceId
+                 << ", sn=" << snText
+                 << ", records=" << recordCount
+                 << ", remote=" << transportName(remote.transport) << " " << peerToString(remote);
         return;
     }
 
-    LOG_DEBUG << "Unhandled MESSAGE CmdType=" << cmdType << " from " << deviceId;
+    LOG_WARN << "[GB28181][Message] Unhandled CmdType, cmd_type=" << cmdType
+             << ", device=" << deviceId
+             << ", sn=" << snText
+             << ", remote=" << transportName(remote.transport) << " " << peerToString(remote);
 }
 
 bool SipServer::queryCatalog(const std::string& deviceId) {
+    LOG_INFO << "[GB28181][Catalog] Query requested, device=" << deviceId;
+
     const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
-    if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
+    const auto unavailableReason = routeUnavailableReason(route);
+    if (!unavailableReason.empty()) {
+        LOG_WARN << "[GB28181][Catalog] Query skipped, device=" << deviceId
+                 << ", reason=" << unavailableReason;
         return false;
     }
 
-    const auto colon = route->remoteAddress.rfind(':');
-    if (colon == std::string::npos) {
+    const auto endpoint = parseRemoteEndpoint(route->remoteAddress);
+    if (!endpoint.has_value()) {
+        LOG_WARN << "[GB28181][Catalog] Query skipped, device=" << deviceId
+                 << ", reason=invalid_remote_address"
+                 << ", remote_address=" << route->remoteAddress;
         return false;
     }
 
-    const auto host = route->remoteAddress.substr(0, colon);
-    const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
     auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
+        LOG_WARN << "[GB28181][Catalog] Query skipped, device=" << deviceId
+                 << ", reason=peer_unavailable"
+                 << ", remote_address=" << route->remoteAddress;
         return false;
     }
 
@@ -737,7 +963,7 @@ bool SipServer::queryCatalog(const std::string& deviceId) {
     const auto callId = makeToken("catalog") + "@" + sipConfig_.domain;
 
     std::ostringstream request;
-    request << "MESSAGE sip:" << deviceId << "@" << host << ":" << port << " SIP/2.0\r\n"
+    request << "MESSAGE sip:" << deviceId << "@" << endpoint->host << ":" << endpoint->port << " SIP/2.0\r\n"
             << "Via: SIP/2.0/" << transportName(remote->transport) << " " << publicHost << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
             << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << tag << "\r\n"
             << "To: <sip:" << deviceId << "@" << sipConfig_.domain << ">\r\n"
@@ -750,24 +976,45 @@ bool SipServer::queryCatalog(const std::string& deviceId) {
             << bodyText;
 
     sendRequest(request.str(), *remote);
+    LOG_INFO << "[GB28181][Catalog] Query sent, device=" << deviceId
+             << ", sn=" << sn
+             << ", call_id=" << callId
+             << ", branch=" << branch
+             << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
+             << ", body_bytes=" << bodyText.size();
     return true;
 }
 
 bool SipServer::queryRecords(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
+    LOG_INFO << "[GB28181][Record] Query requested, device=" << deviceId
+             << ", channel=" << channelId
+             << ", start_time=" << startTime
+             << ", end_time=" << endTime;
+
     const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
-    if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
+    const auto unavailableReason = routeUnavailableReason(route);
+    if (!unavailableReason.empty()) {
+        LOG_WARN << "[GB28181][Record] Query skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=" << unavailableReason;
         return false;
     }
 
-    const auto colon = route->remoteAddress.rfind(':');
-    if (colon == std::string::npos) {
+    const auto endpoint = parseRemoteEndpoint(route->remoteAddress);
+    if (!endpoint.has_value()) {
+        LOG_WARN << "[GB28181][Record] Query skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=invalid_remote_address"
+                 << ", remote_address=" << route->remoteAddress;
         return false;
     }
 
-    const auto host = route->remoteAddress.substr(0, colon);
-    const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
     auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
+        LOG_WARN << "[GB28181][Record] Query skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=peer_unavailable"
+                 << ", remote_address=" << route->remoteAddress;
         return false;
     }
 
@@ -795,7 +1042,7 @@ bool SipServer::queryRecords(const std::string& deviceId, const std::string& cha
     }
 
     std::ostringstream request;
-    request << "MESSAGE sip:" << channelId << "@" << host << ":" << port << " SIP/2.0\r\n"
+    request << "MESSAGE sip:" << channelId << "@" << endpoint->host << ":" << endpoint->port << " SIP/2.0\r\n"
             << "Via: SIP/2.0/" << transportName(remote->transport) << " " << publicHost << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
             << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << tag << "\r\n"
             << "To: <sip:" << channelId << "@" << sipConfig_.domain << ">\r\n"
@@ -808,35 +1055,61 @@ bool SipServer::queryRecords(const std::string& deviceId, const std::string& cha
             << bodyText;
 
     sendRequest(request.str(), *remote);
+    LOG_INFO << "[GB28181][Record] Query sent, device=" << deviceId
+             << ", channel=" << channelId
+             << ", sn=" << sn
+             << ", call_id=" << callId
+             << ", branch=" << branch
+             << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
+             << ", body_bytes=" << bodyText.size();
     return true;
 }
 
 bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& channelId, const std::string& action, uint8_t speed) {
+    LOG_INFO << "[GB28181][PTZ] Control requested, device=" << deviceId
+             << ", channel=" << channelId
+             << ", action=" << action
+             << ", speed=" << static_cast<unsigned int>(speed);
+
     const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
-    if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
+    const auto unavailableReason = routeUnavailableReason(route);
+    if (!unavailableReason.empty()) {
+        LOG_WARN << "[GB28181][PTZ] Control skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", action=" << action
+                 << ", reason=" << unavailableReason;
         return false;
     }
 
-    const auto colon = route->remoteAddress.rfind(':');
-    if (colon == std::string::npos) {
+    const auto endpoint = parseRemoteEndpoint(route->remoteAddress);
+    if (!endpoint.has_value()) {
+        LOG_WARN << "[GB28181][PTZ] Control skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", action=" << action
+                 << ", reason=invalid_remote_address"
+                 << ", remote_address=" << route->remoteAddress;
         return false;
     }
 
-    const auto host = route->remoteAddress.substr(0, colon);
-    const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
     auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
+        LOG_WARN << "[GB28181][PTZ] Control skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", action=" << action
+                 << ", reason=peer_unavailable"
+                 << ", remote_address=" << route->remoteAddress;
         return false;
     }
 
     const auto sn = cseq_.fetch_add(1);
+    const auto command = ptzCommand(action, speed);
     std::ostringstream body;
     body << "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
          << "<Control>\r\n"
          << "<CmdType>DeviceControl</CmdType>\r\n"
          << "<SN>" << sn << "</SN>\r\n"
          << "<DeviceID>" << channelId << "</DeviceID>\r\n"
-         << "<PTZCmd>" << ptzCommand(action, speed) << "</PTZCmd>\r\n"
+         << "<PTZCmd>" << command << "</PTZCmd>\r\n"
          << "<Info>\r\n"
          << "<ControlPriority>5</ControlPriority>\r\n"
          << "</Info>\r\n"
@@ -849,7 +1122,7 @@ bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& c
     const auto callId = makeToken("ptz") + "@" + sipConfig_.domain;
 
     std::ostringstream request;
-    request << "MESSAGE sip:" << channelId << "@" << host << ":" << port << " SIP/2.0\r\n"
+    request << "MESSAGE sip:" << channelId << "@" << endpoint->host << ":" << endpoint->port << " SIP/2.0\r\n"
             << "Via: SIP/2.0/" << transportName(remote->transport) << " " << publicHost << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
             << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << tag << "\r\n"
             << "To: <sip:" << channelId << "@" << sipConfig_.domain << ">\r\n"
@@ -862,31 +1135,56 @@ bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& c
             << bodyText;
 
     sendRequest(request.str(), *remote);
+    LOG_INFO << "[GB28181][PTZ] Control sent, device=" << deviceId
+             << ", channel=" << channelId
+             << ", action=" << action
+             << ", speed=" << static_cast<unsigned int>(speed)
+             << ", command=" << command
+             << ", sn=" << sn
+             << ", call_id=" << callId
+             << ", branch=" << branch
+             << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
+             << ", body_bytes=" << bodyText.size();
     return true;
 }
 
 drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPreviewCoro(const std::string& deviceId, const std::string& channelId) {
+    LOG_INFO << "[GB28181][Preview] Start requested, device=" << deviceId
+             << ", channel=" << channelId;
+
     const auto route = deviceRegistry_.findRouteSnapshot(deviceId, channelId);
-    if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
+    const auto unavailableReason = routeUnavailableReason(route);
+    if (!unavailableReason.empty()) {
+        LOG_WARN << "[GB28181][Preview] Start skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=" << unavailableReason;
         co_return std::nullopt;
     }
     if (route->hasChannels && !route->channelExists) {
+        LOG_WARN << "[GB28181][Preview] Start skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=channel_not_found";
         co_return std::nullopt;
     }
 
-    const auto colon = route->remoteAddress.rfind(':');
-    if (colon == std::string::npos) {
+    const auto endpoint = parseRemoteEndpoint(route->remoteAddress);
+    if (!endpoint.has_value()) {
+        LOG_WARN << "[GB28181][Preview] Start skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=invalid_remote_address"
+                 << ", remote_address=" << route->remoteAddress;
         co_return std::nullopt;
     }
 
-    const auto host = route->remoteAddress.substr(0, colon);
-    const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
     auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
+        LOG_WARN << "[GB28181][Preview] Start skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=peer_unavailable"
+                 << ", remote_address=" << route->remoteAddress;
         co_return std::nullopt;
     }
 
-    LOG_INFO << "Preview start requested, device=" << deviceId << ", channel=" << channelId;
     std::vector<std::string> staleSessionIds;
     {
         std::lock_guard lock(sessionMutex_);
@@ -899,7 +1197,12 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
                 const auto viewerId = makeToken("viewer");
                 ++session.viewerCount;
                 previewViewers_[viewerId] = session.sessionId;
-                LOG_INFO << "Preview stream reused, device=" << deviceId << ", channel=" << channelId << ", viewer_session=" << viewerId << ", stream_session=" << session.sessionId << ", viewers=" << session.viewerCount;
+                LOG_INFO << "[GB28181][Preview] Stream reused, device=" << deviceId
+                         << ", channel=" << channelId
+                         << ", viewer_session=" << viewerId
+                         << ", stream_session=" << session.sessionId
+                         << ", stream_id=" << session.streamId
+                         << ", viewers=" << session.viewerCount;
                 co_return PreviewStartResult{
                     viewerId,
                     session.deviceId,
@@ -916,7 +1219,10 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
     for (const auto& staleSessionId : staleSessionIds) {
         const auto result = co_await stopPreviewCoro(staleSessionId);
         if (result.has_value()) {
-            LOG_INFO << "Closed stale preview session before restart, session=" << staleSessionId << ", stream_id=" << result->streamId;
+            LOG_INFO << "[GB28181][Preview] Closed stale session before restart, session=" << staleSessionId
+                     << ", stream_id=" << result->streamId
+                     << ", bye_sent=" << result->byeSent
+                     << ", rtp_server_closed=" << result->rtpServerClosed;
         }
     }
 
@@ -930,11 +1236,20 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
     const auto nowMs = static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     const auto ssrcNumber = 1000000000ULL + ((nowMs + cseq) % 899999999ULL);
     const auto ssrc = std::to_string(ssrcNumber);
+    LOG_INFO << "[GB28181][Preview] Opening ZLM RTP server, device=" << deviceId
+             << ", channel=" << channelId
+             << ", ssrc=" << ssrc;
     const auto rtpServer = co_await zlmClient_.openRtpServerCoro(deviceId, channelId, ssrc);
     if (!rtpServer.has_value()) {
+        LOG_WARN << "[GB28181][Preview] Start failed, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=zlm_open_rtp_failed"
+                 << ", ssrc=" << ssrc;
         co_return std::nullopt;
     }
-    LOG_INFO << "ZLM RTP server opened for preview, stream_id=" << rtpServer->streamId << ", rtp_port=" << rtpServer->port;
+    LOG_INFO << "[GB28181][Preview] ZLM RTP server opened, stream_id=" << rtpServer->streamId
+             << ", rtp_port=" << rtpServer->port
+             << ", ssrc=" << ssrc;
 
     std::ostringstream body;
     body << "v=0\r\n"
@@ -951,7 +1266,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
 
     const auto bodyText = body.str();
     std::ostringstream request;
-    request << "INVITE sip:" << channelId << "@" << host << ":" << port << " SIP/2.0\r\n"
+    request << "INVITE sip:" << channelId << "@" << endpoint->host << ":" << endpoint->port << " SIP/2.0\r\n"
             << "Via: SIP/2.0/" << transportName(remote->transport) << " " << publicHost << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
             << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << fromTag << "\r\n"
             << "To: <sip:" << channelId << "@" << sipConfig_.domain << ">\r\n"
@@ -987,10 +1302,24 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
         previewSessions_.emplace(sessionId, session);
         previewViewers_.emplace(viewerId, sessionId);
     }
-    LOG_INFO << "Preview session stored, viewer_session=" << viewerId << ", stream_session=" << sessionId;
+    LOG_INFO << "[GB28181][Preview] Session stored, viewer_session=" << viewerId
+             << ", stream_session=" << sessionId
+             << ", stream_id=" << session.streamId
+             << ", call_id=" << callId
+             << ", cseq=" << cseq;
 
     sendRequest(request.str(), *remote);
-    LOG_INFO << "Preview INVITE sent, device=" << deviceId << ", channel=" << channelId << ", stream_id=" << rtpServer->streamId << ", rtp_port=" << rtpServer->port << ", ssrc=" << ssrc;
+    LOG_INFO << "[GB28181][Preview] INVITE sent, device=" << deviceId
+             << ", channel=" << channelId
+             << ", viewer_session=" << viewerId
+             << ", stream_session=" << sessionId
+             << ", stream_id=" << rtpServer->streamId
+             << ", rtp_port=" << rtpServer->port
+             << ", ssrc=" << ssrc
+             << ", call_id=" << callId
+             << ", branch=" << branch
+             << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
+             << ", sdp=\"" << compactForLog(bodyText, 700) << "\"";
 
     co_return PreviewStartResult{
         viewerId,
@@ -1005,29 +1334,56 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
 
 void SipServer::markStreamOnline(const std::string& streamId, bool online) {
     std::lock_guard lock(sessionMutex_);
+    bool found = false;
     for (auto& [_, session] : previewSessions_) {
         if (session.streamId == streamId) {
+            found = true;
             session.mediaOnline = online;
-            LOG_INFO << "Preview session media state changed, stream_id=" << streamId << ", online=" << online;
+            LOG_INFO << "[GB28181][Media] Session media state changed, session=" << session.sessionId
+                     << ", mode=" << session.mode
+                     << ", device=" << session.deviceId
+                     << ", channel=" << session.channelId
+                     << ", stream_id=" << streamId
+                     << ", online=" << online
+                     << ", viewers=" << session.viewerCount;
         }
+    }
+    if (!found) {
+        LOG_DEBUG << "[GB28181][Media] Stream state ignored because session was not found, stream_id="
+                  << streamId << ", online=" << online;
     }
 }
 
 drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlaybackCoro(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
+    LOG_INFO << "[GB28181][Playback] Start requested, device=" << deviceId
+             << ", channel=" << channelId
+             << ", start_time=" << startTime
+             << ", end_time=" << endTime;
+
     const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
-    if (!route.has_value() || !route->online || route->remoteAddress.empty()) {
+    const auto unavailableReason = routeUnavailableReason(route);
+    if (!unavailableReason.empty()) {
+        LOG_WARN << "[GB28181][Playback] Start skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=" << unavailableReason;
         co_return std::nullopt;
     }
 
-    const auto colon = route->remoteAddress.rfind(':');
-    if (colon == std::string::npos) {
+    const auto endpoint = parseRemoteEndpoint(route->remoteAddress);
+    if (!endpoint.has_value()) {
+        LOG_WARN << "[GB28181][Playback] Start skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=invalid_remote_address"
+                 << ", remote_address=" << route->remoteAddress;
         co_return std::nullopt;
     }
 
-    const auto host = route->remoteAddress.substr(0, colon);
-    const auto port = static_cast<unsigned short>(std::stoi(route->remoteAddress.substr(colon + 1)));
     auto remote = peerFromAddress(route->remoteAddress);
     if (!remote.has_value()) {
+        LOG_WARN << "[GB28181][Playback] Start skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=peer_unavailable"
+                 << ", remote_address=" << route->remoteAddress;
         co_return std::nullopt;
     }
 
@@ -1041,13 +1397,31 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
     const auto nowMs = static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     const auto ssrcNumber = 2000000000ULL + ((nowMs + cseq) % 899999999ULL);
     const auto ssrc = std::to_string(ssrcNumber);
+    LOG_INFO << "[GB28181][Playback] Opening ZLM RTP server, device=" << deviceId
+             << ", channel=" << channelId
+             << ", ssrc=" << ssrc;
     const auto rtpServer = co_await zlmClient_.openRtpServerCoro(deviceId, channelId, ssrc, "playback");
     if (!rtpServer.has_value()) {
+        LOG_WARN << "[GB28181][Playback] Start failed, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=zlm_open_rtp_failed"
+                 << ", ssrc=" << ssrc;
         co_return std::nullopt;
     }
+    LOG_INFO << "[GB28181][Playback] ZLM RTP server opened, stream_id=" << rtpServer->streamId
+             << ", rtp_port=" << rtpServer->port
+             << ", ssrc=" << ssrc;
 
     const auto startSeconds = gbTimeToUnixSeconds(startTime);
     const auto endSeconds = gbTimeToUnixSeconds(endTime);
+    if (startSeconds == 0 || endSeconds == 0 || endSeconds <= startSeconds) {
+        LOG_WARN << "[GB28181][Playback] Time range converted to an unusual value, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", start_time=" << startTime
+                 << ", end_time=" << endTime
+                 << ", start_seconds=" << startSeconds
+                 << ", end_seconds=" << endSeconds;
+    }
 
     std::ostringstream body;
     body << "v=0\r\n"
@@ -1065,7 +1439,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
 
     const auto bodyText = body.str();
     std::ostringstream request;
-    request << "INVITE sip:" << channelId << "@" << host << ":" << port << " SIP/2.0\r\n"
+    request << "INVITE sip:" << channelId << "@" << endpoint->host << ":" << endpoint->port << " SIP/2.0\r\n"
             << "Via: SIP/2.0/" << transportName(remote->transport) << " " << publicHost << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
             << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << fromTag << "\r\n"
             << "To: <sip:" << channelId << "@" << sipConfig_.domain << ">\r\n"
@@ -1100,7 +1474,16 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
     }
 
     sendRequest(request.str(), *remote);
-    LOG_INFO << "Playback INVITE sent, device=" << deviceId << ", channel=" << channelId << ", stream_id=" << rtpServer->streamId << ", rtp_port=" << rtpServer->port << ", ssrc=" << ssrc;
+    LOG_INFO << "[GB28181][Playback] INVITE sent, device=" << deviceId
+             << ", channel=" << channelId
+             << ", session=" << sessionId
+             << ", stream_id=" << rtpServer->streamId
+             << ", rtp_port=" << rtpServer->port
+             << ", ssrc=" << ssrc
+             << ", call_id=" << callId
+             << ", branch=" << branch
+             << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
+             << ", sdp=\"" << compactForLog(bodyText, 700) << "\"";
 
     co_return PreviewStartResult{
         session.sessionId,
@@ -1113,6 +1496,8 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
     };
 }
 drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreviewCoro(const std::string& sessionId) {
+    LOG_INFO << "[GB28181][Preview] Stop requested, session=" << sessionId;
+
     PreviewSession session;
     std::string streamSessionId = sessionId;
     {
@@ -1125,12 +1510,18 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
 
         const auto iter = previewSessions_.find(streamSessionId);
         if (iter == previewSessions_.end()) {
+            LOG_WARN << "[GB28181][Preview] Stop skipped, session=" << sessionId
+                     << ", resolved_stream_session=" << streamSessionId
+                     << ", reason=session_not_found";
             co_return std::nullopt;
         }
 
         if (iter->second.mode == "preview" && iter->second.viewerCount > 1 && streamSessionId != sessionId) {
             --iter->second.viewerCount;
-            LOG_INFO << "Preview viewer released, viewer_session=" << sessionId << ", stream_session=" << streamSessionId << ", viewers=" << iter->second.viewerCount;
+            LOG_INFO << "[GB28181][Preview] Viewer released, viewer_session=" << sessionId
+                     << ", stream_session=" << streamSessionId
+                     << ", stream_id=" << iter->second.streamId
+                     << ", viewers=" << iter->second.viewerCount;
             co_return PreviewStopResult{
                 sessionId,
                 iter->second.streamId,
@@ -1149,6 +1540,16 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
         }
         previewSessions_.erase(iter);
     }
+
+    LOG_INFO << "[GB28181][Preview] Stream session removed, requested_session=" << sessionId
+             << ", stream_session=" << streamSessionId
+             << ", mode=" << session.mode
+             << ", device=" << session.deviceId
+             << ", channel=" << session.channelId
+             << ", stream_id=" << session.streamId
+             << ", established=" << session.established
+             << ", media_online=" << session.mediaOnline
+             << ", viewers=" << session.viewerCount;
 
     bool byeSent = false;
     if (session.established) {
@@ -1172,12 +1573,24 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
 
         sendRequest(bye.str(), session.remote);
         byeSent = true;
-        LOG_INFO << "Preview BYE sent, session=" << streamSessionId << ", stream_id=" << session.streamId;
+        LOG_INFO << "[GB28181][Preview] BYE sent, session=" << streamSessionId
+                 << ", mode=" << session.mode
+                 << ", stream_id=" << session.streamId
+                 << ", call_id=" << session.callId
+                 << ", cseq=" << cseq
+                 << ", remote=" << transportName(session.remote.transport) << " " << peerToString(session.remote);
     } else {
-        LOG_INFO << "Preview session was not established; skip BYE, session=" << streamSessionId;
+        LOG_INFO << "[GB28181][Preview] BYE skipped because session was not established, session="
+                 << streamSessionId
+                 << ", stream_id=" << session.streamId
+                 << ", call_id=" << session.callId;
     }
 
     const bool rtpServerClosed = co_await zlmClient_.closeRtpServerCoro(session.streamId);
+    LOG_INFO << "[GB28181][Preview] RTP server close finished, session=" << streamSessionId
+             << ", stream_id=" << session.streamId
+             << ", closed=" << rtpServerClosed
+             << ", bye_sent=" << byeSent;
 
     co_return PreviewStopResult{
         sessionId,
@@ -1188,6 +1601,8 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
 }
 
 drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreviewByStreamCoro(const std::string& streamId) {
+    LOG_INFO << "[GB28181][Preview] Stop by stream requested, stream_id=" << streamId;
+
     std::string sessionId;
     {
         std::lock_guard lock(sessionMutex_);
@@ -1200,6 +1615,8 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
     }
 
     if (sessionId.empty()) {
+        LOG_WARN << "[GB28181][Preview] Stop by stream skipped, stream_id=" << streamId
+                 << ", reason=session_not_found";
         co_return std::nullopt;
     }
     co_return co_await stopPreviewCoro(sessionId);
@@ -1207,9 +1624,14 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
 
 drogon::Task<bool> SipServer::forceCloseRtpServerCoro(const std::string& streamId) {
     if (streamId.empty()) {
+        LOG_WARN << "[GB28181][Media] Force close RTP skipped, reason=stream_id_empty";
         co_return false;
     }
-    co_return co_await zlmClient_.closeRtpServerCoro(streamId);
+    LOG_WARN << "[GB28181][Media] Force closing orphan RTP server, stream_id=" << streamId;
+    const auto closed = co_await zlmClient_.closeRtpServerCoro(streamId);
+    LOG_WARN << "[GB28181][Media] Force close RTP finished, stream_id=" << streamId
+             << ", closed=" << closed;
+    co_return closed;
 }
 
 void SipServer::sendResponse(const SipMessage& request, const SipPeer& remote, int statusCode, const std::string& reason, const std::string& extraHeaders) {
@@ -1244,21 +1666,32 @@ void SipServer::sendResponse(const SipMessage& request, const SipPeer& remote, i
 
     const auto data = response.str();
     sendRequest(data, remote);
+    LOG_DEBUG << "[GB28181][SIP] Response sent, status=" << statusCode
+              << ", reason=\"" << reason << "\""
+              << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+              << ", call_id=" << callId
+              << ", cseq=\"" << cseq << "\"";
 }
 
 void SipServer::sendRequest(const std::string& request, const SipPeer& remote) {
+    logSipSend(request, remote);
+
     std::lock_guard lock(sendMutex_);
     if (remote.transport == SipTransport::Tcp) {
         if (!remote.tcp || !remote.tcp->connected()) {
-            LOG_WARN << "SIP TCP send failed: connection is closed";
+            LOG_WARN << "[GB28181][SIP] TCP send failed: connection is closed, remote="
+                     << peerToString(remote);
             return;
         }
         remote.tcp->send(request);
+        LOG_DEBUG << "[GB28181][SIP][TCP_TX] remote=" << peerToString(remote)
+                  << ", bytes=" << request.size();
         return;
     }
 
     if (ioLoop_ == nullptr || isInvalidSocket(udpSocket_)) {
-        LOG_WARN << "SIP UDP send failed: socket is not ready";
+        LOG_WARN << "[GB28181][SIP] UDP send failed: socket is not ready, remote="
+                 << peerToString(remote);
         return;
     }
 
@@ -1274,19 +1707,21 @@ void SipServer::sendRequest(const std::string& request, const SipPeer& remote) {
             reinterpret_cast<const sockaddr*>(&remoteAddress),
             sizeof(remoteAddress));
         if (sent < 0) {
-            LOG_WARN << "SIP UDP send failed: " << socketErrorMessage();
+            LOG_WARN << "[GB28181][SIP] UDP send failed: " << socketErrorMessage();
+        } else {
+            LOG_DEBUG << "[GB28181][SIP][UDP_TX] bytes=" << sent;
         }
     });
 }
 std::optional<SipServer::SipPeer> SipServer::peerFromAddress(const std::string& remoteAddress) const {
-    const auto colon = remoteAddress.rfind(':');
-    if (colon == std::string::npos) {
+    const auto endpoint = parseRemoteEndpoint(remoteAddress);
+    if (!endpoint.has_value()) {
         return std::nullopt;
     }
 
     SipPeer peer;
-    peer.address = remoteAddress.substr(0, colon);
-    peer.port = static_cast<uint16_t>(std::stoi(remoteAddress.substr(colon + 1)));
+    peer.address = endpoint->host;
+    peer.port = endpoint->port;
     {
         std::lock_guard lock(tcpConnectionsMutex_);
         const auto iter = tcpConnections_.find(remoteAddress);
@@ -1304,14 +1739,22 @@ std::optional<SipServer::SipPeer> SipServer::peerFromAddress(const std::string& 
 
 void SipServer::scheduleCatalogQuery(const std::string& deviceId) {
     if (ioLoop_ == nullptr) {
+        LOG_WARN << "[GB28181][Catalog] Schedule skipped, device=" << deviceId
+                 << ", reason=io_loop_unavailable";
         return;
     }
+    LOG_INFO << "[GB28181][Catalog] Query scheduled, device=" << deviceId
+             << ", delay_seconds=0.5";
     ioLoop_->runAfter(0.5, [this, deviceId]() {
         if (!running_) {
+            LOG_INFO << "[GB28181][Catalog] Scheduled query skipped, device=" << deviceId
+                     << ", reason=server_stopped";
             return;
         }
         if (queryCatalog(deviceId)) {
-            LOG_INFO << "Catalog query sent, device=" << deviceId;
+            LOG_INFO << "[GB28181][Catalog] Scheduled query sent, device=" << deviceId;
+        } else {
+            LOG_WARN << "[GB28181][Catalog] Scheduled query failed, device=" << deviceId;
         }
     });
 }
