@@ -75,6 +75,7 @@ const EMPTY_IMAGE_OPS: Device.ImageOperation[] = [];
 const DEVICE_CARD_GRID_STYLE: CSSProperties = {
   gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
 };
+const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
 
 interface DeviceProtocolStats {
   total: number;
@@ -322,6 +323,7 @@ const DeviceGridItem = memo(
     );
     const statusTag = getDeviceStatusBadge(connectionState);
     const items = useMemo(() => buildDeviceCardItems(device.elements), [device.elements]);
+    const isWideCard = items.length >= WIDE_DEVICE_CARD_ITEM_COUNT;
     const canRemoteControl = device.remote_control !== false;
     const commandOps = device.commandOperations ?? EMPTY_COMMAND_OPS;
     const imageOps = device.imageOperations ?? EMPTY_IMAGE_OPS;
@@ -344,7 +346,7 @@ const DeviceGridItem = memo(
     );
 
     return (
-      <div className="flex flex-col">
+      <div className={`flex flex-col ${isWideCard ? "md:col-span-2" : ""}`}>
         <DeviceCard
           title={
             <Flex justify="space-between" align="center" gap={8} className="w-full min-w-0">
@@ -745,7 +747,7 @@ const DevicePage = () => {
   }, []);
 
   const renderDeviceCards = (devices: Device.RealTimeData[]) => (
-    <div className="mt-4 grid items-start gap-3" style={DEVICE_CARD_GRID_STYLE}>
+    <div className="mt-4 grid gap-3" style={DEVICE_CARD_GRID_STYLE}>
       {devices.map((device) => (
         <DeviceGridItem
           key={device.id}
@@ -996,7 +998,7 @@ const DevicePage = () => {
 
       {/* 设备卡片分组展示 */}
       {isLoading && filteredDeviceList.length === 0 ? (
-        <div className="grid items-start gap-3" style={DEVICE_CARD_GRID_STYLE}>
+        <div className="grid gap-3" style={DEVICE_CARD_GRID_STYLE}>
           {renderSkeletons()}
         </div>
       ) : filteredDeviceList.length === 0 ? (

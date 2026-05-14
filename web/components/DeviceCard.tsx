@@ -125,7 +125,7 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
   );
 
   return (
-    <div className="self-start bg-white rounded-lg px-3.5 py-2 border border-gray-200 shadow-[0_2px_8px_rgba(0,0,0,0.08)] flex flex-col gap-1.5">
+    <div className="bg-white rounded-lg px-3.5 py-2 border border-gray-200 shadow-[0_2px_8px_rgba(0,0,0,0.08)] flex flex-col gap-1.5 h-full">
       {/* 主标题 */}
       <div className="min-w-0 text-sm font-bold flex items-center gap-1.5 leading-4.5">{title}</div>
 
@@ -136,7 +136,7 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
       <div className="h-px bg-gray-100" />
 
       {/* 内容区 */}
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col flex-1 gap-1.5">
         {hasGroupSections
           ? sections.map((section) => {
               const compact = section.items.length >= DENSE_SECTION_ITEM_COUNT;
