@@ -347,23 +347,25 @@ const DeviceGridItem = memo(
       <div className="flex flex-col">
         <DeviceCard
           title={
-            <Flex justify="space-between" className="w-full">
-              <span>
+            <Flex justify="space-between" align="center" gap={8} className="w-full min-w-0">
+              <span className="min-w-0 truncate">
                 {device.name}
                 {device.device_code ? `:${device.device_code}` : ""}
               </span>
-              <Tag color={statusTag.color}>{statusTag.label}</Tag>
+              <Tag color={statusTag.color} className="!mr-0 shrink-0">
+                {statusTag.label}
+              </Tag>
             </Flex>
           }
           subtitle={
-            <Flex justify="space-between" className="w-full">
-              <span>
+            <Flex justify="space-between" align="center" gap={8} className="w-full min-w-0">
+              <span className="min-w-0 flex shrink-0 items-center">
                 <Tag color={device.link_id === 0 ? "orange" : "blue"} className="!mr-1">
                   {device.link_id === 0 ? "Agent" : device.link_name || "未绑定链路"}
                 </Tag>
                 <Tag color="purple">{device.protocol_name}</Tag>
               </span>
-              <span className="text-gray-400 text-xs">
+              <span className="min-w-0 truncate text-gray-400 text-xs">
                 上报：{formatReportTime(device.reportTime)}
               </span>
             </Flex>
@@ -405,7 +407,11 @@ const DeviceGridItem = memo(
                 placement="bottomRight"
                 content={
                   isCommandPopoverOpen && activeCommandFunc ? (
-                    <CommandPopover device={device} func={activeCommandFunc} onClose={onCloseCommandPopover} />
+                    <CommandPopover
+                      device={device}
+                      func={activeCommandFunc}
+                      onClose={onCloseCommandPopover}
+                    />
                   ) : null
                 }
                 onOpenChange={(open) => {
@@ -427,10 +433,10 @@ const DeviceGridItem = memo(
                       !canCommand
                         ? "当前账号没有设备下发权限"
                         : !canRemoteControl
-                        ? "该设备已禁止远控"
-                        : connectionState === "online"
-                          ? "下发指令"
-                          : "设备离线（点击后将提示）"
+                          ? "该设备已禁止远控"
+                          : connectionState === "online"
+                            ? "下发指令"
+                            : "设备离线（点击后将提示）"
                     }
                   >
                     <Button
@@ -739,7 +745,7 @@ const DevicePage = () => {
   }, []);
 
   const renderDeviceCards = (devices: Device.RealTimeData[]) => (
-    <div className="mt-4 grid gap-3" style={DEVICE_CARD_GRID_STYLE}>
+    <div className="mt-4 grid items-start gap-3" style={DEVICE_CARD_GRID_STYLE}>
       {devices.map((device) => (
         <DeviceGridItem
           key={device.id}
@@ -990,7 +996,7 @@ const DevicePage = () => {
 
       {/* 设备卡片分组展示 */}
       {isLoading && filteredDeviceList.length === 0 ? (
-        <div className="grid gap-3" style={DEVICE_CARD_GRID_STYLE}>
+        <div className="grid items-start gap-3" style={DEVICE_CARD_GRID_STYLE}>
           {renderSkeletons()}
         </div>
       ) : filteredDeviceList.length === 0 ? (
