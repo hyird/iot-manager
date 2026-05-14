@@ -373,7 +373,7 @@ const DeviceGridItem = memo(
             </Flex>
           }
           items={items}
-          column={2}
+          column={isWideCard ? 4 : 2}
           length={20}
           extra={
             <Flex align="center" justify="space-around" className="w-full">
