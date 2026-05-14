@@ -1,12 +1,15 @@
 #pragma once
 
+#include "OpenAccess.DataTransformer.hpp"
 #include "OpenAccess.Repository.hpp"
 #include "modules/alert/domain/Events.hpp"
 #include "common/cache/DeviceCache.hpp"
+#include "common/cache/RealtimeDataCache.hpp"
 #include "common/protocol/FrameResult.hpp"
-#include "common/utils/DeviceSummaryHelper.hpp"
 #include "common/utils/DrogonLoopSelector.hpp"
-#include "common/utils/OperationFieldHelper.hpp"
+
+#include <map>
+#include <set>
 
 class OpenWebhookDispatcher {
 public:
@@ -46,6 +49,7 @@ public:
                     const DeviceCache::CachedDevice* device =
                         deviceIt == deviceMap.end() ? nullptr : deviceIt->second;
                     auto events = resolveEvents(frame);
+                    if (events.empty()) continue;
 
                     for (const auto& target : targets) {
                         if (!target.deviceIds.contains(frame.deviceId)) continue;
@@ -53,11 +57,10 @@ public:
                         for (const auto& eventType : events) {
                             if (!target.supportsEvent(eventType)) continue;
 
-                            Json::Value payload = buildBasePayload(frame, device, eventType);
-                            payload["deliveryId"] = drogon::utils::getUuid();
-                            payload["webhookId"] = target.id;
-                            payload["accessKeyId"] = target.accessKeyId;
-                            payload["accessKeyName"] = target.accessKeyName;
+                            Json::Value payload = buildWebhookPayload(
+                                eventType,
+                                buildFrameEventData(frame, device, eventType)
+                            );
 
                             std::string deviceCode = device ? device->deviceCode : "";
                             std::string body = JsonHelper::serialize(payload);
@@ -67,6 +70,59 @@ public:
                 }
             } catch (const std::exception& e) {
                 LOG_WARN << "[OpenWebhook] dispatch failed: " << e.what();
+            }
+        });
+    }
+
+    void dispatchMergedDataReports(const std::vector<ParsedFrameResult>& batch) {
+        if (batch.empty()) return;
+
+        drogon::async_run([batch]() -> Task<void> {
+            try {
+                std::set<int> deviceIds;
+                for (const auto& item : batch) {
+                    if (item.deviceId > 0 && isElementDataReport(item)) {
+                        deviceIds.insert(item.deviceId);
+                    }
+                }
+                if (deviceIds.empty()) co_return;
+
+                OpenAccessRepository repository;
+                auto targets = co_await repository.listActiveWebhookTargets(deviceIds);
+                if (targets.empty()) co_return;
+
+                std::vector<int> deviceIdList(deviceIds.begin(), deviceIds.end());
+                auto devices = co_await DeviceCache::instance().getDevices();
+                auto dataMap = co_await RealtimeDataCache::instance().getBatch(deviceIdList);
+
+                std::map<int, const DeviceCache::CachedDevice*> deviceMap;
+                for (const auto& device : devices) {
+                    deviceMap[device.id] = &device;
+                }
+
+                const std::string eventType = OpenAccess::WEBHOOK_EVENT_DEVICE_DATA;
+                for (int deviceId : deviceIds) {
+                    auto deviceIt = deviceMap.find(deviceId);
+                    if (deviceIt == deviceMap.end()) continue;
+
+                    RealtimeDataCache::DeviceRealtimeData emptyData;
+                    auto dataIt = dataMap.find(deviceId);
+                    const auto* device = deviceIt->second;
+                    const auto& deviceData = dataIt == dataMap.end() ? emptyData : dataIt->second;
+                    Json::Value mergedData = OpenAccessDataTransformer::buildDataItem(*device, deviceData);
+
+                    for (const auto& target : targets) {
+                        if (!target.deviceIds.contains(deviceId)) continue;
+                        if (!target.supportsEvent(eventType)) continue;
+
+                        Json::Value payload = buildWebhookPayload(eventType, mergedData);
+
+                        std::string body = JsonHelper::serialize(payload);
+                        scheduleDelivery(target, eventType, deviceId, device->deviceCode, std::move(body));
+                    }
+                }
+            } catch (const std::exception& e) {
+                LOG_WARN << "[OpenWebhook] merged data dispatch failed: " << e.what();
             }
         });
     }
@@ -82,95 +138,156 @@ public:
 
     void dispatchAlertTriggered(const AlertTriggered& event) {
         Json::Value alert;
-        alert["recordId"] = static_cast<Json::Int64>(event.recordId);
+        alert["id"] = static_cast<Json::Int64>(event.recordId);
         alert["ruleId"] = event.ruleId;
         alert["severity"] = event.severity;
+        alert["status"] = "active";
         alert["message"] = event.message;
+        alert["time"] = OpenAccess::nowIso8601();
         dispatchAlertEvent(event.deviceId, OpenAccess::WEBHOOK_EVENT_DEVICE_ALERT_TRIGGERED, std::move(alert));
     }
 
     void dispatchAlertResolved(const AlertResolved& event) {
         Json::Value alert;
-        alert["recordId"] = static_cast<Json::Int64>(event.recordId);
+        alert["id"] = static_cast<Json::Int64>(event.recordId);
         alert["ruleId"] = event.ruleId;
-        alert["reason"] = event.reason;
-        alert["recoveryData"] = event.recoveryData;
+        alert["severity"] = "";
+        alert["status"] = "resolved";
+        alert["message"] = event.reason;
+        alert["time"] = OpenAccess::nowIso8601();
         dispatchAlertEvent(event.deviceId, OpenAccess::WEBHOOK_EVENT_DEVICE_ALERT_RESOLVED, std::move(alert));
     }
 
 private:
-    static Json::Value stripProtocolOperationFields(const Json::Value& value) {
-        if (value.isArray()) {
-            Json::Value cleaned(Json::arrayValue);
-            for (const auto& item : value) {
-                cleaned.append(stripProtocolOperationFields(item));
-            }
-            return cleaned;
-        }
-
-        if (!value.isObject()) {
-            return value;
-        }
-
-        Json::Value cleaned(Json::objectValue);
-        for (const auto& memberName : value.getMemberNames()) {
-            if (memberName == OperationFieldHelper::FIELD_OPERATION_KEY
-                || memberName == OperationFieldHelper::FIELD_OPERATION_NAME
-                || memberName == OperationFieldHelper::LEGACY_FIELD_FUNC_CODE
-                || memberName == OperationFieldHelper::LEGACY_FIELD_FUNC_NAME) {
-                continue;
-            }
-            cleaned[memberName] = stripProtocolOperationFields(value[memberName]);
-        }
-        return cleaned;
-    }
-
-    static Json::Value buildDeviceJson(
+    static Json::Value buildDeviceRef(
         int deviceId,
         const DeviceCache::CachedDevice* device
     ) {
-        return DeviceSummaryHelper::build(device, deviceId);
+        if (device) {
+            return OpenAccessDataTransformer::buildDeviceRef(*device);
+        }
+        return OpenAccessDataTransformer::buildDeviceRef(deviceId, "", "");
     }
 
-    static Json::Value buildBasePayload(
+    static Json::Value buildWebhookPayload(const std::string& eventType, Json::Value data) {
+        Json::Value payload;
+        payload["event"] = eventType;
+        payload["time"] = OpenAccess::nowIso8601();
+        payload["deliveryId"] = drogon::utils::getUuid();
+        payload["data"] = std::move(data);
+        return payload;
+    }
+
+    static bool isImageFrame(const ParsedFrameResult& frame) {
+        if (frame.data.isMember("image") && frame.data["image"].isObject()) {
+            const auto& image = frame.data["image"];
+            return image.isMember("data") && !image["data"].asString().empty();
+        }
+
+        if (!frame.data.isMember("data") || !frame.data["data"].isObject()) {
+            return false;
+        }
+
+        for (const auto& key : frame.data["data"].getMemberNames()) {
+            const auto& element = frame.data["data"][key];
+            if (!element.isObject()) continue;
+            if (element.get("type", "").asString() == "JPEG") return true;
+            const std::string value = element.get("value", "").asString();
+            if (value.rfind("data:image/", 0) == 0) return true;
+        }
+
+        return false;
+    }
+
+    static bool isElementDataReport(const ParsedFrameResult& frame) {
+        if (frame.data.get("direction", "UP").asString() == "DOWN") return false;
+        if (frame.data.get("funcCode", "").asString() == "36"
+            || frame.data.get("funcCode", "").asString() == "B6") {
+            return false;
+        }
+        if (isImageFrame(frame)) return false;
+        return frame.data.isMember("data")
+            && frame.data["data"].isObject()
+            && !frame.data["data"].empty();
+    }
+
+    static Json::Value buildFrameEventData(
         const ParsedFrameResult& frame,
         const DeviceCache::CachedDevice* device,
         const std::string& eventType
     ) {
-        Json::Value payload;
-        payload["event"] = eventType;
-        payload["timestamp"] = OpenAccess::nowIso8601();
-        payload["reportTime"] = frame.reportTime.empty()
-            ? Json::nullValue
-            : Json::Value(frame.reportTime);
-        payload["data"] = stripProtocolOperationFields(
-            OperationFieldHelper::normalizedOperationFields(frame.data, true)
-        );
-        payload["device"] = buildDeviceJson(frame.deviceId, device);
-
-        if (frame.commandCompletion) {
-            Json::Value command;
-            command["commandKey"] = frame.commandCompletion->commandKey;
-            command["responseCode"] = frame.commandCompletion->responseCode;
-            command["success"] = frame.commandCompletion->success;
-            payload["command"] = std::move(command);
+        if (eventType == OpenAccess::WEBHOOK_EVENT_DEVICE_IMAGE) {
+            return buildImageData(frame, device);
         }
-
-        return payload;
+        return buildCommandResponseData(frame, device);
     }
 
-    static Json::Value buildAlertPayload(
-        int deviceId,
-        const DeviceCache::CachedDevice* device,
-        const std::string& eventType,
-        Json::Value alert
+    static Json::Value buildImageData(
+        const ParsedFrameResult& frame,
+        const DeviceCache::CachedDevice* device
     ) {
-        Json::Value payload;
-        payload["event"] = eventType;
-        payload["timestamp"] = OpenAccess::nowIso8601();
-        payload["device"] = buildDeviceJson(deviceId, device);
-        payload["alert"] = std::move(alert);
-        return payload;
+        Json::Value data(Json::objectValue);
+        data["device"] = buildDeviceRef(frame.deviceId, device);
+
+        Json::Value image(Json::objectValue);
+        if (frame.data.isMember("image") && frame.data["image"].isObject()) {
+            const auto& source = frame.data["image"];
+            if (source.isMember("data")) {
+                image["data"] = source["data"];
+            }
+            image["id"] = source.get("id", frame.funcCode);
+            image["name"] = source.get("name", "image");
+        } else if (frame.data.isMember("data") && frame.data["data"].isObject()) {
+            for (const auto& key : frame.data["data"].getMemberNames()) {
+                const auto& element = frame.data["data"][key];
+                if (!element.isObject()) continue;
+                const bool isImage = element.get("type", "").asString() == "JPEG"
+                    || element.get("value", "").asString().rfind("data:image/", 0) == 0;
+                if (!isImage) continue;
+
+                image["id"] = element.get("elementId", key);
+                image["name"] = element.get("name", "image");
+                image["data"] = element.get("value", "");
+                break;
+            }
+        }
+        image["time"] = frame.reportTime.empty()
+            ? Json::Value(Json::nullValue)
+            : Json::Value(frame.reportTime);
+        data["image"] = std::move(image);
+        return data;
+    }
+
+    static Json::Value buildCommandResponseData(
+        const ParsedFrameResult& frame,
+        const DeviceCache::CachedDevice* device
+    ) {
+        Json::Value data(Json::objectValue);
+        data["device"] = buildDeviceRef(frame.deviceId, device);
+
+        Json::Value command(Json::objectValue);
+        if (frame.commandCompletion) {
+            command["key"] = frame.commandCompletion->commandKey;
+            command["responseCode"] = frame.commandCompletion->responseCode;
+            command["success"] = frame.commandCompletion->success;
+        } else {
+            command["success"] = frame.data.get("direction", "").asString() != "DOWN";
+            if (frame.data.isMember("responseId")) {
+                command["responseId"] = frame.data["responseId"];
+            }
+        }
+        data["command"] = std::move(command);
+
+        if (device && frame.data.isMember("data") && frame.data["data"].isObject()) {
+            data["points"] = OpenAccessDataTransformer::buildDataItem(
+                *device,
+                frame.data["data"],
+                frame.reportTime
+            )["points"];
+        } else {
+            data["points"] = Json::Value(Json::arrayValue);
+        }
+        return data;
     }
 
     static Json::Value buildCommandPayload(
@@ -179,31 +296,20 @@ private:
         const std::string& eventType,
         const Json::Value& elements
     ) {
-        Json::Value payload;
-        payload["event"] = eventType;
-        payload["timestamp"] = OpenAccess::nowIso8601();
-        payload["device"] = buildDeviceJson(deviceId, device);
-
+        Json::Value data(Json::objectValue);
+        data["accepted"] = true;
+        data["device"] = buildDeviceRef(deviceId, device);
         Json::Value command(Json::objectValue);
         command["elements"] = elements;
-        payload["command"] = command;
-
-        Json::Value data(Json::objectValue);
-        data["direction"] = "DOWN";
-        data["elements"] = elements;
-        payload["data"] = std::move(data);
-
-        return payload;
+        data["command"] = command;
+        return buildWebhookPayload(eventType, std::move(data));
     }
 
     static std::set<std::string> resolveEvents(const ParsedFrameResult& frame) {
-        std::set<std::string> events = {OpenAccess::WEBHOOK_EVENT_DEVICE_DATA};
+        std::set<std::string> events;
 
-        if (frame.data.isMember("image") && frame.data["image"].isObject()) {
-            const auto& image = frame.data["image"];
-            if (image.isMember("data") && !image["data"].asString().empty()) {
-                events.insert(OpenAccess::WEBHOOK_EVENT_DEVICE_IMAGE);
-            }
+        if (isImageFrame(frame)) {
+            events.insert(OpenAccess::WEBHOOK_EVENT_DEVICE_IMAGE);
         }
 
         std::string direction = frame.data.get("direction", "").asString();
@@ -240,11 +346,18 @@ private:
                     if (!target.deviceIds.contains(deviceId)) continue;
                     if (!target.supportsEvent(eventType)) continue;
 
-                    Json::Value payload = buildAlertPayload(deviceId, targetDevice, eventType, alert);
-                    payload["deliveryId"] = drogon::utils::getUuid();
-                    payload["webhookId"] = target.id;
-                    payload["accessKeyId"] = target.accessKeyId;
-                    payload["accessKeyName"] = target.accessKeyName;
+                    Json::Value data = OpenAccessDataTransformer::buildAlertItem(
+                        alert.get("id", 0).asInt64(),
+                        deviceId,
+                        targetDevice ? targetDevice->deviceCode : "",
+                        targetDevice ? targetDevice->name : "",
+                        alert.get("ruleId", 0).asInt(),
+                        alert.get("severity", "").asString(),
+                        alert.get("status", "").asString(),
+                        alert.get("message", "").asString(),
+                        alert.get("time", "").asString()
+                    );
+                    Json::Value payload = buildWebhookPayload(eventType, std::move(data));
 
                     std::string deviceCode = targetDevice ? targetDevice->deviceCode : "";
                     std::string body = JsonHelper::serialize(payload);
@@ -292,11 +405,6 @@ private:
                         eventType,
                         elements
                     );
-                    payload["deliveryId"] = drogon::utils::getUuid();
-                    payload["webhookId"] = target.id;
-                    payload["accessKeyId"] = target.accessKeyId;
-                    payload["accessKeyName"] = target.accessKeyName;
-
                     std::string deviceCode = targetDevice ? targetDevice->deviceCode : "";
                     std::string body = JsonHelper::serialize(payload);
                     scheduleDelivery(target, eventType, deviceId, deviceCode, std::move(body));

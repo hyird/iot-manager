@@ -47,6 +47,11 @@ public:
         mergeUpdateMemory(deviceId, funcCode, data, reportTime);
     }
 
+    Task<void> mergeUpdateAsync(int deviceId, const std::string& funcCode, const Json::Value& data, const std::string& reportTime) {
+        mergeUpdateMemory(deviceId, funcCode, data, reportTime);
+        co_return;
+    }
+
     Task<std::optional<DeviceRealtimeData>> get(int deviceId) {
         std::shared_lock lock(mutex_);
         auto it = cache_.find(deviceId);

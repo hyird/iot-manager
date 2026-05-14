@@ -1636,61 +1636,6 @@ public:
         co_return body;
     }
 
-    /**
-     * @brief Open API 实时数据（包含设备属性、elementId、操作定义）
-     */
-    Task<Json::Value> listRealtimeForOpenApi() {
-        auto cachedDevices = co_await DeviceCache::instance().getDevices();
-        if (cachedDevices.empty()) {
-            co_return Json::Value(Json::arrayValue);
-        }
-
-        std::vector<int> deviceIds;
-        deviceIds.reserve(cachedDevices.size());
-        for (const auto& device : cachedDevices) {
-            deviceIds.push_back(device.id);
-        }
-
-        auto& realtimeCache = RealtimeDataCache::instance();
-        if (!realtimeCache.isInitialized()) {
-            co_await realtimeCache.initializeFromDb(deviceIds);
-        }
-
-        auto deviceDataMap = co_await realtimeCache.getBatch(deviceIds);
-        auto latestTimeMap = co_await realtimeCache.getLatestReportTimes(deviceIds);
-
-        std::vector<int> missingIds;
-        for (int id : deviceIds) {
-            if (deviceDataMap.find(id) == deviceDataMap.end()) {
-                missingIds.push_back(id);
-            }
-        }
-        if (!missingIds.empty()) {
-            co_await realtimeCache.loadFromDb(missingIds);
-            auto extraData = co_await realtimeCache.getBatch(missingIds);
-            for (auto& [id, data] : extraData) {
-                deviceDataMap[id] = std::move(data);
-            }
-        }
-
-        Json::Value items(Json::arrayValue);
-        RealtimeDataCache::DeviceRealtimeData emptyData;
-        auto connChecker = [](int deviceId) {
-            return ProtocolDispatcher::instance().isDeviceConnected(deviceId);
-        };
-
-        for (const auto& device : cachedDevices) {
-            auto dataIt = deviceDataMap.find(device.id);
-            auto timeIt = latestTimeMap.find(device.id);
-            const auto& data = dataIt != deviceDataMap.end() ? dataIt->second : emptyData;
-            std::string latestTime = timeIt != latestTimeMap.end() ? timeIt->second : "";
-            items.append(DeviceDataTransformer::buildOpenApiRealtimeItem(
-                device, data, latestTime, connChecker));
-        }
-
-        co_return items;
-    }
-
     // ==================== 指令下发 ====================
 
     /**

@@ -93,7 +93,8 @@ const DEVICE_LIST_QUERY_EXAMPLE = [
   'curl -X GET "https://your-host/open-api/device/list?page=1&pageSize=50" \\',
   '  -H "X-Access-Key: <你的AccessKey>"',
   "",
-  "# 建议先获取设备列表，后续统一使用返回的 device.id",
+  "# 返回字段：id / code / name",
+  "# 建议先获取设备列表，后续统一使用返回的 id",
 ].join("\n");
 
 const REALTIME_QUERY_EXAMPLE = [
@@ -101,6 +102,7 @@ const REALTIME_QUERY_EXAMPLE = [
   '  -H "X-Access-Key: <你的AccessKey>"',
   "",
   "# code 参数仅保留兼容旧调用方，推荐统一使用 deviceId",
+  "# 返回字段：device + points；未采集到的配置点位 value 为 null",
   'curl -X GET "https://your-host/open-api/device/realtime?code=ST001" \\',
   '  -H "Authorization: AccessKey <你的AccessKey>"',
 ].join("\n");
@@ -110,7 +112,8 @@ const HISTORY_QUERY_EXAMPLE = [
   '  -H "X-Access-Key: <你的AccessKey>"',
   "",
   "# 历史查询必须提供 deviceId（或兼容传 code），并且必须带 startTime / endTime",
-  "# dataType 必填：ELEMENT（要素数据）或 IMAGE（图片数据）",
+  "# dataType 必填且仅支持 ELEMENT；图片数据暂不支持",
+  "# 返回字段：device + points；每条历史记录都会补齐配置点位，缺失值为 null",
 ].join("\n");
 
 const COMMAND_QUERY_EXAMPLE = [
@@ -123,6 +126,8 @@ const COMMAND_QUERY_EXAMPLE = [
   '      { "elementId": "001", "value": "1" }',
   "    ]",
   "  }'",
+  "",
+  "# 成功返回：accepted + device",
 ].join("\n");
 
 const ALERT_QUERY_EXAMPLE = [
@@ -130,6 +135,7 @@ const ALERT_QUERY_EXAMPLE = [
   '  -H "X-Access-Key: <你的AccessKey>"',
   "",
   "# 可按 deviceId（或兼容传 code）、status、severity、ruleId 过滤",
+  "# 返回字段：id / device / ruleId / severity / status / message / time",
 ].join("\n");
 
 const WEBHOOK_HEADER_EXAMPLE = [
@@ -143,21 +149,18 @@ const WEBHOOK_HEADER_EXAMPLE = [
 const WEBHOOK_PAYLOAD_EXAMPLE = JSON.stringify(
   {
     event: "device.data.reported",
-    timestamp: "2026-03-09T08:00:00Z",
-    reportTime: "2026-03-09T07:59:58Z",
+    time: "2026-03-09T08:00:00Z",
     deliveryId: "2d4c7f14-8d79-4d39-8db7-2fe8b1d2a201",
-    webhookId: 12,
-    accessKeyId: 3,
-    accessKeyName: "第三方数据平台",
-    device: {
-      id: 123,
-      name: "泵站一号",
-      deviceCode: "ST001",
-      linkId: 8,
-      protocol: "SL651",
-    },
     data: {
-      elements: [{ name: "水位", value: 12.34, unit: "m" }],
+      device: {
+        id: 123,
+        code: "ST001",
+        name: "泵站一号",
+      },
+      points: [
+        { id: "water_level", name: "水位", value: 12.34, unit: "m", time: "2026-03-09T07:59:58Z" },
+        { id: "flow", name: "流量", value: null, unit: "m3/s", time: null },
+      ],
     },
   },
   null,
@@ -1706,27 +1709,27 @@ export default function OpenAccessPage() {
                     />
                     <UsageCodeBlock
                       title="2. 设备列表"
-                      description="先拿当前 AccessKey 可访问设备的 id、名称、协议、状态等摘要，后续统一用 deviceId。"
+                      description="先拿当前 AccessKey 可访问设备的 id、code、name，后续统一用 deviceId。"
                       code={DEVICE_LIST_QUERY_EXAMPLE}
                     />
                     <UsageCodeBlock
                       title="3. 实时数据查询"
-                      description="推荐按设备 ID 查询，也支持分页；code 仅保留兼容旧调用方。"
+                      description="推荐按设备 ID 查询，也支持分页；返回统一的 device + points 结构。"
                       code={REALTIME_QUERY_EXAMPLE}
                     />
                     <UsageCodeBlock
                       title="4. 历史数据查询"
-                      description="必须指定 dataType（ELEMENT 或 IMAGE）和时间范围，推荐统一传 deviceId。"
+                      description="必须指定 dataType=ELEMENT 和时间范围，返回统一的 device + points 结构。"
                       code={HISTORY_QUERY_EXAMPLE}
                     />
                     <UsageCodeBlock
                       title="5. 控制下发"
-                      description="当前为 POST JSON 请求，推荐指定 deviceId，并传入 elements。"
+                      description="当前为 POST JSON 请求，推荐指定 deviceId，并传入 elements；成功返回 accepted + device。"
                       code={COMMAND_QUERY_EXAMPLE}
                     />
                     <UsageCodeBlock
                       title="6. 告警查询"
-                      description="支持按设备、状态、严重级别、规则等条件筛选；不传设备时返回授权范围内的告警。"
+                      description="支持按设备、状态、严重级别、规则等条件筛选；返回最小告警字段。"
                       code={ALERT_QUERY_EXAMPLE}
                     />
                   </div>
@@ -1758,7 +1761,7 @@ export default function OpenAccessPage() {
                     />
                     <UsageCodeBlock
                       title="2. Webhook 推送体示例"
-                      description="命令下发、命令应答事件会额外包含 command 对象；data 字段内容随协议解析结果变化。"
+                      description="推送体统一为 event、time、deliveryId、data；数据上报的 data 与实时/历史接口一致，缺失点位 value 为 null。"
                       code={WEBHOOK_PAYLOAD_EXAMPLE}
                     />
                   </div>

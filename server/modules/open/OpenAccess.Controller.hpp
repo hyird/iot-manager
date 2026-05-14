@@ -1,7 +1,9 @@
 #pragma once
 
+#include "OpenAccess.DataTransformer.hpp"
 #include "OpenAccess.Repository.hpp"
 #include "common/cache/DeviceCache.hpp"
+#include "common/cache/RealtimeDataCache.hpp"
 #include "common/filters/PermissionFilter.hpp"
 #include "common/utils/ControllerMacros.hpp"
 #include "common/utils/Pagination.hpp"
@@ -88,14 +90,14 @@ private:
         }
     }
 
-    Task<std::string> resolveDeviceCode(int deviceId) {
+    Task<DeviceCache::CachedDevice> resolveCachedDevice(int deviceId) {
         auto devices = co_await DeviceCache::instance().getDevices();
         for (const auto& device : devices) {
             if (device.id == deviceId) {
-                co_return device.deviceCode;
+                co_return device;
             }
         }
-        co_return "";
+        throw NotFoundException("设备不存在");
     }
 
     struct CommandTarget {
@@ -159,61 +161,6 @@ private:
             || containsKeyword(device.protocolName)
             || containsKeyword(device.protocolType)
             || containsKeyword(device.linkName);
-    }
-
-    static Json::Value buildOpenDeviceListItem(
-        const DeviceCache::CachedDevice& device,
-        const OpenAccess::AccessKeySession& session
-    ) {
-        Json::Value item(Json::objectValue);
-        item["id"] = device.id;
-        item["name"] = device.name;
-        item["deviceCode"] = device.deviceCode.empty()
-            ? Json::nullValue
-            : Json::Value(device.deviceCode);
-        item["status"] = device.status;
-        item["typeName"] = device.protocolName.empty()
-            ? Json::nullValue
-            : Json::Value(device.protocolName);
-        item["protocolName"] = device.protocolName.empty()
-            ? Json::nullValue
-            : Json::Value(device.protocolName);
-        item["protocolType"] = device.protocolType.empty()
-            ? Json::nullValue
-            : Json::Value(device.protocolType);
-        item["linkId"] = device.linkId > 0
-            ? Json::Value(device.linkId)
-            : Json::Value(Json::nullValue);
-        item["linkName"] = device.linkName.empty()
-            ? Json::nullValue
-            : Json::Value(device.linkName);
-        item["groupId"] = device.groupId > 0
-            ? Json::Value(device.groupId)
-            : Json::Value(Json::nullValue);
-        item["remoteControl"] = device.remoteControl;
-        item["onlineTimeout"] = device.onlineTimeout;
-        item["timezone"] = device.timezone.empty()
-            ? Json::nullValue
-            : Json::Value(device.timezone);
-        item["remark"] = device.remark.empty()
-            ? Json::nullValue
-            : Json::Value(device.remark);
-        item["createdAt"] = device.createdAt.empty()
-            ? Json::nullValue
-            : Json::Value(device.createdAt);
-        item["commandReady"] = session.allowCommand
-            && device.status == "enabled"
-            && device.remoteControl
-            && device.linkId > 0
-            && !(device.protocolType == "SL651" && device.deviceCode.empty());
-
-        Json::Value permissions(Json::objectValue);
-        permissions["allowRealtime"] = session.allowRealtime;
-        permissions["allowHistory"] = session.allowHistory;
-        permissions["allowCommand"] = session.allowCommand;
-        permissions["allowAlert"] = session.allowAlert;
-        item["permissions"] = std::move(permissions);
-        return item;
     }
 
 public:
@@ -389,7 +336,7 @@ public:
             for (const auto& device : devices) {
                 if (!session.canAccessDevice(device.id)) continue;
                 if (!matchesDeviceKeyword(device, normalizedKeyword)) continue;
-                filtered.append(buildOpenDeviceListItem(device, session));
+                filtered.append(OpenAccessDataTransformer::buildDeviceListItem(device));
             }
 
             auto [pagedItems, total] = Pagination::paginate(filtered, page);
@@ -477,16 +424,47 @@ public:
                 }
             }
 
-            auto items = co_await deviceService_.listRealtimeForOpenApi();
-            Json::Value filtered(Json::arrayValue);
-            for (const auto& item : items) {
-                int currentId = item.get("device", Json::objectValue).get("id", 0).asInt();
-                if (!session.canAccessDevice(currentId)) continue;
-                if (deviceId > 0 && currentId != deviceId) continue;
-                filtered.append(item);
+            auto devices = co_await DeviceCache::instance().getDevices();
+            std::vector<DeviceCache::CachedDevice> selectedDevices;
+            std::vector<int> selectedIds;
+            selectedDevices.reserve(devices.size());
+            selectedIds.reserve(devices.size());
+            for (const auto& device : devices) {
+                if (!session.canAccessDevice(device.id)) continue;
+                if (deviceId > 0 && device.id != deviceId) continue;
+                selectedIds.push_back(device.id);
+                selectedDevices.push_back(device);
             }
 
-            auto [pagedItems, total] = Pagination::paginate(filtered, page);
+            auto& realtimeCache = RealtimeDataCache::instance();
+            if (!selectedIds.empty() && !realtimeCache.isInitialized()) {
+                co_await realtimeCache.initializeFromDb(selectedIds);
+            }
+            auto deviceDataMap = co_await realtimeCache.getBatch(selectedIds);
+
+            std::vector<int> missingIds;
+            for (int id : selectedIds) {
+                if (deviceDataMap.find(id) == deviceDataMap.end()) {
+                    missingIds.push_back(id);
+                }
+            }
+            if (!missingIds.empty()) {
+                co_await realtimeCache.loadFromDb(missingIds);
+                auto extraData = co_await realtimeCache.getBatch(missingIds);
+                for (auto& [id, data] : extraData) {
+                    deviceDataMap[id] = std::move(data);
+                }
+            }
+
+            RealtimeDataCache::DeviceRealtimeData emptyData;
+            Json::Value items(Json::arrayValue);
+            for (const auto& device : selectedDevices) {
+                auto dataIt = deviceDataMap.find(device.id);
+                const auto& data = dataIt != deviceDataMap.end() ? dataIt->second : emptyData;
+                items.append(OpenAccessDataTransformer::buildDataItem(device, data));
+            }
+
+            auto [pagedItems, total] = Pagination::paginate(items, page);
             Json::Value responsePayload;
             responsePayload["total"] = total;
             responsePayload["returned"] = static_cast<Json::Int64>(pagedItems.size());
@@ -567,8 +545,8 @@ public:
             logAccessKeyId = session.id;
 
             ControllerUtils::requireNonEmptyString(dataType, "dataType 不能为空");
-            if (dataType != "ELEMENT" && dataType != "IMAGE") {
-                throw ValidationException("dataType 只能为 ELEMENT 或 IMAGE");
+            if (dataType != "ELEMENT") {
+                throw ValidationException("dataType 仅支持 ELEMENT，图片数据暂不支持");
             }
             ControllerUtils::requireDeviceSelector(code, requestedDeviceId);
             ControllerUtils::requireTimeRange(startTime, endTime);
@@ -581,40 +559,13 @@ public:
                 throw ForbiddenException("AccessKey 无权访问该设备");
             }
 
-            if (!page.isPaged() && !dataType.empty() && dataType != "IMAGE") {
-                auto rawBody = co_await deviceService_.queryHistoryRaw(
-                    startTime, endTime, deviceId
-                );
-                Json::Value responsePayload;
-                responsePayload["mode"] = "raw";
-                responsePayload["bodyLength"] = static_cast<Json::Int64>(rawBody.size());
-                co_await writeAccessLogSafe(
-                    "pull",
-                    "history",
-                    logAccessKeyId,
-                    0,
-                    "",
-                    "success",
-                    "GET",
-                    "/open-api/device/history",
-                    clientIp,
-                    200,
-                    deviceId,
-                    code,
-                    "",
-                    requestPayload,
-                    responsePayload
-                );
-                co_return Response::rawJson(std::move(rawBody));
-            }
-
-            auto [items, total] = co_await deviceService_.queryHistory(
-                dataType,
+            auto device = co_await resolveCachedDevice(deviceId);
+            auto [items, total] = co_await repository_.queryOpenDeviceHistory(
+                device,
                 startTime,
                 endTime,
                 page.page,
-                page.pageSize,
-                deviceId
+                page.pageSize
             );
 
             Json::Value responsePayload;
@@ -707,9 +658,12 @@ public:
             );
 
             Json::Value responsePayload;
-            responsePayload["success"] = result.ok();
-            responsePayload["deviceId"] = deviceId;
-            responsePayload["deviceCode"] = commandTarget.deviceCode;
+            responsePayload["accepted"] = result.ok();
+            responsePayload["device"] = OpenAccessDataTransformer::buildDeviceRef(
+                commandTarget.deviceId,
+                commandTarget.deviceCode,
+                commandTarget.deviceName
+            );
 
             if (result.ok()) {
                 co_await writeAccessLogSafe(

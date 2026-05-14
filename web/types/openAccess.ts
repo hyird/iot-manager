@@ -65,27 +65,74 @@ export namespace OpenAccess {
   export interface DeviceListItem {
     id: number;
     name: string;
-    deviceCode?: string | null;
+    code?: string | null;
+  }
+
+  export interface DeviceRef {
+    id: number;
+    code?: string | null;
+    name: string;
+  }
+
+  export interface DataPoint {
+    id: string;
+    name: string;
+    value: string | number | boolean | null;
+    unit: string;
+    time?: string | null;
+  }
+
+  export interface DeviceDataItem {
+    device: DeviceRef;
+    points: DataPoint[];
+  }
+
+  export interface CommandResult {
+    accepted: boolean;
+    device: DeviceRef;
+  }
+
+  export interface AlertItem {
+    id: number;
+    device: DeviceRef;
+    ruleId: number;
+    severity: string;
     status: string;
-    typeName?: string | null;
-    protocolName?: string | null;
-    protocolType?: string | null;
-    linkId?: number | null;
-    linkName?: string | null;
-    groupId?: number | null;
-    remoteControl: boolean;
-    onlineTimeout: number;
-    timezone?: string | null;
-    remark?: string | null;
-    createdAt?: string | null;
-    commandReady: boolean;
-    permissions: {
-      allowRealtime: boolean;
-      allowHistory: boolean;
-      allowCommand: boolean;
-      allowAlert: boolean;
+    message: string;
+    time: string;
+  }
+
+  export interface WebhookDelivery<T = unknown> {
+    event: EventType;
+    time: string;
+    deliveryId: string;
+    data: T;
+  }
+
+  export interface WebhookImageData {
+    device: DeviceRef;
+    image: {
+      id: string;
+      name: string;
+      data: string;
+      time?: string | null;
     };
   }
+
+  export interface WebhookCommandData {
+    accepted?: boolean;
+    device: DeviceRef;
+    command: {
+      key?: string;
+      responseCode?: string;
+      responseId?: string | number;
+      success?: boolean;
+      elements?: unknown;
+    };
+    points?: DataPoint[];
+  }
+
+  export type WebhookData = DeviceDataItem | AlertItem | WebhookImageData | WebhookCommandData;
 
   export interface WebhookItem {
     id: number;

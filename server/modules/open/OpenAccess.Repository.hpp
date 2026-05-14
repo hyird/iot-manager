@@ -1,10 +1,14 @@
 #pragma once
 
+#include "OpenAccess.DataTransformer.hpp"
 #include "OpenAccess.Shared.hpp"
 #include "common/database/DatabaseService.hpp"
 #include "common/filters/ResourcePermission.hpp"
+#include "common/utils/Constants.hpp"
 #include "common/utils/FieldHelper.hpp"
 #include "common/utils/ValidatorHelper.hpp"
+
+#include <chrono>
 
 class OpenAccessRepository {
 public:
@@ -686,16 +690,11 @@ public:
                 r.severity,
                 r.status,
                 r.message,
-                r.detail,
                 r.triggered_at,
-                r.acknowledged_at,
-                r.acknowledged_by,
-                r.resolved_at,
                 d.name AS device_name,
-                ar.name AS rule_name
+                d.protocol_params->>'device_code' AS device_code
             FROM alert_record r
             LEFT JOIN device d ON d.id = r.device_id AND d.deleted_at IS NULL
-            LEFT JOIN alert_rule ar ON ar.id = r.rule_id AND ar.deleted_at IS NULL
         )" + where + " ORDER BY r.triggered_at DESC";
 
         if (pageSize > 0) {
@@ -707,34 +706,87 @@ public:
 
         Json::Value items(Json::arrayValue);
         for (const auto& row : result) {
-            Json::Value item;
-            item["id"] = static_cast<Json::Int64>(FieldHelper::getInt64(row["id"], 0));
-            item["rule_id"] = FieldHelper::getInt(row["rule_id"], 0);
-            item["rule_name"] = row["rule_name"].isNull()
-                ? Json::nullValue
-                : Json::Value(FieldHelper::getString(row["rule_name"], ""));
-            item["device_id"] = FieldHelper::getInt(row["device_id"], 0);
-            item["device_name"] = row["device_name"].isNull()
-                ? Json::nullValue
-                : Json::Value(FieldHelper::getString(row["device_name"], ""));
-            item["severity"] = FieldHelper::getString(row["severity"], "");
-            item["status"] = FieldHelper::getString(row["status"], "");
-            item["message"] = FieldHelper::getString(row["message"], "");
-            item["detail"] = OpenAccess::parseJsonOrDefault(
-                FieldHelper::getString(row["detail"], "{}"),
-                Json::Value(Json::objectValue)
+            items.append(OpenAccessDataTransformer::buildAlertItem(
+                FieldHelper::getInt64(row["id"], 0),
+                FieldHelper::getInt(row["device_id"], 0),
+                FieldHelper::getString(row["device_code"], ""),
+                FieldHelper::getString(row["device_name"], ""),
+                FieldHelper::getInt(row["rule_id"], 0),
+                FieldHelper::getString(row["severity"], ""),
+                FieldHelper::getString(row["status"], ""),
+                FieldHelper::getString(row["message"], ""),
+                FieldHelper::getString(row["triggered_at"], "")
+            ));
+        }
+
+        co_return std::make_pair(items, total);
+    }
+
+    Task<std::pair<Json::Value, int>> queryOpenDeviceHistory(
+        const DeviceCache::CachedDevice& device,
+        const std::string& startTime,
+        const std::string& endTime,
+        int page,
+        int pageSize
+    ) {
+        const std::string deviceIdStr = std::to_string(device.id);
+        const bool needArchive = shouldUseArchive(startTime);
+        const std::string tableName = needArchive ? "device_data_all" : "device_data";
+        const bool isPaged = pageSize > 0;
+        const int normalizedPage = page > 0 ? page : 1;
+        const int effectiveOffset = isPaged ? ((normalizedPage - 1) * pageSize) : 0;
+
+        std::vector<std::string> params = {deviceIdStr, startTime, endTime};
+        const std::string where = R"(
+            WHERE device_id = ?
+              AND data->>'funcCode' NOT IN ('36', 'B6')
+              AND COALESCE(data->>'direction', 'UP') != 'DOWN'
+              AND report_time >= ?::timestamptz
+              AND report_time <= ?::timestamptz
+              AND (data->'data' IS NOT NULL AND data->'data' <> '{}'::jsonb)
+        )";
+
+        int total = 0;
+        if (isPaged) {
+            auto countResult = co_await dbService_.execSqlCoro(
+                "SELECT COUNT(*) AS count FROM " + tableName + " " + where,
+                params
             );
-            item["triggered_at"] = FieldHelper::getString(row["triggered_at"], "");
-            item["acknowledged_at"] = row["acknowledged_at"].isNull()
-                ? Json::nullValue
-                : Json::Value(FieldHelper::getString(row["acknowledged_at"], ""));
-            item["acknowledged_by"] = row["acknowledged_by"].isNull()
-                ? Json::nullValue
-                : Json::Value(FieldHelper::getInt(row["acknowledged_by"], 0));
-            item["resolved_at"] = row["resolved_at"].isNull()
-                ? Json::nullValue
-                : Json::Value(FieldHelper::getString(row["resolved_at"], ""));
-            items.append(std::move(item));
+            total = countResult.empty() ? 0 : FieldHelper::getInt(countResult[0]["count"], 0);
+        }
+
+        std::string sql = R"(
+            SELECT report_time, data->'data' AS elements_data
+            FROM )" + tableName + " " + where + R"(
+            ORDER BY report_time DESC, id DESC
+        )";
+
+        if (isPaged) {
+            sql += " LIMIT " + std::to_string(pageSize) + " OFFSET " + std::to_string(effectiveOffset);
+        } else {
+            sql += " LIMIT " + std::to_string(Constants::MAX_UNPAGED_ROWS);
+        }
+
+        auto result = co_await dbService_.execSqlCoro(sql, params);
+
+        Json::Value items(Json::arrayValue);
+        for (const auto& row : result) {
+            Json::Value elementsData(Json::objectValue);
+            if (!row["elements_data"].isNull()) {
+                elementsData = OpenAccess::parseJsonOrDefault(
+                    FieldHelper::getString(row["elements_data"], "{}"),
+                    Json::Value(Json::objectValue)
+                );
+            }
+            items.append(OpenAccessDataTransformer::buildDataItem(
+                device,
+                elementsData,
+                FieldHelper::getString(row["report_time"], "")
+            ));
+        }
+
+        if (!isPaged) {
+            total = static_cast<int>(items.size());
         }
 
         co_return std::make_pair(items, total);
@@ -1027,6 +1079,26 @@ public:
 
 private:
     DatabaseService dbService_;
+
+    static bool shouldUseArchive(const std::string& startTime) {
+        if (startTime.empty()) return false;
+        try {
+            auto now = std::chrono::system_clock::now();
+            auto archiveThreshold = now - std::chrono::hours(Constants::ARCHIVE_THRESHOLD_DAYS * 24);
+            auto tt = std::chrono::system_clock::to_time_t(archiveThreshold);
+            std::tm tm{};
+#ifdef _WIN32
+            gmtime_s(&tm, &tt);
+#else
+            gmtime_r(&tm, &tt);
+#endif
+            char buf[32];
+            std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+            return startTime < std::string(buf);
+        } catch (...) {
+            return false;
+        }
+    }
 
     static void validateStatus(const Json::Value& data, const std::string& field) {
         if (!ValidatorHelper::isInListIfPresent(data, field, {"enabled", "disabled"})) {

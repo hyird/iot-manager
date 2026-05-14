@@ -173,11 +173,11 @@ private:
             const auto& r = persistedBatch[i];
 
             try {
-                co_await RealtimeDataCache::instance().updateAsync(
+                co_await RealtimeDataCache::instance().mergeUpdateAsync(
                     r.deviceId, r.funcCode, r.data, r.reportTime
                 );
             } catch (const std::exception& e) {
-                LOG_WARN << "[ProtocolResultWriter] updateAsync failed for device="
+                LOG_WARN << "[ProtocolResultWriter] mergeUpdateAsync failed for device="
                          << r.deviceId << ": " << e.what();
             }
 
@@ -201,6 +201,7 @@ private:
         if (!persistedBatch.empty()) {
             ResourceVersion::instance().incrementVersion("device");
             co_await broadcastRealtimeViaWs(persistedBatch);
+            OpenWebhookDispatcher::instance().dispatchMergedDataReports(persistedBatch);
             OpenWebhookDispatcher::instance().dispatch(persistedBatch);
         }
     }
