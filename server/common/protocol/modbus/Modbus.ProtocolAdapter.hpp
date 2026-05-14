@@ -100,6 +100,7 @@ public:
         if (dtuRegistry_) {
             co_await dtuRegistry_->reload();
         }
+        reconcileSessionBindingsAfterRegistryReload();
         // 配置重载后旧的读组索引已失效，需要先清理 session 的 in-flight 和 poll 队列
         if (sessionManager_) {
             sessionManager_->clearInflightAndPollQueues();
@@ -448,6 +449,22 @@ private:
                 activateBoundDtu(dtu);
             }
         );
+    }
+
+    void reconcileSessionBindingsAfterRegistryReload() {
+        if (!sessionManager_ || !dtuRegistry_) {
+            return;
+        }
+
+        const auto staleSessions = sessionManager_->reconcileDefinitions(dtuRegistry_->getAllDefinitions());
+        for (const auto& session : staleSessions) {
+            if (pollScheduler_ && !session.dtuKey.empty()) {
+                pollScheduler_->onSessionUnbound(session.dtuKey);
+            }
+            if (session.linkId > 0 && !session.clientAddr.empty()) {
+                LinkTransportFacade::instance().disconnectServerClient(session.linkId, session.clientAddr);
+            }
+        }
     }
 
     void activateBoundDtu(const DtuDefinition& dtu) {

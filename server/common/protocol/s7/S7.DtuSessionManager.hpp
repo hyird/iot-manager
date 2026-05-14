@@ -6,6 +6,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -30,11 +31,9 @@ public:
     std::vector<S7DtuSession> listSessions() const;
 
     bool bindSession(int linkId, const std::string& clientAddr, const S7DtuDefinition& dtu);
-    std::optional<S7DtuSession> acquireProbingSession(
-        int linkId,
-        int deviceId,
-        const std::vector<int>& discoveryOrder);
+    std::vector<S7DtuSession> acquireLinkProbeSessions(int linkId, int deviceId);
     bool releaseProbingSession(int deviceId, bool advanceCursor);
+    std::vector<S7DtuSession> reconcileDefinitions(const std::vector<S7DtuDefinition>& definitions);
     std::optional<S7OnlineRoute> getOnlineRoute(int linkId, const std::string& clientAddr) const;
     std::optional<S7OnlineRoute> getOnlineRouteByDevice(int deviceId) const;
     void clearAllSessions();
@@ -273,12 +272,10 @@ inline bool DtuSessionManager::bindSession(
     return true;
 }
 
-inline std::optional<S7DtuSession> DtuSessionManager::acquireProbingSession(
-    int linkId,
-    int deviceId,
-    const std::vector<int>& discoveryOrder) {
-    if (linkId <= 0 || deviceId <= 0 || discoveryOrder.empty()) {
-        return std::nullopt;
+inline std::vector<S7DtuSession> DtuSessionManager::acquireLinkProbeSessions(int linkId, int deviceId) {
+    std::vector<S7DtuSession> result;
+    if (linkId <= 0 || deviceId <= 0) {
+        return result;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -288,7 +285,20 @@ inline std::optional<S7DtuSession> DtuSessionManager::acquireProbingSession(
         if (session.linkId != linkId) continue;
         if (session.bindState == SessionBindState::Probing
             && session.probingDeviceId == deviceId) {
-            return session;
+            result.push_back(session);
+        }
+    }
+    if (!result.empty()) {
+        return result;
+    }
+
+    for (const auto& [sessionKey, session] : sessions_) {
+        (void)sessionKey;
+        if (session.linkId != linkId) continue;
+        if (session.bindState == SessionBindState::Probing
+            && session.probingDeviceId > 0
+            && session.probingDeviceId != deviceId) {
+            return result;
         }
     }
 
@@ -296,46 +306,21 @@ inline std::optional<S7DtuSession> DtuSessionManager::acquireProbingSession(
         (void)sessionKey;
         if (session.linkId != linkId) continue;
         if (session.clientAddr.empty()) continue;
-        if (session.bindState == SessionBindState::Bound) continue;
-        if (session.bindState == SessionBindState::Probing) continue;
-
-        const std::size_t startIndex = session.discoveryCursor % discoveryOrder.size();
-        std::optional<std::size_t> selectedIndex;
-        for (std::size_t offset = 0; offset < discoveryOrder.size(); ++offset) {
-            const std::size_t idx = (startIndex + offset) % discoveryOrder.size();
-            const int candidateDeviceId = discoveryOrder[idx];
-
-            bool busy = false;
-            for (const auto& [busySessionKey, busySession] : sessions_) {
-                (void)busySessionKey;
-                if (busySession.bindState == SessionBindState::Probing
-                    && busySession.probingDeviceId == candidateDeviceId) {
-                    busy = true;
-                    break;
-                }
-            }
-            if (busy) {
-                continue;
-            }
-
-            selectedIndex = idx;
-            break;
-        }
-        if (!selectedIndex || discoveryOrder[*selectedIndex] != deviceId) continue;
+        if (session.bindState != SessionBindState::Unknown) continue;
 
         session.bindState = SessionBindState::Probing;
         session.probingDeviceId = deviceId;
-        session.discoveryCursor = *selectedIndex;
         session.lastSeen = std::chrono::steady_clock::now();
-        return session;
+        result.push_back(session);
     }
 
-    return std::nullopt;
+    return result;
 }
 
 inline bool DtuSessionManager::releaseProbingSession(int deviceId, bool advanceCursor) {
     if (deviceId <= 0) return false;
 
+    bool released = false;
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& [sessionKey, session] : sessions_) {
         (void)sessionKey;
@@ -351,10 +336,55 @@ inline bool DtuSessionManager::releaseProbingSession(int deviceId, bool advanceC
         if (session.bindState != SessionBindState::Bound) {
             session.bindState = SessionBindState::Unknown;
         }
-        return true;
+        released = true;
     }
 
-    return false;
+    return released;
+}
+
+inline std::vector<S7DtuSession> DtuSessionManager::reconcileDefinitions(
+    const std::vector<S7DtuDefinition>& definitions) {
+    std::map<std::string, S7DtuDefinition> validByDtuKey;
+    std::set<int> validLinks;
+    for (const auto& definition : definitions) {
+        if (definition.dtuKey.empty()) continue;
+        validByDtuKey[definition.dtuKey] = definition;
+        if (definition.linkId > 0) {
+            validLinks.insert(definition.linkId);
+        }
+    }
+
+    std::vector<S7DtuSession> staleSessions;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto sessionIt = sessions_.begin(); sessionIt != sessions_.end();) {
+            auto& session = sessionIt->second;
+            bool stale = validLinks.find(session.linkId) == validLinks.end();
+            if (!stale && session.bindState == SessionBindState::Bound) {
+                auto defIt = validByDtuKey.find(session.dtuKey);
+                stale = defIt == validByDtuKey.end()
+                    || defIt->second.deviceId != session.deviceId
+                    || defIt->second.linkId != session.linkId;
+            }
+
+            if (!stale) {
+                ++sessionIt;
+                continue;
+            }
+
+            staleSessions.push_back(session);
+            if (!session.dtuKey.empty()) {
+                auto boundIt = dtuToSessionKey_.find(session.dtuKey);
+                if (boundIt != dtuToSessionKey_.end() && boundIt->second == session.sessionKey) {
+                    dtuToSessionKey_.erase(boundIt);
+                }
+            }
+            routeByDeviceId_.erase(session.deviceId);
+            routeBySessionKey_.erase(detail::makeRouteKey(session.sessionKey));
+            sessionIt = sessions_.erase(sessionIt);
+        }
+    }
+    return staleSessions;
 }
 
 inline std::optional<S7OnlineRoute> DtuSessionManager::getOnlineRoute(

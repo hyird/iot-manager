@@ -6,6 +6,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,9 @@ public:
 
     /** 获取所有会话快照 */
     std::vector<DtuSession> listSessions() const;
+
+    /** 配置热重载后移除已经不再匹配当前 DTU 定义的 session */
+    std::vector<DtuSession> reconcileDefinitions(const std::vector<DtuDefinition>& definitions);
 
     /** 绑定会话到逻辑 DTU，并生成 slave 设备路由 */
     bool bindSession(int linkId, const std::string& clientAddr, const DtuDefinition& dtu);
@@ -186,6 +190,65 @@ inline std::vector<DtuSession> DtuSessionManager::listSessions() const {
         result.push_back(session);
     }
     return result;
+}
+
+inline std::vector<DtuSession> DtuSessionManager::reconcileDefinitions(
+    const std::vector<DtuDefinition>& definitions) {
+    std::map<std::string, DtuDefinition> validByDtuKey;
+    std::set<int> validLinks;
+    for (const auto& definition : definitions) {
+        if (definition.dtuKey.empty()) continue;
+        validByDtuKey[definition.dtuKey] = definition;
+        if (definition.linkId > 0) {
+            validLinks.insert(definition.linkId);
+        }
+    }
+
+    std::vector<DtuSession> staleSessions;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto sessionIt = sessions_.begin(); sessionIt != sessions_.end();) {
+            auto& session = sessionIt->second;
+            bool stale = validLinks.find(session.linkId) == validLinks.end();
+            if (!stale && session.bindState == SessionBindState::Bound) {
+                auto defIt = validByDtuKey.find(session.dtuKey);
+                stale = defIt == validByDtuKey.end() || defIt->second.linkId != session.linkId;
+                if (!stale) {
+                    for (const auto& [slaveId, deviceId] : session.deviceIdsBySlave) {
+                        auto deviceIt = defIt->second.devicesBySlave.find(slaveId);
+                        if (deviceIt == defIt->second.devicesBySlave.end()
+                            || deviceIt->second.deviceId != deviceId) {
+                            stale = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!stale) {
+                ++sessionIt;
+                continue;
+            }
+
+            staleSessions.push_back(session);
+            if (!session.dtuKey.empty()) {
+                auto boundIt = dtuToSessionKey_.find(session.dtuKey);
+                if (boundIt != dtuToSessionKey_.end() && boundIt->second == session.sessionKey) {
+                    dtuToSessionKey_.erase(boundIt);
+                }
+            }
+            for (auto routeIt = routeBySessionAndSlave_.begin(); routeIt != routeBySessionAndSlave_.end();) {
+                if (routeIt->second.sessionKey == session.sessionKey) {
+                    routeByDeviceId_.erase(routeIt->second.deviceId);
+                    routeIt = routeBySessionAndSlave_.erase(routeIt);
+                } else {
+                    ++routeIt;
+                }
+            }
+            sessionIt = sessions_.erase(sessionIt);
+        }
+    }
+    return staleSessions;
 }
 
 inline bool DtuSessionManager::bindSession(

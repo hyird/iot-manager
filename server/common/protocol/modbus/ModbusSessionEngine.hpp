@@ -223,7 +223,6 @@ private:
         const ModbusDeviceDef& device,
         size_t readGroupIndex,
         uint16_t transactionId) const;
-    bool triggerDiscoveryForSession(const DtuSession& sessionSnapshot);
     std::vector<ModbusJob> buildWriteJobs(
         const ModbusDeviceDef& device,
         const std::string& commandKey,
@@ -256,6 +255,8 @@ private:
     std::atomic<uint16_t> transactionCounter_{1};
     mutable std::mutex pollCycleMutex_;
     std::map<int, PollCycleAggregate> pollCycleAggregates_;
+    mutable std::mutex discoveryMutex_;
+    std::map<int, size_t> linkDiscoveryCursor_;
 };
 
 inline std::optional<FrameMode> ModbusSessionEngine::getSessionFrameMode(const DtuSession& session) const {
@@ -1013,14 +1014,27 @@ inline bool ModbusSessionEngine::enqueuePoll(int deviceId, size_t readGroupIndex
     return true;
 }
 
-inline bool ModbusSessionEngine::triggerDiscoveryForSession(const DtuSession& sessionSnapshot) {
-    if (sessionSnapshot.bindState != SessionBindState::Unknown) return false;
-    if (sessionSnapshot.inflight) return false;
-    if (sessionSnapshot.discoveryRequested) return false;
+inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string& clientAddr) {
+    (void)clientAddr;
+    if (linkId <= 0) return false;
 
     const auto now = std::chrono::steady_clock::now();
-    if (sessionSnapshot.nextDiscoveryTime != std::chrono::steady_clock::time_point{}
-        && now < sessionSnapshot.nextDiscoveryTime) {
+    auto sessions = sessions_.listSessions();
+    std::vector<DtuSession> targets;
+    for (const auto& session : sessions) {
+        if (session.linkId != linkId) continue;
+        if (session.bindState == SessionBindState::Probing) {
+            return false;
+        }
+        if (session.bindState != SessionBindState::Unknown) continue;
+        if (session.inflight || session.discoveryRequested) continue;
+        if (session.nextDiscoveryTime != std::chrono::steady_clock::time_point{}
+            && now < session.nextDiscoveryTime) {
+            continue;
+        }
+        targets.push_back(session);
+    }
+    if (targets.empty()) {
         return false;
     }
 
@@ -1029,7 +1043,7 @@ inline bool ModbusSessionEngine::triggerDiscoveryForSession(const DtuSession& se
         size_t readGroupIndex = 0;
     };
 
-    auto definitions = registry_.getDefinitionsByLink(sessionSnapshot.linkId);
+    auto definitions = registry_.getDefinitionsByLink(linkId);
     std::vector<DiscoveryCandidate> candidates;
     for (const auto& dtu : definitions) {
         for (const auto& [slaveId, device] : dtu.devicesBySlave) {
@@ -1038,46 +1052,71 @@ inline bool ModbusSessionEngine::triggerDiscoveryForSession(const DtuSession& se
             candidates.push_back({device.deviceId, 0});
         }
     }
-    if (candidates.empty()) return false;
+    if (candidates.empty()) {
+        return false;
+    }
 
-    const size_t startIndex = sessionSnapshot.discoveryCursor % candidates.size();
     std::optional<ModbusJob> discoveryJob;
-    size_t nextCursor = startIndex;
-    for (size_t offset = 0; offset < candidates.size(); ++offset) {
-        const size_t idx = (startIndex + offset) % candidates.size();
-        auto deviceOpt = registry_.findDevice(candidates[idx].deviceId);
-        if (!deviceOpt) continue;
-        discoveryJob = buildDiscoveryJob(
-            *deviceOpt,
-            candidates[idx].readGroupIndex,
-            transactionCounter_.fetch_add(1, std::memory_order_relaxed));
+    size_t candidateIndex = 0;
+    size_t nextCursor = 0;
+    {
+        std::lock_guard<std::mutex> lock(discoveryMutex_);
+        const size_t startIndex = linkDiscoveryCursor_[linkId] % candidates.size();
+        for (size_t offset = 0; offset < candidates.size(); ++offset) {
+            const size_t idx = (startIndex + offset) % candidates.size();
+            auto deviceOpt = registry_.findDevice(candidates[idx].deviceId);
+            if (!deviceOpt) continue;
+            discoveryJob = buildDiscoveryJob(
+                *deviceOpt,
+                candidates[idx].readGroupIndex,
+                transactionCounter_.fetch_add(1, std::memory_order_relaxed));
+            if (discoveryJob) {
+                candidateIndex = idx;
+                nextCursor = (idx + 1) % candidates.size();
+                break;
+            }
+        }
         if (discoveryJob) {
-            nextCursor = (idx + 1) % candidates.size();
-            break;
+            linkDiscoveryCursor_[linkId] = nextCursor;
         }
     }
-    if (!discoveryJob) return false;
+    if (!discoveryJob) {
+        return false;
+    }
 
-    const bool queued = sessions_.mutateSession(sessionSnapshot.linkId, sessionSnapshot.clientAddr, [&](DtuSession& session) {
-        if (session.bindState == SessionBindState::Bound || session.inflight) return;
+    std::vector<DtuSession> queuedTargets;
+    for (const auto& target : targets) {
+        bool rejected = false;
+        const bool queued = sessions_.mutateSession(target.linkId, target.clientAddr, [&](DtuSession& session) {
+            if (session.bindState != SessionBindState::Unknown
+                || session.inflight
+                || session.discoveryRequested
+                || session.isQueueFull()) {
+                rejected = true;
+                return;
+            }
+            session.bindState = SessionBindState::Probing;
+            session.discoveryRequested = true;
+            session.discoveryCursor = nextCursor;
+            session.nextDiscoveryTime = now + REQUEST_TIMEOUT;
+            session.normalQueue.push_back(*discoveryJob);
+        });
+        if (queued && !rejected) {
+            queuedTargets.push_back(target);
+        }
+    }
 
-        session.bindState = SessionBindState::Probing;
-        session.discoveryRequested = true;
-        session.discoveryCursor = nextCursor;
-        session.nextDiscoveryTime = now + REQUEST_TIMEOUT;
-        session.normalQueue.push_back(std::move(*discoveryJob));
-    });
-    if (!queued) return false;
-
-    return tryDispatchNext(sessionSnapshot.linkId, sessionSnapshot.clientAddr);
-}
-
-inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string& clientAddr) {
-    (void)clientAddr;
     bool dispatched = false;
-    auto sessions = sessions_.listUnknownSessions(linkId);
-    for (const auto& session : sessions) {
-        dispatched = triggerDiscoveryForSession(session) || dispatched;
+    for (const auto& target : queuedTargets) {
+        dispatched = tryDispatchNext(target.linkId, target.clientAddr) || dispatched;
+    }
+
+    if (dispatched) {
+        auto deviceOpt = registry_.findDevice(candidates[candidateIndex].deviceId);
+        LOG_INFO << "[Modbus][SessionEngine] Broadcast discovery probe: linkId=" << linkId
+                 << ", sessions=" << queuedTargets.size()
+                 << ", device=" << (deviceOpt ? deviceOpt->deviceName : std::string("<unknown>"))
+                 << "(id=" << candidates[candidateIndex].deviceId << ")";
     }
     return dispatched;
 }
