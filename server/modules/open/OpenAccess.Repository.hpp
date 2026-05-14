@@ -1090,7 +1090,7 @@ private:
 #ifdef _WIN32
             gmtime_s(&tm, &tt);
 #else
-            gmtime_r(&tm, &tt);
+            gmtime_r(&tt, &tm);
 #endif
             char buf[32];
             std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
