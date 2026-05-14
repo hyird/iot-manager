@@ -136,7 +136,7 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
       <div className="h-px bg-gray-100" />
 
       {/* 内容区 */}
-      <div className="flex flex-col flex-1 gap-1.5">
+      <div className="flex flex-col flex-1 justify-between gap-1.5">
         {hasGroupSections
           ? sections.map((section) => {
               const compact = section.items.length >= DENSE_SECTION_ITEM_COUNT;
