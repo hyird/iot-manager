@@ -65,12 +65,12 @@ export namespace OpenAccess {
   export interface DeviceListItem {
     id: number;
     name: string;
-    code?: string | null;
+    code?: string;
   }
 
   export interface DeviceRef {
     id: number;
-    code?: string | null;
+    code?: string;
     name: string;
   }
 

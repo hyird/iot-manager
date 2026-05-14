@@ -22,7 +22,9 @@ public:
     static Json::Value buildDeviceRef(int id, const std::string& code, const std::string& name) {
         Json::Value device(Json::objectValue);
         device["id"] = id;
-        device["code"] = code.empty() ? Json::Value(Json::nullValue) : Json::Value(code);
+        if (!code.empty()) {
+            device["code"] = code;
+        }
         device["name"] = name;
         return device;
     }
