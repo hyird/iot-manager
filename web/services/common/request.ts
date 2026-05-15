@@ -236,11 +236,15 @@ request.interceptors.response.use(
       return Promise.reject(apiError);
     }
 
-    // 服务器错误 (5xx) - 统一使用 notification，提前返回避免重复提示
+    // 服务器错误 (5xx) - 优先展示后端返回的业务错误信息
     if (error.response.status >= 500) {
-      notification.error({ message: "服务器错误", description: "服务器遇到问题，请稍后重试" });
+      const hasApiEnvelope = isApiResponseEnvelope(error.response.data);
+      const message = hasApiEnvelope ? apiError.message : "服务器错误";
+      const description = hasApiEnvelope ? undefined : "服务器遇到问题，请稍后重试";
+
+      notification.error({ message, description });
       return Promise.reject(
-        buildApiError(apiError.message || "服务器错误", {
+        buildApiError(message, {
           code: apiError.code,
           status: apiError.status ?? error.response.status,
           data: apiError.data,

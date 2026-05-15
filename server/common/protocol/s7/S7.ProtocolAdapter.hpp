@@ -32,6 +32,9 @@
 
 namespace s7 {
 
+inline constexpr int kDefaultS7SendTimeoutMs = kDefaultTimeoutMs;
+inline constexpr int kDefaultS7RecvTimeoutMs = 45000;
+
 struct S7AreaDefinition {
     std::string id;
     std::string name;
@@ -52,9 +55,9 @@ struct S7ConnectionConfig {
     int slot = 1;
     std::uint16_t localTSAP = 0x0100;
     std::uint16_t remoteTSAP = 0x0100;
-    int pingTimeoutMs = kDefaultTimeoutMs;
-    int sendTimeoutMs = kDefaultTimeoutMs;
-    int recvTimeoutMs = kDefaultTimeoutMs;
+    int pingTimeoutMs = kDefaultS7RecvTimeoutMs;
+    int sendTimeoutMs = kDefaultS7SendTimeoutMs;
+    int recvTimeoutMs = kDefaultS7RecvTimeoutMs;
     int retryDelayMs = 1000;
     int pollIntervalSec = 5;
     std::string connectionType = "PG";
@@ -1639,9 +1642,9 @@ private:
             connection.sendTimeoutMs = conn.get("sendTimeout", connection.sendTimeoutMs).asInt();
             connection.recvTimeoutMs = conn.get("recvTimeout", connection.recvTimeoutMs).asInt();
             connection.retryDelayMs = conn.get("retryDelay", connection.retryDelayMs).asInt();
-            if (connection.pingTimeoutMs <= 0) connection.pingTimeoutMs = kDefaultTimeoutMs;
-            if (connection.sendTimeoutMs <= 0) connection.sendTimeoutMs = kDefaultTimeoutMs;
-            if (connection.recvTimeoutMs <= 0) connection.recvTimeoutMs = kDefaultTimeoutMs;
+            if (connection.pingTimeoutMs <= 0) connection.pingTimeoutMs = kDefaultS7RecvTimeoutMs;
+            if (connection.sendTimeoutMs <= 0) connection.sendTimeoutMs = kDefaultS7SendTimeoutMs;
+            if (connection.recvTimeoutMs <= 0) connection.recvTimeoutMs = kDefaultS7RecvTimeoutMs;
             if (connection.retryDelayMs < 0) connection.retryDelayMs = 1000;
             if (connection.recvTimeoutMs < connection.sendTimeoutMs) {
                 connection.recvTimeoutMs = connection.sendTimeoutMs;
