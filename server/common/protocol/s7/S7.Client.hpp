@@ -79,7 +79,12 @@ inline constexpr int kS7ErrResponseTooShort = -19;
 inline constexpr std::uint16_t kDefaultRemotePort = 102;
 inline constexpr std::uint16_t kDefaultIsoPduSize = 1024;
 inline constexpr std::uint16_t kDefaultS7PduRequest = 480;
-inline constexpr std::uint16_t kDefaultSourceRef = 0x0001;
+inline constexpr std::uint16_t kDefaultSourceRef = 0x0100;
+inline constexpr std::array<std::uint16_t, 3> kSourceRefCandidates{
+    kDefaultSourceRef,
+    0x0001,
+    0x0000,
+};
 inline constexpr int kDefaultTimeoutMs = 5000;
 
 inline constexpr std::uint16_t kConnTypePg = 0x01;
@@ -169,11 +174,6 @@ inline std::uint16_t readBe16(const std::uint8_t* bytes) {
 inline void appendBe16(std::vector<std::uint8_t>& buffer, std::uint16_t value) {
     buffer.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
     buffer.push_back(static_cast<std::uint8_t>(value & 0xFF));
-}
-
-inline void appendLe16(std::vector<std::uint8_t>& buffer, std::uint16_t value) {
-    buffer.push_back(static_cast<std::uint8_t>(value & 0xFF));
-    buffer.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
 }
 
 inline int waitForSocket(SocketHandle socket, bool readReady, int timeoutMs) {
@@ -371,7 +371,6 @@ public:
         }
 
         closeSocketOnly();
-        sequence_ = 0;
         pduLength_ = kDefaultS7PduRequest;
 
         int rc = openSocket();
@@ -462,7 +461,11 @@ private:
                                                    std::uint8_t reason) const;
     int sendDisconnectProbe(std::string_view stage, std::uint16_t dstRef,
                             std::uint16_t srcRef, std::uint8_t reason);
-    std::uint16_t nextSequence() { return sequence_++; }
+    std::uint16_t nextSourceRef() {
+        const auto sourceRef = kSourceRefCandidates[sourceRefIndex_ % kSourceRefCandidates.size()];
+        sourceRefIndex_ = (sourceRefIndex_ + 1) % kSourceRefCandidates.size();
+        return sourceRef;
+    }
     void traceFrame(std::string_view stage, bool outbound,
                     const std::vector<std::uint8_t>& frame) const {
         if (traceCallback_) {
@@ -481,7 +484,7 @@ private:
     int sendTimeoutMs_ = kDefaultTimeoutMs;
     int recvTimeoutMs_ = kDefaultTimeoutMs;
     std::uint16_t pduLength_ = kDefaultS7PduRequest;
-    std::uint16_t sequence_ = 0;
+    std::size_t sourceRefIndex_ = 0;
     bool connected_ = false;
     int lastError_ = kS7Ok;
     std::vector<std::uint8_t> disconnectFrame_;
@@ -740,6 +743,7 @@ inline int Client::sendDisconnectProbe(std::string_view stage,
 }
 
 inline int Client::sendConnectionRequest() {
+    const auto sourceRef = nextSourceRef();
     std::vector<std::uint8_t> frame;
     frame.reserve(22);
     frame.push_back(kIsoTcpVersion);
@@ -749,7 +753,7 @@ inline int Client::sendConnectionRequest() {
     frame.push_back(kCotpCr);
     frame.push_back(0x00);
     frame.push_back(0x00);
-    appendBe16(frame, kDefaultSourceRef);
+    appendBe16(frame, sourceRef);
     frame.push_back(0x00);
     frame.push_back(0xC0);
     frame.push_back(0x01);
@@ -771,7 +775,7 @@ inline int Client::sendConnectionRequest() {
     rc = recvTpktFrame(response, false);
     if (rc != kS7Ok) {
         if (rc == kS7ErrTimeout) {
-            const int drRc = sendDisconnectProbe("iso.dr.connect-timeout", 0x0000, kDefaultSourceRef, 0x00);
+            const int drRc = sendDisconnectProbe("iso.dr.connect-timeout", 0x0000, sourceRef, 0x00);
             if (drRc != kS7Ok) {
                 lastError_ = rc;
             }
@@ -796,7 +800,7 @@ inline int Client::negotiatePduLength() {
     request.push_back(kS7ProtocolId);
     request.push_back(kS7Request);
     appendBe16(request, 0x0000);
-    appendLe16(request, nextSequence());
+    appendBe16(request, 0x0000);
     appendBe16(request, 8);
     appendBe16(request, 0);
     request.push_back(kS7FuncNegotiate);
@@ -891,7 +895,7 @@ inline std::vector<std::uint8_t> Client::buildReadRequest(int area, int dbNumber
     payload.push_back(kS7ProtocolId);
     payload.push_back(kS7Request);
     appendBe16(payload, 0x0000);
-    appendLe16(payload, nextSequence());
+    appendBe16(payload, 0x0000);
     appendBe16(payload, 14);
     appendBe16(payload, 0);
     payload.push_back(kS7FuncRead);
@@ -921,7 +925,7 @@ inline std::vector<std::uint8_t> Client::buildWriteRequest(int area, int dbNumbe
     payload.push_back(kS7ProtocolId);
     payload.push_back(kS7Request);
     appendBe16(payload, 0x0000);
-    appendLe16(payload, nextSequence());
+    appendBe16(payload, 0x0000);
     appendBe16(payload, 14);
     appendBe16(payload, static_cast<std::uint16_t>(4 + size));
     payload.push_back(kS7FuncWrite);
