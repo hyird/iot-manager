@@ -4,13 +4,14 @@ import { TooltipComponent } from "echarts/components";
 import * as echarts from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 import ReactEChartsCore from "echarts-for-react/lib/core";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useDeviceGroupTreeWithCount, useDeviceList } from "@/services";
 import type { Device, DeviceGroup } from "@/types";
 import { getDeviceConnectionState, getDeviceStatusBadge } from "./utils";
 
 echarts.use([TreeChart, TooltipComponent, CanvasRenderer]);
 const EMPTY_DEVICE_LIST: Device.RealTimeData[] = [];
+const DEVICE_STATUS_TICK_INTERVAL = 1000;
 
 interface TopologyViewProps {
   open: boolean;
@@ -29,6 +30,17 @@ const TopologyView = ({ open, onClose }: TopologyViewProps) => {
   const { data: groupTree = [] } = useDeviceGroupTreeWithCount({ enabled: open });
   const { data: deviceData } = useDeviceList({ enabled: open, pollingInterval: false });
   const deviceList = deviceData?.list ?? EMPTY_DEVICE_LIST;
+  const [statusNow, setStatusNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!open) return;
+
+    const timer = window.setInterval(() => {
+      setStatusNow(Date.now());
+    }, DEVICE_STATUS_TICK_INTERVAL);
+
+    return () => window.clearInterval(timer);
+  }, [open]);
 
   const { groupedDevices, ungroupedDevices } = useMemo(() => {
     const nextGroupedDevices = new Map<number, Device.RealTimeData[]>();
@@ -61,7 +73,8 @@ const TopologyView = ({ open, onClose }: TopologyViewProps) => {
         device.connected,
         device.reportTime,
         device.online_timeout,
-        device.connectionState
+        device.connectionState,
+        statusNow
       );
       const statusBadge = getDeviceStatusBadge(connectionState);
       const online = connectionState === "online";
@@ -104,7 +117,7 @@ const TopologyView = ({ open, onClose }: TopologyViewProps) => {
       label: { color: "#2f54eb" },
       children: rootChildren,
     };
-  }, [groupTree, groupedDevices, ungroupedDevices]);
+  }, [groupTree, groupedDevices, ungroupedDevices, statusNow]);
 
   const option = useMemo(
     () => ({

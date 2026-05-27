@@ -35,6 +35,7 @@ import {
   type ReactNode,
   startTransition,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -76,6 +77,7 @@ const DEVICE_CARD_GRID_STYLE: CSSProperties = {
   gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
 };
 const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
+const DEVICE_STATUS_TICK_INTERVAL = 1000;
 
 interface DeviceProtocolStats {
   total: number;
@@ -118,13 +120,15 @@ const accumulateDeviceStats = <
   T extends { total: number; online: number; offline: number; enabled: number },
 >(
   stats: T,
-  device: Device.RealTimeData
+  device: Device.RealTimeData,
+  nowMs = Date.now()
 ) => {
   const state = getDeviceConnectionState(
     device.connected,
     device.reportTime,
     device.online_timeout,
-    device.connectionState
+    device.connectionState,
+    nowMs
   );
   stats.total++;
   if (state === "online") {
@@ -137,16 +141,16 @@ const accumulateDeviceStats = <
   }
 };
 
-const buildDeviceStats = (devices: Device.RealTimeData[]): DeviceStats => {
+const buildDeviceStats = (devices: Device.RealTimeData[], nowMs = Date.now()): DeviceStats => {
   const stats = createEmptyDeviceStats();
 
   for (const device of devices) {
-    accumulateDeviceStats(stats, device);
+    accumulateDeviceStats(stats, device, nowMs);
     const protocolName = device.protocol_type || device.protocol_name || "未知";
     if (!stats.byProtocol[protocolName]) {
       stats.byProtocol[protocolName] = { total: 0, online: 0, offline: 0, enabled: 0 };
     }
-    accumulateDeviceStats(stats.byProtocol[protocolName], device);
+    accumulateDeviceStats(stats.byProtocol[protocolName], device, nowMs);
   }
 
   return stats;
@@ -184,7 +188,8 @@ const buildGroupScopeIds = (group?: DeviceGroup.TreeItem) => {
 
 const buildDeviceGroupStatsMap = (
   groups: DeviceGroup.TreeItem[],
-  visibleDeviceMap: Map<number, Device.RealTimeData[]>
+  visibleDeviceMap: Map<number, Device.RealTimeData[]>,
+  nowMs = Date.now()
 ) => {
   const statsMap = new Map<number, DeviceGroupStats>();
 
@@ -193,7 +198,7 @@ const buildDeviceGroupStatsMap = (
     const directDevices = visibleDeviceMap.get(node.id) ?? [];
 
     for (const device of directDevices) {
-      accumulateDeviceStats(stats, device);
+      accumulateDeviceStats(stats, device, nowMs);
     }
 
     for (const child of node.children ?? []) {
@@ -279,6 +284,7 @@ const buildDeviceCardItems = (elements?: Device.Element[]): DeviceCardDisplayIte
 
 interface DeviceGridItemProps {
   device: Device.RealTimeData;
+  statusNow: number;
   canEdit: boolean;
   canDelete: boolean;
   canCommand: boolean;
@@ -297,6 +303,7 @@ interface DeviceGridItemProps {
 const DeviceGridItem = memo(
   ({
     device,
+    statusNow,
     canEdit,
     canDelete,
     canCommand,
@@ -311,16 +318,21 @@ const DeviceGridItem = memo(
     onDeleteDevice,
     onOpenShareModal,
   }: DeviceGridItemProps) => {
-    const connectionState = useMemo(
-      () =>
-        getDeviceConnectionState(
-          device.connected,
-          device.reportTime,
-          device.online_timeout,
-          device.connectionState
-        ),
-      [device.connected, device.connectionState, device.online_timeout, device.reportTime]
-    );
+    const connectionState = useMemo(() => {
+      return getDeviceConnectionState(
+        device.connected,
+        device.reportTime,
+        device.online_timeout,
+        device.connectionState,
+        statusNow
+      );
+    }, [
+      device.connected,
+      device.connectionState,
+      device.online_timeout,
+      device.reportTime,
+      statusNow,
+    ]);
     const statusTag = getDeviceStatusBadge(connectionState);
     const items = useMemo(() => buildDeviceCardItems(device.elements), [device.elements]);
     const isWideCard = items.length >= WIDE_DEVICE_CARD_ITEM_COUNT;
@@ -547,6 +559,15 @@ const DevicePage = () => {
   const [commandPopoverOpen, setCommandPopoverOpen] = useState(false);
   const [commandDevice, setCommandDevice] = useState<Device.RealTimeData | null>(null);
   const [commandFunc, setCommandFunc] = useState<Device.CommandOperation | null>(null);
+  const [statusNow, setStatusNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setStatusNow(Date.now());
+    }, DEVICE_STATUS_TICK_INTERVAL);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   // ========== Queries & Mutations ==========
 
@@ -606,16 +627,20 @@ const DevicePage = () => {
       );
     });
   }, [normalizedKeyword, scopedDeviceList]);
-  const stats = useMemo(() => buildDeviceStats(scopedDeviceList), [scopedDeviceList]);
-  const displayStats = useMemo(() => buildDeviceStats(filteredDeviceList), [filteredDeviceList]);
+  const stats = useMemo(
+    () => buildDeviceStats(scopedDeviceList, statusNow),
+    [scopedDeviceList, statusNow]
+  );
+  const displayStats = useMemo(() => {
+    return buildDeviceStats(filteredDeviceList, statusNow);
+  }, [filteredDeviceList, statusNow]);
   const visibleUngroupedDevices = useMemo(
     () => filteredDeviceList.filter((device) => !device.group_id),
     [filteredDeviceList]
   );
-  const visibleUngroupedStats = useMemo(
-    () => buildDeviceStats(visibleUngroupedDevices),
-    [visibleUngroupedDevices]
-  );
+  const visibleUngroupedStats = useMemo(() => {
+    return buildDeviceStats(visibleUngroupedDevices, statusNow);
+  }, [visibleUngroupedDevices, statusNow]);
   const protocolStatsEntries = useMemo(() => Object.entries(stats.byProtocol), [stats.byProtocol]);
   const visibleDeviceMap = useMemo(() => {
     const map = new Map<number, Device.RealTimeData[]>();
@@ -632,10 +657,9 @@ const DevicePage = () => {
 
     return map;
   }, [filteredDeviceList]);
-  const visibleGroupStatsMap = useMemo(
-    () => buildDeviceGroupStatsMap(deviceGroupTree, visibleDeviceMap),
-    [deviceGroupTree, visibleDeviceMap]
-  );
+  const visibleGroupStatsMap = useMemo(() => {
+    return buildDeviceGroupStatsMap(deviceGroupTree, visibleDeviceMap, statusNow);
+  }, [deviceGroupTree, visibleDeviceMap, statusNow]);
   const groupRoots = useMemo(() => {
     if (selectedGroupId === 0) return [];
     if (selectedGroupId !== null) {
@@ -752,6 +776,7 @@ const DevicePage = () => {
         <DeviceGridItem
           key={device.id}
           device={device}
+          statusNow={statusNow}
           canEdit={canEdit && device.can_edit !== false}
           canDelete={canDelete && device.can_delete !== false}
           canCommand={device.can_command === true}

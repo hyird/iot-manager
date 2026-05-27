@@ -45,12 +45,13 @@ export const getDeviceConnectionState = (
   connected?: boolean,
   reportTime?: string,
   onlineTimeout?: number,
-  connectionState?: DeviceConnectionState
+  connectionState?: DeviceConnectionState,
+  nowMs = Date.now()
 ): DeviceConnectionState => {
   const reportTs = getReportTimeMs(reportTime);
   if (reportTs !== Number.NEGATIVE_INFINITY) {
     const threshold = (onlineTimeout || DEFAULT_ONLINE_TIMEOUT) * 1000;
-    return Date.now() - reportTs < threshold ? "online" : "offline";
+    return nowMs - reportTs < threshold ? "online" : "offline";
   }
 
   if (connectionState) return connectionState;
