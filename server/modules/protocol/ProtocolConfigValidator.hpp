@@ -326,6 +326,16 @@ inline std::optional<std::string> normalizeTsap(const Json::Value& value) {
 }
 
 inline void validateSl651(const Json::Value& config) {
+    if (config.isMember("storageInterval")) {
+        ValidatorHelper::requireIntRangeField(
+            config,
+            "storageInterval",
+            1,
+            86400,
+            "存储间隔必须在 1-86400 秒之间"
+        );
+    }
+
     if (!config.isMember("funcs")) {
         return;
     }
@@ -345,6 +355,33 @@ inline void validateModbus(const Json::Value& config) {
             1,
             3600,
             "读取间隔必须在 1-3600 秒之间"
+        );
+    }
+    if (config.isMember("storageInterval")) {
+        ValidatorHelper::requireIntRangeField(
+            config,
+            "storageInterval",
+            1,
+            86400,
+            "存储间隔必须在 1-86400 秒之间"
+        );
+    }
+    if (config.isMember("commandFastReadDuration")) {
+        ValidatorHelper::requireIntRangeField(
+            config,
+            "commandFastReadDuration",
+            0,
+            3600,
+            "下发后快读窗口必须在 0-3600 秒之间"
+        );
+    }
+    if (config.isMember("commandFastReadInterval")) {
+        ValidatorHelper::requireIntRangeField(
+            config,
+            "commandFastReadInterval",
+            1,
+            60,
+            "下发后快读间隔必须在 1-60 秒之间"
         );
     }
 
@@ -385,6 +422,42 @@ inline void validateModbus(const Json::Value& config) {
 
 inline void validateS7(const Json::Value& config) {
     ValidatorHelper::requireStringField(config, "deviceType", "S7 配置的 deviceType 不能为空");
+    if (config.isMember("pollInterval")) {
+        ValidatorHelper::requireIntRangeField(
+            config,
+            "pollInterval",
+            1,
+            3600,
+            "轮询间隔必须在 1-3600 秒之间"
+        );
+    }
+    if (config.isMember("storageInterval")) {
+        ValidatorHelper::requireIntRangeField(
+            config,
+            "storageInterval",
+            1,
+            86400,
+            "存储间隔必须在 1-86400 秒之间"
+        );
+    }
+    if (config.isMember("commandFastReadDuration")) {
+        ValidatorHelper::requireIntRangeField(
+            config,
+            "commandFastReadDuration",
+            0,
+            3600,
+            "下发后快读窗口必须在 0-3600 秒之间"
+        );
+    }
+    if (config.isMember("commandFastReadInterval")) {
+        ValidatorHelper::requireIntRangeField(
+            config,
+            "commandFastReadInterval",
+            1,
+            60,
+            "下发后快读间隔必须在 1-60 秒之间"
+        );
+    }
 
     std::string plcModel = ValidatorHelper::requireStringField(config, "plcModel", "S7 配置的 plcModel 不能为空");
     auto preset = resolveS7Preset(plcModel);

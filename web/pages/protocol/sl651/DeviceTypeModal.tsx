@@ -2,7 +2,7 @@
  * SL651 设备类型 Modal
  */
 
-import { Form, Input, Modal, Select, Switch } from "antd";
+import { Form, Input, InputNumber, Modal, Select, Switch } from "antd";
 import { forwardRef, useImperativeHandle, useState } from "react";
 import type { Protocol, SL651 } from "@/types";
 import type { SaveMutation } from "./shared";
@@ -35,9 +35,10 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
                 name: data.name,
                 enabled: data.enabled,
                 responseMode: config?.responseMode || "M1",
+                storageInterval: config?.storageInterval ?? 1,
                 remark: data.remark,
               }
-            : { enabled: true, responseMode: "M1" }
+            : { enabled: true, responseMode: "M1", storageInterval: 1 }
         );
         setOpen(true);
       },
@@ -52,7 +53,11 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
         protocol: "SL651",
         name: values.name,
         enabled: values.enabled,
-        config: { ...existingConfig, responseMode: values.responseMode },
+        config: {
+          ...existingConfig,
+          responseMode: values.responseMode,
+          storageInterval: values.storageInterval,
+        },
         remark: values.remark,
       });
 
@@ -86,6 +91,13 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
                 { value: "M4", label: "M4 - 调试/召测" },
               ]}
             />
+          </Form.Item>
+          <Form.Item
+            label="存储间隔（秒）"
+            name="storageInterval"
+            extra="历史数据入库的最小间隔，1 表示每次上报都存储"
+          >
+            <InputNumber min={1} max={86400} className="!w-full" addonAfter="秒" />
           </Form.Item>
           <Form.Item label="启用" name="enabled" valuePropName="checked">
             <Switch />

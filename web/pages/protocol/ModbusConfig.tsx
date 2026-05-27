@@ -679,6 +679,9 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
             enabled: data.enabled,
             byteOrder: config?.byteOrder || "BIG_ENDIAN",
             readInterval: Number(config?.readInterval) || 1,
+            storageInterval: Number(config?.storageInterval) || 1,
+            commandFastReadDuration: Number(config?.commandFastReadDuration ?? 60),
+            commandFastReadInterval: Number(config?.commandFastReadInterval ?? 1),
             packetMergeGap: packet.mergeGap,
             packetMaxQuantity: packet.maxQuantity,
             remark: data.remark,
@@ -688,6 +691,9 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
             enabled: true,
             byteOrder: "BIG_ENDIAN",
             readInterval: 1,
+            storageInterval: 1,
+            commandFastReadDuration: 60,
+            commandFastReadInterval: 1,
             packetMergeGap: DEFAULT_PACKET_MERGE_GAP,
             packetMaxQuantity: DEFAULT_PACKET_MAX_QUANTITY,
           });
@@ -712,6 +718,9 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
         config: {
           byteOrder: values.byteOrder,
           readInterval: values.readInterval,
+          storageInterval: values.storageInterval,
+          commandFastReadDuration: values.commandFastReadDuration,
+          commandFastReadInterval: values.commandFastReadInterval,
           packet,
           registers: existingConfig.registers || [],
         },
@@ -750,6 +759,31 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
           >
             <InputNumber min={1} max={3600} className="!w-full" addonAfter="秒" />
           </Form.Item>
+          <Form.Item
+            label="存储间隔（秒）"
+            name="storageInterval"
+            extra="历史数据入库的最小间隔，1 表示每次读取都存储"
+          >
+            <InputNumber min={1} max={86400} className="!w-full" addonAfter="秒" />
+          </Form.Item>
+          <Flex gap={16}>
+            <Form.Item
+              label="下发快读窗口"
+              name="commandFastReadDuration"
+              className="flex-1"
+              extra="下发成功后保持快读的时长，0 表示关闭"
+            >
+              <InputNumber min={0} max={3600} className="!w-full" addonAfter="秒" />
+            </Form.Item>
+            <Form.Item
+              label="快读间隔"
+              name="commandFastReadInterval"
+              className="flex-1"
+              extra="快读窗口内的读取间隔"
+            >
+              <InputNumber min={1} max={60} className="!w-full" addonAfter="秒" />
+            </Form.Item>
+          </Flex>
           <Flex gap={16}>
             <Form.Item
               label="组包地址间隙"

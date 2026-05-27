@@ -141,6 +141,8 @@ inline ModbusDeviceDef buildDeviceDef(const DeviceCache::CachedDevice& device, c
     if (def.readInterval < 1 || def.readInterval > 3600) {
         def.readInterval = DTU_DEFAULT_READ_INTERVAL;
     }
+    def.commandFastReadDuration = std::clamp(device.commandFastReadDuration, 0, 3600);
+    def.commandFastReadInterval = std::clamp(device.commandFastReadInterval, 1, 60);
 
     int mergeGap = DTU_DEFAULT_MERGE_GAP;
     int maxRegsPerRead = DTU_DEFAULT_MAX_REGS_PER_READ;

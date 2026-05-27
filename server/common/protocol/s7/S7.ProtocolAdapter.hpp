@@ -522,7 +522,11 @@ public:
                     "SUCCESS", true, downCommandId);
             }
             if (pollScheduler_) {
-                pollScheduler_->activateFastRead(deviceId);
+                pollScheduler_->activateFastRead(
+                    deviceId,
+                    deviceOpt->commandFastReadDuration,
+                    deviceOpt->commandFastReadInterval
+                );
             }
             guard.release();
             co_return CommandResult::success();
@@ -1861,6 +1865,8 @@ private:
                     .deviceId = runtime->deviceId,
                     .deviceName = runtime->deviceName,
                     .readIntervalSec = runtime->connection.pollIntervalSec,
+                    .fastReadDurationSec = device.commandFastReadDuration,
+                    .fastReadIntervalSec = device.commandFastReadInterval,
                     .enabled = true
                 });
             }

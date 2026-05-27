@@ -335,7 +335,11 @@ public:
         }
 
         if (req.deviceId > 0 && resultWriter_) {
-            resultWriter_->activateRealtimeStoreWindow(req.deviceId, 60);
+            auto deviceOpt = DeviceCache::instance().findByIdSync(req.deviceId);
+            resultWriter_->activateRealtimeStoreWindow(
+                req.deviceId,
+                deviceOpt ? deviceOpt->commandFastReadDuration : 60
+            );
         }
 
         auto result = co_await adapter->sendCommand(req);

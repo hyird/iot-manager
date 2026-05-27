@@ -73,6 +73,7 @@ private:
         std::chrono::steady_clock::time_point nextDueTime = std::chrono::steady_clock::now();
         std::chrono::steady_clock::time_point fastReadUntil{};
         int fastReadIntervalSec = 1;
+        int fastReadDurationSec = 60;
     };
 
     void ensureTickLocked();
@@ -170,6 +171,8 @@ inline void ModbusPollScheduler::reload(const DtuRegistry& registry) {
                 entry.dtuKey = dtu.dtuKey;
                 entry.linkId = device.linkId;
                 entry.readIntervalSec = (std::max)(1, device.readInterval);
+                entry.fastReadDurationSec = std::clamp(device.commandFastReadDuration, 0, 3600);
+                entry.fastReadIntervalSec = std::clamp(device.commandFastReadInterval, 1, 60);
                 entry.readGroupCount = device.readGroups.size();
                 entry.nextDueTime = now;
 

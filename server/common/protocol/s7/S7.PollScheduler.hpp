@@ -18,6 +18,8 @@ public:
         int deviceId = 0;
         std::string deviceName;
         int readIntervalSec = 5;
+        int fastReadDurationSec = 60;
+        int fastReadIntervalSec = 1;
         bool enabled = true;
     };
 
@@ -52,6 +54,7 @@ private:
         int consecutiveFailures = 0;
         std::chrono::steady_clock::time_point nextDueTime = std::chrono::steady_clock::now();
         std::chrono::steady_clock::time_point fastReadUntil{};
+        int fastReadDurationSec = 60;
         int fastReadIntervalSec = 1;
     };
 
@@ -148,6 +151,8 @@ inline void S7PollScheduler::reload(const std::vector<DeviceConfig>& devices) {
                 entry.deviceId = device.deviceId;
                 entry.deviceName = device.deviceName;
                 entry.readIntervalSec = (std::max)(1, device.readIntervalSec);
+                entry.fastReadDurationSec = std::clamp(device.fastReadDurationSec, 0, 3600);
+                entry.fastReadIntervalSec = std::clamp(device.fastReadIntervalSec, 1, 60);
                 entry.enabled = device.enabled;
                 entry.nextDueTime = now;
 

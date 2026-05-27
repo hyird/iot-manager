@@ -49,7 +49,12 @@ public:
                     runtimeContext_.notifyCommandCompletion(commandKey, responseCode, success, responseRecordId);
                 }
                 if (success && pollScheduler_) {
-                    pollScheduler_->activateFastRead(deviceId);
+                    auto deviceOpt = DeviceCache::instance().findByIdSync(deviceId);
+                    pollScheduler_->activateFastRead(
+                        deviceId,
+                        deviceOpt ? deviceOpt->commandFastReadDuration : 60,
+                        deviceOpt ? deviceOpt->commandFastReadInterval : 1
+                    );
                 }
             }
         );

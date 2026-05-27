@@ -42,8 +42,6 @@ interface DeviceFormValues {
   status: Device.Status;
   online_timeout?: number;
   remote_control?: boolean;
-  read_interval?: number;
-  storage_interval?: number;
   modbus_mode?: Device.ModbusMode;
   slave_id?: number;
   timezone?: string;
@@ -161,8 +159,6 @@ const DeviceFormModal = ({
         status: editing.status,
         online_timeout: editing.online_timeout,
         remote_control: editing.remote_control ?? true,
-        read_interval: editing.read_interval,
-        storage_interval: editing.storage_interval ?? 1,
         modbus_mode: editing.modbus_mode,
         slave_id: editing.slave_id ?? 1,
         timezone: editing.timezone ?? "+08:00",
@@ -178,7 +174,6 @@ const DeviceFormModal = ({
         connection_mode: "link",
         status: "enabled",
         remote_control: true,
-        storage_interval: 1,
         timezone: "+08:00",
         heartbeat: { mode: "OFF" },
         registration: { mode: "OFF" },
@@ -454,27 +449,6 @@ const DeviceFormModal = ({
                       <Switch checkedChildren="是" unCheckedChildren="否" />
                     </Form.Item>
                   )}
-                  {(protocolType === "Modbus" || protocolType === "S7") && (
-                    <Form.Item
-                      label="读取间隔"
-                      name="read_interval"
-                      extra="设备级轮询间隔，留空则使用设备类型中的默认间隔，单位：秒"
-                    >
-                      <InputNumber
-                        min={1}
-                        max={3600}
-                        placeholder="使用设备类型默认值"
-                        className="!w-full"
-                      />
-                    </Form.Item>
-                  )}
-                  <Form.Item
-                    label="存储间隔"
-                    name="storage_interval"
-                    extra="历史数据入库的最小间隔，1 表示每次读取都存储；控制下发后 60 秒内会实时存储"
-                  >
-                    <InputNumber min={1} max={86400} placeholder="默认 1 秒" className="!w-full" />
-                  </Form.Item>
                   {protocolType === "SL651" && (
                     <Form.Item
                       label="设备时区"

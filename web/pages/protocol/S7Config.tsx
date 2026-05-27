@@ -62,6 +62,9 @@ type DeviceTypeFormValues = {
   localTSAP: string;
   remoteTSAP: string;
   pollInterval: number;
+  storageInterval: number;
+  commandFastReadDuration: number;
+  commandFastReadInterval: number;
   enabled: boolean;
   remark?: string;
 };
@@ -92,6 +95,9 @@ const defaultConfig = (): S7.Config => ({
     connectionType: "PG",
   },
   pollInterval: 5,
+  storageInterval: 1,
+  commandFastReadDuration: 60,
+  commandFastReadInterval: 1,
   areas: [],
 });
 
@@ -1075,6 +1081,9 @@ const S7ConfigPage = () => {
       plcModel: "S7-1200",
       ...getConnectionFormValues("S7-1200"),
       pollInterval: 5,
+      storageInterval: 1,
+      commandFastReadDuration: 60,
+      commandFastReadInterval: 1,
       enabled: true,
       remark: "",
     });
@@ -1090,6 +1099,9 @@ const S7ConfigPage = () => {
       plcModel: currentConfig.plcModel ?? "S7-1200",
       ...getConnectionFormValues(currentConfig.plcModel ?? "S7-1200", currentConfig.connection),
       pollInterval: currentConfig.pollInterval ?? 5,
+      storageInterval: currentConfig.storageInterval ?? 1,
+      commandFastReadDuration: currentConfig.commandFastReadDuration ?? 60,
+      commandFastReadInterval: currentConfig.commandFastReadInterval ?? 1,
       enabled: activeType.enabled,
       remark: activeType.remark,
     });
@@ -1151,6 +1163,9 @@ const S7ConfigPage = () => {
           ...buildConnectionConfig(values),
         },
         pollInterval: values.pollInterval,
+        storageInterval: values.storageInterval,
+        commandFastReadDuration: values.commandFastReadDuration,
+        commandFastReadInterval: values.commandFastReadInterval,
       };
       await saveMutation.mutateAsync({
         id: activeTypeId,
@@ -1167,6 +1182,9 @@ const S7ConfigPage = () => {
         deviceType: values.deviceType,
         plcModel: values.plcModel,
         pollInterval: values.pollInterval,
+        storageInterval: values.storageInterval,
+        commandFastReadDuration: values.commandFastReadDuration,
+        commandFastReadInterval: values.commandFastReadInterval,
         connection: buildConnectionConfig(values),
       };
       await saveMutation.mutateAsync({
@@ -1423,6 +1441,9 @@ const S7ConfigPage = () => {
             localTSAP: "0100",
             remoteTSAP: "0101",
             pollInterval: 5,
+            storageInterval: 1,
+            commandFastReadDuration: 60,
+            commandFastReadInterval: 1,
             enabled: true,
             remark: "",
           }}
@@ -1528,6 +1549,36 @@ const S7ConfigPage = () => {
           >
             <InputNumber min={1} max={3600} className="w-full" addonAfter="秒" />
           </Form.Item>
+          <Form.Item
+            name="storageInterval"
+            label="存储间隔（秒）"
+            rules={[{ required: true, message: "请输入存储间隔" }]}
+            extra="历史数据入库的最小间隔，1 表示每次读取都存储"
+          >
+            <InputNumber min={1} max={86400} className="w-full" addonAfter="秒" />
+          </Form.Item>
+          <Row gutter={12}>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="commandFastReadDuration"
+                label="下发快读窗口"
+                rules={[{ required: true, message: "请输入快读窗口" }]}
+                extra="下发成功后保持快读的时长，0 表示关闭"
+              >
+                <InputNumber min={0} max={3600} className="w-full" addonAfter="秒" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="commandFastReadInterval"
+                label="快读间隔"
+                rules={[{ required: true, message: "请输入快读间隔" }]}
+                extra="快读窗口内的读取间隔"
+              >
+                <InputNumber min={1} max={60} className="w-full" addonAfter="秒" />
+              </Form.Item>
+            </Col>
+          </Row>
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={3} placeholder="备注说明" />
           </Form.Item>

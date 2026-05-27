@@ -7,6 +7,7 @@
 #include "common/utils/DrogonLoopSelector.hpp"
 
 #include <algorithm>
+#include <initializer_list>
 #include <optional>
 
 /**
@@ -30,8 +31,10 @@ public:
         std::string status;
         int onlineTimeout;  // 在线超时时间（秒），默认 300
         bool remoteControl;  // 是否允许远控，默认 true
-        int readInterval = 0;  // 设备级读取间隔（秒），0 表示沿用协议配置
+        int readInterval = 0;  // 读取间隔（秒），来自设备类型配置
         int storageInterval = 1;  // 历史数据存储间隔（秒），默认每次存储
+        int commandFastReadDuration = 60;  // 下发后快读窗口（秒）
+        int commandFastReadInterval = 1;  // 下发后快读间隔（秒）
         std::string timezone;  // 设备时区
         uint8_t slaveId = 1;     // Modbus 从站地址，默认 1
         std::string modbusMode;  // Modbus 模式: "TCP" / "RTU"
@@ -401,6 +404,49 @@ public:
 private:
     DeviceCache() = default;
 
+    static int intInRangeOrDefault(int value, int fallback, int minValue, int maxValue) {
+        return value >= minValue && value <= maxValue ? value : fallback;
+    }
+
+    static int getConfigInt(
+        const Json::Value& config,
+        std::initializer_list<const char*> keys,
+        int fallback,
+        int minValue,
+        int maxValue
+    ) {
+        if (!config.isObject()) {
+            return fallback;
+        }
+
+        for (const auto* key : keys) {
+            if (config.isMember(key) && config[key].isInt()) {
+                return intInRangeOrDefault(config[key].asInt(), fallback, minValue, maxValue);
+            }
+        }
+
+        if (config.isMember("commandFastRead") && config["commandFastRead"].isObject()) {
+            const auto& fastRead = config["commandFastRead"];
+            for (const auto* key : keys) {
+                if (fastRead.isMember(key) && fastRead[key].isInt()) {
+                    return intInRangeOrDefault(fastRead[key].asInt(), fallback, minValue, maxValue);
+                }
+            }
+        }
+
+        return fallback;
+    }
+
+    static int resolveProtocolReadInterval(
+        const std::string& protocolType,
+        const Json::Value& config,
+        int legacyDeviceInterval
+    ) {
+        const int fallback = legacyDeviceInterval > 0 ? legacyDeviceInterval : 0;
+        auto resolved = DeviceConnectionStateHelper::resolveProtocolIntervalSec(protocolType, config);
+        return resolved.value_or(fallback);
+    }
+
     Task<std::vector<CachedDevice>> loadDevicesFromDb(
         std::string extraWhere,
         std::vector<std::string> params
@@ -454,6 +500,10 @@ private:
         device.status = FieldHelper::getString(row["status"], Constants::USER_STATUS_ENABLED);
         device.onlineTimeout = 300;
         device.remoteControl = true;
+        device.readInterval = 0;
+        device.storageInterval = 1;
+        device.commandFastReadDuration = 60;
+        device.commandFastReadInterval = 1;
         device.timezone = "+08:00";
         device.remark = FieldHelper::getString(row["remark"], "");
         device.createdAt = FieldHelper::getString(row["created_at"], "");
@@ -518,6 +568,33 @@ private:
             std::istringstream iss(configStr);
             Json::parseFromStream(readerBuilder, iss, &device.protocolConfig, &errs);
         }
+
+        device.readInterval = resolveProtocolReadInterval(
+            device.protocolType,
+            device.protocolConfig,
+            device.readInterval
+        );
+        device.storageInterval = getConfigInt(
+            device.protocolConfig,
+            {"storageInterval", "storage_interval"},
+            device.storageInterval,
+            1,
+            86400
+        );
+        device.commandFastReadDuration = getConfigInt(
+            device.protocolConfig,
+            {"commandFastReadDuration", "duration", "durationSec", "durationSeconds"},
+            device.commandFastReadDuration,
+            0,
+            3600
+        );
+        device.commandFastReadInterval = getConfigInt(
+            device.protocolConfig,
+            {"commandFastReadInterval", "interval", "intervalSec", "intervalSeconds"},
+            device.commandFastReadInterval,
+            1,
+            60
+        );
 
         device.onlineTimeout = DeviceConnectionStateHelper::resolveEffectiveTimeout(
             device.readInterval > 0

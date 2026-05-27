@@ -7,6 +7,16 @@ import type { PageParams } from "./common";
 /** 协议类型 */
 export type ProtocolType = "SL651" | "Modbus" | "S7";
 
+/** 设备类型采集与存储策略 */
+export interface DeviceTypeTimingConfig {
+  /** 历史数据存储间隔（秒），默认 1 */
+  storageInterval?: number;
+  /** 下发后快读窗口（秒），0 表示关闭，默认 60 */
+  commandFastReadDuration?: number;
+  /** 下发后快读间隔（秒），默认 1 */
+  commandFastReadInterval?: number;
+}
+
 /** SL651 传输方向 */
 export type SL651Direction = "UP" | "DOWN";
 
@@ -89,7 +99,7 @@ export interface SL651Func {
 }
 
 /** SL651 配置结构 */
-export interface SL651Config {
+export interface SL651Config extends DeviceTypeTimingConfig {
   responseMode?: SL651ResponseMode;
   funcs: SL651Func[];
 }
@@ -173,7 +183,7 @@ export interface ModbusPacketConfig {
 }
 
 /** Modbus 配置结构 */
-export interface ModbusConfig {
+export interface ModbusConfig extends DeviceTypeTimingConfig {
   /** 字节序 */
   byteOrder: ModbusByteOrder;
   /** 读取间隔（秒），默认 1 */
@@ -240,7 +250,7 @@ export interface S7Connection {
 }
 
 /** S7 配置结构 */
-export interface S7Config {
+export interface S7Config extends DeviceTypeTimingConfig {
   deviceType: string;
   plcModel: S7PlcModel;
   connection: S7Connection;

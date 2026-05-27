@@ -39,6 +39,8 @@ struct ModbusDeviceDef {
     FrameMode frameMode = FrameMode::TCP;
     ByteOrder byteOrder = ByteOrder::Big;
     int readInterval = 1;
+    int commandFastReadDuration = 60;
+    int commandFastReadInterval = 1;
     std::vector<RegisterDef> registers;
     std::vector<ReadGroupSnapshot> readGroups;
 };
