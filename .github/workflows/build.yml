@@ -9,49 +9,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  cleanup:
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-    permissions:
-      actions: write
-    steps:
-      - name: Keep latest 3 workflow runs and artifacts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          keep_run_ids="$(gh run list --repo "$GITHUB_REPOSITORY" --json databaseId --limit 3 -q '.[].databaseId' || true)"
-          if [ -z "$keep_run_ids" ]; then
-            echo "No workflow runs found."
-            exit 0
-          fi
-
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts" \
-            --jq '.artifacts[] | [.id, .workflow_run.id] | @tsv' |
-          while IFS="$(printf '\t')" read -r artifact_id run_id; do
-            keep=false
-            for keep_run_id in $keep_run_ids; do
-              if [ "$run_id" = "$keep_run_id" ]; then
-                keep=true
-                break
-              fi
-            done
-            if [ "$keep" = "false" ]; then
-              gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
-            fi
-          done
-
-          old_run_ids="$(gh run list --repo "$GITHUB_REPOSITORY" --json databaseId --limit 1000 -q '.[3:] | .[].databaseId' || true)"
-          if [ -z "$old_run_ids" ]; then
-            echo "No extra runs to clean."
-            exit 0
-          fi
-          for run_id in $old_run_ids; do
-            gh run delete --repo "$GITHUB_REPOSITORY" "$run_id" --yes
-          done
-
   build:
-    needs: cleanup
     strategy:
       fail-fast: false
       matrix:
@@ -167,6 +125,7 @@ jobs:
         with:
           name: iot-manager-linux-${{ matrix.build_type }}
           path: build/${{ matrix.build_type == 'Release' && 'release' || 'debug' }}/
+          retention-days: 3
 
       - name: Upload Release symbols
         if: matrix.build_type == 'Release'
@@ -174,9 +133,9 @@ jobs:
         with:
           name: iot-manager-linux-Release-symbols
           path: build/symbols/
+          retention-days: 3
 
   agent-armv7l:
-    needs: cleanup
     runs-on: ubuntu-latest
     name: edgenode - armv7l Release
 
@@ -283,15 +242,16 @@ jobs:
         with:
           name: iot-edgenode-armv7l-Release
           path: build/release/
+          retention-days: 3
 
       - name: Upload Release symbols
         uses: actions/upload-artifact@v7
         with:
           name: iot-edgenode-armv7l-Release-symbols
           path: build/symbols/
+          retention-days: 3
 
   l2config-windows:
-    needs: cleanup
     runs-on: windows-latest
     name: l2config - Windows Release
 
@@ -363,3 +323,4 @@ jobs:
         with:
           name: l2config-windows-Release
           path: build/release/l2config.exe
+          retention-days: 3
