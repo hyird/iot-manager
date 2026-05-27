@@ -20,6 +20,8 @@ interface DeviceCardSection {
   items: DeviceCardItem[];
 }
 
+type ProcessedDeviceCardItem = DeviceCardItem & { span: number };
+
 interface DeviceCardProps {
   title: React.ReactNode;
   subtitle?: React.ReactNode;
@@ -82,33 +84,87 @@ const buildProcessedItems = (items: DeviceCardItem[], column: number, length: nu
     return { ...item, span };
   });
 
-const renderRows = (items: DeviceCardItem[], column: number, length: number, compact = false) => {
+const buildItemRows = (items: ProcessedDeviceCardItem[], column: number) => {
+  const rows: ProcessedDeviceCardItem[][] = [];
+  let currentRow: ProcessedDeviceCardItem[] = [];
+  let currentSpan = 0;
+
+  for (const item of items) {
+    if (currentRow.length > 0 && currentSpan + item.span > column) {
+      rows.push(currentRow);
+      currentRow = [];
+      currentSpan = 0;
+    }
+
+    currentRow.push(item);
+    currentSpan += item.span;
+
+    if (currentSpan >= column) {
+      rows.push(currentRow);
+      currentRow = [];
+      currentSpan = 0;
+    }
+  }
+
+  if (currentRow.length > 0) {
+    rows.push(currentRow);
+  }
+
+  return rows;
+};
+
+const renderRows = (
+  items: DeviceCardItem[],
+  column: number,
+  length: number,
+  compact = false,
+  fillVertical = false
+) => {
   const processed = buildProcessedItems(items, column, compact ? Math.max(length - 3, 14) : length);
   const gridCols = { gridTemplateColumns: `repeat(${column}, minmax(0, 1fr))` };
   const itemTextClass = compact ? "text-[12px] leading-5" : "text-[13px] leading-6";
 
+  const renderItem = (it: ProcessedDeviceCardItem) => (
+    <div
+      key={it.key}
+      className={`min-w-0 flex items-baseline ${itemTextClass}`}
+      style={{ gridColumn: `span ${it.span}` }}
+    >
+      <Tooltip title={it.label}>
+        <span className="min-w-0 truncate font-medium text-slate-700">{it.label}：</span>
+      </Tooltip>
+      {typeof it.children === "string" || typeof it.children === "number" ? (
+        <Tooltip title={it.children}>
+          <span className="ml-1 shrink-0 whitespace-nowrap font-medium tabular-nums text-slate-950">
+            {String(it.children)}
+          </span>
+        </Tooltip>
+      ) : (
+        <span className="ml-1 min-w-0 flex-1">{it.children}</span>
+      )}
+    </div>
+  );
+
+  if (fillVertical) {
+    const rows = buildItemRows(processed, column);
+    return (
+      <div className="flex min-h-0 flex-1 flex-col justify-around gap-1">
+        {rows.map((row, index) => (
+          <div
+            key={row.map((item) => item.key).join("-") || index}
+            className="grid gap-x-3 gap-y-0.5"
+            style={gridCols}
+          >
+            {row.map(renderItem)}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-x-3 gap-y-0.5" style={gridCols}>
-      {processed.map((it) => (
-        <div
-          key={it.key}
-          className={`min-w-0 flex items-baseline ${itemTextClass}`}
-          style={{ gridColumn: `span ${it.span!}` }}
-        >
-          <Tooltip title={it.label}>
-            <span className="min-w-0 truncate font-medium text-slate-700">{it.label}：</span>
-          </Tooltip>
-          {typeof it.children === "string" || typeof it.children === "number" ? (
-            <Tooltip title={it.children}>
-              <span className="ml-1 shrink-0 whitespace-nowrap font-medium tabular-nums text-slate-950">
-                {String(it.children)}
-              </span>
-            </Tooltip>
-          ) : (
-            <span className="ml-1 min-w-0 flex-1">{it.children}</span>
-          )}
-        </div>
-      ))}
+      {processed.map(renderItem)}
     </div>
   );
 };
@@ -139,22 +195,28 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
       <div className="h-px bg-gray-100" />
 
       {/* 内容区 */}
-      <div className="flex flex-col flex-1 justify-between gap-1.5">
+      <div
+        className={
+          hasGroupSections
+            ? "flex min-h-0 flex-1 flex-col gap-1.5"
+            : "flex flex-1 flex-col justify-between gap-1.5"
+        }
+      >
         {hasGroupSections
           ? sections.map((section) => {
               const compact = section.items.length >= DENSE_SECTION_ITEM_COUNT;
               return (
                 <section
                   key={section.key}
-                  className="rounded-md border border-slate-100 bg-slate-50/60 px-2 py-1"
+                  className="flex min-h-0 flex-1 flex-col rounded-md border border-slate-100 bg-slate-50/60 px-2 py-1"
                 >
-                  <div className="mb-1 flex items-center gap-1.5">
+                  <div className="mb-1 flex shrink-0 items-center gap-1.5">
                     <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 shadow-sm">
                       {section.label}
                     </span>
                     <span className="h-px flex-1 bg-slate-100" />
                   </div>
-                  {renderRows(section.items, column, length, compact)}
+                  {renderRows(section.items, column, length, compact, true)}
                 </section>
               );
             })
