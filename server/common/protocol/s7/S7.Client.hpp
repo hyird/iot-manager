@@ -775,10 +775,6 @@ inline int Client::sendConnectionRequest() {
     rc = recvTpktFrame(response, false);
     if (rc != kS7Ok) {
         if (rc == kS7ErrTimeout) {
-            const int drRc = sendDisconnectProbe("iso.dr.connect-timeout", 0x0000, sourceRef, 0x00);
-            if (drRc != kS7Ok) {
-                lastError_ = rc;
-            }
             return rc;
         }
         closeSocketOnly();
