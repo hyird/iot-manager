@@ -137,8 +137,13 @@ private:
     }
 
     Task<void> saveBatchResults(const std::vector<ParsedFrameResult>& batch) {
-        std::vector<ParsedFrameResult> realtimeBatch = batch;
-        auto persistBatch = filterPersistableResults(batch);
+        std::vector<ParsedFrameResult> sanitizedBatch = batch;
+        for (auto& r : sanitizedBatch) {
+            sanitizeJsonStrings(r.data);
+        }
+
+        std::vector<ParsedFrameResult> realtimeBatch = sanitizedBatch;
+        auto persistBatch = filterPersistableResults(sanitizedBatch);
         std::vector<ParsedFrameResult> persistedBatch;
         std::vector<int64_t> persistedIds;
         bool fallbackToSingleSave = false;
@@ -320,6 +325,85 @@ private:
                 last = reportTime;
             }
             lastStoredData_[r.deviceId] = r.data;
+        }
+    }
+
+    static std::string sanitizeUtf8(std::string_view input) {
+        std::string output;
+        output.reserve(input.size());
+        for (std::size_t i = 0; i < input.size();) {
+            const auto c = static_cast<unsigned char>(input[i]);
+            if (c < 0x80) {
+                output.push_back(static_cast<char>(c));
+                ++i;
+                continue;
+            }
+
+            std::size_t length = 0;
+            uint32_t codepoint = 0;
+            if ((c & 0xE0) == 0xC0) {
+                length = 2;
+                codepoint = c & 0x1F;
+            } else if ((c & 0xF0) == 0xE0) {
+                length = 3;
+                codepoint = c & 0x0F;
+            } else if ((c & 0xF8) == 0xF0) {
+                length = 4;
+                codepoint = c & 0x07;
+            } else {
+                output.push_back('?');
+                ++i;
+                continue;
+            }
+
+            if (i + length > input.size()) {
+                output.push_back('?');
+                break;
+            }
+
+            bool valid = true;
+            for (std::size_t j = 1; j < length; ++j) {
+                const auto cc = static_cast<unsigned char>(input[i + j]);
+                if ((cc & 0xC0) != 0x80) {
+                    valid = false;
+                    break;
+                }
+                codepoint = (codepoint << 6) | (cc & 0x3F);
+            }
+
+            const bool overlong = (length == 2 && codepoint < 0x80)
+                || (length == 3 && codepoint < 0x800)
+                || (length == 4 && codepoint < 0x10000);
+            const bool invalidCodepoint = codepoint > 0x10FFFF
+                || (codepoint >= 0xD800 && codepoint <= 0xDFFF);
+            if (!valid || overlong || invalidCodepoint) {
+                output.push_back('?');
+                ++i;
+                continue;
+            }
+
+            output.append(input.substr(i, length));
+            i += length;
+        }
+        return output;
+    }
+
+    static void sanitizeJsonStrings(Json::Value& value) {
+        if (value.isString()) {
+            value = sanitizeUtf8(value.asString());
+            return;
+        }
+        if (value.isArray()) {
+            for (Json::ArrayIndex i = 0; i < value.size(); ++i) {
+                sanitizeJsonStrings(value[i]);
+            }
+            return;
+        }
+        if (value.isObject()) {
+            const auto members = value.getMemberNames();
+            for (const auto& member : members) {
+                sanitizeJsonStrings(value[member]);
+            }
         }
     }
 
