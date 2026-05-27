@@ -16,7 +16,15 @@ private:
     static std::shared_mutex loggerMutex_;
     static std::string logDir_;
     static std::atomic<int> currentDay_;
+    static std::atomic<int64_t> lastFlushMs_;
     static constexpr uint64_t NO_FILE_SIZE_LIMIT = std::numeric_limits<uint64_t>::max();
+    static constexpr int64_t FLUSH_INTERVAL_MS = 200;
+
+    static int64_t nowMs() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()
+        ).count();
+    }
 
     /** 获取当天日期整数 YYYYMMDD，用于快速比较 */
     static int todayInt() {
@@ -106,6 +114,7 @@ private:
     /** 日志输出函数（注册到 trantor::Logger） */
     static void outputFunction(const char* msg, const uint64_t len) {
         std::string formatted = formatLogMessage(msg, len);
+        const auto currentMs = nowMs();
 
         // 检查日期轮转（原子整数比较，开销极小）
         int today = todayInt();
@@ -116,6 +125,14 @@ private:
         std::shared_lock lock(loggerMutex_);
         if (fileLogger_) {
             fileLogger_->output(formatted.c_str(), formatted.size());
+            auto lastFlush = lastFlushMs_.load(std::memory_order_relaxed);
+            if (currentMs - lastFlush >= FLUSH_INTERVAL_MS
+                && lastFlushMs_.compare_exchange_strong(
+                    lastFlush,
+                    currentMs,
+                    std::memory_order_relaxed)) {
+                fileLogger_->flush();
+            }
         }
     }
 
@@ -178,3 +195,4 @@ inline std::unique_ptr<trantor::AsyncFileLogger> LoggerManager::fileLogger_;
 inline std::shared_mutex LoggerManager::loggerMutex_;
 inline std::string LoggerManager::logDir_;
 inline std::atomic<int> LoggerManager::currentDay_{0};
+inline std::atomic<int64_t> LoggerManager::lastFlushMs_{0};
