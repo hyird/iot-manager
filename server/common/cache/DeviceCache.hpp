@@ -30,6 +30,8 @@ public:
         std::string status;
         int onlineTimeout;  // 在线超时时间（秒），默认 300
         bool remoteControl;  // 是否允许远控，默认 true
+        int readInterval = 0;  // 设备级读取间隔（秒），0 表示沿用协议配置
+        int storageInterval = 1;  // 历史数据存储间隔（秒），默认每次存储
         std::string timezone;  // 设备时区
         uint8_t slaveId = 1;     // Modbus 从站地址，默认 1
         std::string modbusMode;  // Modbus 模式: "TCP" / "RTU"
@@ -471,6 +473,14 @@ private:
                 device.deviceCode = pp.get("device_code", "").asString();
                 device.onlineTimeout = pp.get("online_timeout", 300).asInt();
                 device.remoteControl = pp.get("remote_control", true).asBool();
+                device.readInterval = pp.get("read_interval", 0).asInt();
+                if (device.readInterval < 0 || device.readInterval > 3600) {
+                    device.readInterval = 0;
+                }
+                device.storageInterval = pp.get("storage_interval", 1).asInt();
+                if (device.storageInterval < 1 || device.storageInterval > 86400) {
+                    device.storageInterval = 1;
+                }
                 device.timezone = pp.get("timezone", "+08:00").asString();
                 device.slaveId = static_cast<uint8_t>(pp.get("slave_id", 1).asInt());
                 device.modbusMode = pp.get("modbus_mode", "").asString();
@@ -510,10 +520,12 @@ private:
         }
 
         device.onlineTimeout = DeviceConnectionStateHelper::resolveEffectiveTimeout(
-            DeviceConnectionStateHelper::resolveProtocolIntervalSec(
-                device.protocolType,
-                device.protocolConfig
-            ),
+            device.readInterval > 0
+                ? std::optional<int>(device.readInterval)
+                : DeviceConnectionStateHelper::resolveProtocolIntervalSec(
+                    device.protocolType,
+                    device.protocolConfig
+                ),
             device.onlineTimeout
         );
 

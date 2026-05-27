@@ -247,6 +247,31 @@ private:
         throw ValidationException("要素「" + name + "」BOOL 类型只能为 0 或 1");
     }
 
+    static void validateOptionalInterval(
+        const Json::Value& data,
+        const char* key,
+        const std::string& label,
+        int minValue,
+        int maxValue
+    ) {
+        if (!data.isMember(key) || data[key].isNull()) {
+            return;
+        }
+        if (!data[key].isInt() && !data[key].isUInt()) {
+            throw ValidationException(label + "必须为整数秒");
+        }
+        const int value = data[key].asInt();
+        if (value < minValue || value > maxValue) {
+            throw ValidationException(label + "范围 " + std::to_string(minValue)
+                + " ~ " + std::to_string(maxValue) + " 秒");
+        }
+    }
+
+    static void validateDeviceIntervals(const Json::Value& data) {
+        validateOptionalInterval(data, "read_interval", "读取间隔", 1, 3600);
+        validateOptionalInterval(data, "storage_interval", "存储间隔", 1, 86400);
+    }
+
     static const Json::Value* resolveS7Areas(const Json::Value& config) {
         if (config.isMember("areas") && config["areas"].isArray()) {
             return &config["areas"];
@@ -693,6 +718,7 @@ public:
      */
     Task<void> create(const Json::Value& data, int creatorId) {
         Json::Value payload = data;
+        validateDeviceIntervals(payload);
         payload["created_by"] = creatorId;
         auto device = Device::create(payload);
 
@@ -718,18 +744,20 @@ public:
      */
     Task<void> update(int id, const Json::Value& data) {
         auto device = co_await Device::of(id);
+        Json::Value payload = data;
+        validateDeviceIntervals(payload);
 
         // 根据修改的字段添加约束
-        if (data.isMember("name")) {
+        if (payload.isMember("name")) {
             device.require(Device::nameUnique);
         }
-        if (data.isMember("device_code")) {
+        if (payload.isMember("device_code")) {
             device.require(Device::codeUnique);
         }
-        if (data.isMember("link_id")) {
+        if (payload.isMember("link_id")) {
             device.require(Device::linkExists);
         }
-        if (data.isMember("protocol_config_id")) {
+        if (payload.isMember("protocol_config_id")) {
             device.require(Device::protocolConfigExists);
         }
 
@@ -737,7 +765,7 @@ public:
         device.require(Device::modbusRegistrationRequired)
               .require(Device::runtimeIdentityUnique);
 
-        device.update(data);
+        device.update(payload);
 
         co_await device.save();
     }

@@ -1,9 +1,16 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <ctime>
 #include <functional>
+#include <iomanip>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -53,6 +60,14 @@ public:
 
     void setConnectionChecker(ConnectionChecker checker) {
         connectionChecker_ = std::move(checker);
+    }
+
+    void activateRealtimeStoreWindow(int deviceId, int durationSec = 60) {
+        if (deviceId <= 0 || durationSec <= 0) return;
+
+        std::lock_guard lock(storageMutex_);
+        realtimeStoreUntil_[deviceId] =
+            std::chrono::steady_clock::now() + std::chrono::seconds(durationSec);
     }
 
     trantor::EventLoop* eventLoop() const {
@@ -122,55 +137,61 @@ private:
     }
 
     Task<void> saveBatchResults(const std::vector<ParsedFrameResult>& batch) {
+        std::vector<ParsedFrameResult> realtimeBatch = batch;
+        auto persistBatch = filterPersistableResults(batch);
         std::vector<ParsedFrameResult> persistedBatch;
         std::vector<int64_t> persistedIds;
         bool fallbackToSingleSave = false;
-        try {
-            std::vector<CommandRepository::SaveItem> items;
-            items.reserve(batch.size());
-            for (const auto& r : batch) {
-                items.push_back({r.deviceId, r.linkId, r.protocol, r.data, r.reportTime});
-            }
 
-            persistedIds = co_await CommandRepository::saveBatch(items);
-            persistedBatch = batch;
-            LOG_TRACE << "[ProtocolResultWriter] Batch saved: " << batch.size() << " records";
-        } catch (const std::exception& e) {
-            LOG_ERROR << "[ProtocolResultWriter] saveBatchResults failed: " << e.what()
-                      << ", falling back to individual saves";
-            totalBatchFallbacks_.fetch_add(1, std::memory_order_relaxed);
-            fallbackToSingleSave = true;
-        }
-
-        if (fallbackToSingleSave) {
-            size_t failedCount = 0;
-
-            for (const auto& r : batch) {
-                int64_t savedId = 0;
-
-                try {
-                    savedId = co_await CommandRepository::save(
-                        r.deviceId, r.linkId, r.protocol, r.data, r.reportTime);
-                } catch (const std::exception& e) {
-                    ++failedCount;
-                    if (failedCount == 1) {
-                        LOG_ERROR << "[ProtocolResultWriter] 逐条写入也失败: " << e.what();
-                    }
-                    continue;
+        if (!persistBatch.empty()) {
+            try {
+                std::vector<CommandRepository::SaveItem> items;
+                items.reserve(persistBatch.size());
+                for (const auto& r : persistBatch) {
+                    items.push_back({r.deviceId, r.linkId, r.protocol, r.data, r.reportTime});
                 }
 
-                persistedBatch.push_back(r);
-                persistedIds.push_back(savedId);
+                persistedIds = co_await CommandRepository::saveBatch(items);
+                persistedBatch = persistBatch;
+                markPersistedResults(persistedBatch);
+                LOG_TRACE << "[ProtocolResultWriter] Batch saved: " << persistBatch.size() << " records";
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[ProtocolResultWriter] saveBatchResults failed: " << e.what()
+                          << ", falling back to individual saves";
+                totalBatchFallbacks_.fetch_add(1, std::memory_order_relaxed);
+                fallbackToSingleSave = true;
             }
 
-            if (failedCount > 0) {
-                LOG_ERROR << "[ProtocolResultWriter] 批次回退: " << batch.size() << " 条中 "
-                          << failedCount << " 条写入数据库失败（DB 可能不可用）";
+            if (fallbackToSingleSave) {
+                size_t failedCount = 0;
+
+                for (const auto& r : persistBatch) {
+                    int64_t savedId = 0;
+
+                    try {
+                        savedId = co_await CommandRepository::save(
+                            r.deviceId, r.linkId, r.protocol, r.data, r.reportTime);
+                    } catch (const std::exception& e) {
+                        ++failedCount;
+                        if (failedCount == 1) {
+                            LOG_ERROR << "[ProtocolResultWriter] 逐条写入也失败: " << e.what();
+                        }
+                        continue;
+                    }
+
+                    persistedBatch.push_back(r);
+                    persistedIds.push_back(savedId);
+                    markPersistedResults({r});
+                }
+
+                if (failedCount > 0) {
+                    LOG_ERROR << "[ProtocolResultWriter] 批次回退: " << persistBatch.size() << " 条中 "
+                              << failedCount << " 条写入数据库失败（DB 可能不可用）";
+                }
             }
         }
 
-        for (size_t i = 0; i < persistedBatch.size(); ++i) {
-            const auto& r = persistedBatch[i];
+        for (const auto& r : realtimeBatch) {
 
             try {
                 co_await RealtimeDataCache::instance().mergeUpdateAsync(
@@ -181,15 +202,6 @@ private:
                          << r.deviceId << ": " << e.what();
             }
 
-            if (notifyCommandCompletion_ && r.commandCompletion && i < persistedIds.size()) {
-                notifyCommandCompletion_(
-                    r.commandCompletion->commandKey,
-                    r.commandCompletion->responseCode,
-                    r.commandCompletion->success,
-                    persistedIds[i]
-                );
-            }
-
             try {
                 co_await AlertEngine::instance().checkData(r.deviceId, r.data);
             } catch (const std::exception& e) {
@@ -198,12 +210,163 @@ private:
             }
         }
 
-        if (!persistedBatch.empty()) {
-            ResourceVersion::instance().incrementVersion("device");
-            co_await broadcastRealtimeViaWs(persistedBatch);
-            OpenWebhookDispatcher::instance().dispatchMergedDataReports(persistedBatch);
-            OpenWebhookDispatcher::instance().dispatch(persistedBatch);
+        for (size_t i = 0; i < persistedBatch.size(); ++i) {
+            const auto& r = persistedBatch[i];
+
+            if (notifyCommandCompletion_ && r.commandCompletion && i < persistedIds.size()) {
+                notifyCommandCompletion_(
+                    r.commandCompletion->commandKey,
+                    r.commandCompletion->responseCode,
+                    r.commandCompletion->success,
+                    persistedIds[i]
+                );
+            }
         }
+
+        if (!realtimeBatch.empty()) {
+            ResourceVersion::instance().incrementVersion("device");
+            co_await broadcastRealtimeViaWs(realtimeBatch);
+            OpenWebhookDispatcher::instance().dispatchMergedDataReports(realtimeBatch);
+            OpenWebhookDispatcher::instance().dispatch(realtimeBatch);
+        }
+    }
+
+    std::vector<ParsedFrameResult> filterPersistableResults(const std::vector<ParsedFrameResult>& batch) {
+        std::vector<ParsedFrameResult> result;
+        result.reserve(batch.size());
+
+        const auto steadyNow = std::chrono::steady_clock::now();
+        std::map<int, std::chrono::system_clock::time_point> stagedLastTimes;
+
+        std::lock_guard lock(storageMutex_);
+        pruneRealtimeStoreWindowsLocked(steadyNow);
+
+        for (const auto& r : batch) {
+            if (shouldPersistResultLocked(r, steadyNow, stagedLastTimes)) {
+                result.push_back(r);
+            }
+        }
+
+        return result;
+    }
+
+    bool shouldPersistResultLocked(
+        const ParsedFrameResult& result,
+        std::chrono::steady_clock::time_point steadyNow,
+        std::map<int, std::chrono::system_clock::time_point>& stagedLastTimes) const {
+        if (result.deviceId <= 0) {
+            return true;
+        }
+        if (result.commandCompletion.has_value()) {
+            return true;
+        }
+
+        const auto direction = result.data.get("direction", "UP").asString();
+        if (direction != "UP") {
+            return true;
+        }
+
+        auto fastIt = realtimeStoreUntil_.find(result.deviceId);
+        if (fastIt != realtimeStoreUntil_.end() && steadyNow < fastIt->second) {
+            return true;
+        }
+
+        auto device = DeviceCache::instance().findByIdSync(result.deviceId);
+        const int storageIntervalSec = device ? std::max(1, device->storageInterval) : 1;
+        if (storageIntervalSec <= 1) {
+            return true;
+        }
+
+        const auto reportTime = parseReportTime(result.reportTime)
+            .value_or(std::chrono::system_clock::now());
+        auto stagedIt = stagedLastTimes.find(result.deviceId);
+        const auto lastIt = lastStoredReportTimes_.find(result.deviceId);
+        const auto lastTime = stagedIt != stagedLastTimes.end()
+            ? stagedIt->second
+            : (lastIt != lastStoredReportTimes_.end()
+                ? lastIt->second
+                : std::chrono::system_clock::time_point{});
+
+        if (lastTime != std::chrono::system_clock::time_point{}
+            && reportTime < lastTime + std::chrono::seconds(storageIntervalSec)) {
+            return false;
+        }
+
+        stagedLastTimes[result.deviceId] = reportTime;
+        return true;
+    }
+
+    void markPersistedResults(const std::vector<ParsedFrameResult>& results) {
+        if (results.empty()) return;
+
+        std::lock_guard lock(storageMutex_);
+        for (const auto& r : results) {
+            if (r.deviceId <= 0) continue;
+            auto reportTime = parseReportTime(r.reportTime)
+                .value_or(std::chrono::system_clock::now());
+            auto& last = lastStoredReportTimes_[r.deviceId];
+            if (last == std::chrono::system_clock::time_point{} || reportTime > last) {
+                last = reportTime;
+            }
+        }
+    }
+
+    void pruneRealtimeStoreWindowsLocked(std::chrono::steady_clock::time_point now) {
+        for (auto it = realtimeStoreUntil_.begin(); it != realtimeStoreUntil_.end();) {
+            if (now >= it->second) {
+                it = realtimeStoreUntil_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    static std::optional<std::chrono::system_clock::time_point> parseReportTime(const std::string& reportTime) {
+        if (reportTime.empty()) return std::nullopt;
+
+        std::string timePart = reportTime;
+        if (!timePart.empty() && timePart.back() == 'Z') {
+            timePart.pop_back();
+        }
+
+        int offsetSeconds = 0;
+        bool hasOffset = false;
+        size_t pos = timePart.find_last_of("+-");
+        if (pos != std::string::npos && pos > 10) {
+            std::string offsetStr = timePart.substr(pos);
+            if (offsetStr.size() == 6 && offsetStr[3] == ':') {
+                try {
+                    const int hours = std::stoi(offsetStr.substr(1, 2));
+                    const int mins = std::stoi(offsetStr.substr(4, 2));
+                    offsetSeconds = hours * 3600 + mins * 60;
+                    if (offsetStr[0] == '-') {
+                        offsetSeconds = -offsetSeconds;
+                    }
+                    hasOffset = true;
+                    timePart = timePart.substr(0, pos);
+                } catch (...) {
+                    return std::nullopt;
+                }
+            }
+        }
+
+        std::tm tm{};
+        std::istringstream iss(timePart);
+        iss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+        if (iss.fail()) return std::nullopt;
+
+#ifdef _WIN32
+        auto tt = _mkgmtime(&tm);
+#else
+        auto tt = timegm(&tm);
+#endif
+        if (tt == -1) return std::nullopt;
+
+        auto tp = std::chrono::system_clock::from_time_t(tt);
+        if (hasOffset) {
+            tp -= std::chrono::seconds(offsetSeconds);
+        }
+        return tp;
     }
 
     Task<void> broadcastRealtimeViaWs(const std::vector<ParsedFrameResult>& batch) {
@@ -252,4 +415,7 @@ private:
     bool batchTimerActive_ = false;
     std::atomic<int64_t> totalBatchFlushes_{0};
     std::atomic<int64_t> totalBatchFallbacks_{0};
+    mutable std::mutex storageMutex_;
+    std::map<int, std::chrono::system_clock::time_point> lastStoredReportTimes_;
+    std::map<int, std::chrono::steady_clock::time_point> realtimeStoreUntil_;
 };

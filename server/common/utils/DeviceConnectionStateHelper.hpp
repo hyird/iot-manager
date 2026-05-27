@@ -28,6 +28,9 @@ public:
     ) {
         if (!protocolConfig.isObject()) return std::nullopt;
 
+        if (protocolConfig.isMember("read_interval")) {
+            return std::max(1, protocolConfig.get("read_interval", 1).asInt());
+        }
         if (protocolType == Constants::PROTOCOL_MODBUS
             && protocolConfig.isMember("readInterval")) {
             return std::max(1, protocolConfig.get("readInterval", 1).asInt());

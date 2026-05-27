@@ -519,7 +519,7 @@ public:
                     "SUCCESS", true, downCommandId);
             }
             if (pollScheduler_) {
-                pollScheduler_->triggerNow(deviceId);
+                pollScheduler_->activateFastRead(deviceId);
             }
             guard.release();
             co_return CommandResult::success();
@@ -1715,6 +1715,9 @@ private:
         }
         const std::string plcModel = device.protocolConfig.get("plcModel", "").asString();
         runtime->connection = parseConnection(device.protocolConfig, plcModel);
+        if (device.readInterval > 0) {
+            runtime->connection.pollIntervalSec = std::clamp(device.readInterval, 1, 3600);
+        }
         if (runtime->tcpServerMode) {
             runtime->connection.host = "tcpserver";
         } else if (!device.linkIp.empty()) {

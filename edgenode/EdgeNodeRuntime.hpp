@@ -807,6 +807,8 @@ private:
         const int deviceId = data.get("deviceId", 0).asInt();
         const auto& elements = data["elements"];
         const int readbackCount = data.get("readbackCount", 3).asInt();
+        const int fastReadDurationSec = data.get("fastReadDurationSec", 60).asInt();
+        const int fastReadIntervalSec = data.get("fastReadIntervalSec", 1).asInt();
 
         if (commandKey.empty() || deviceId <= 0 || !elements.isArray() || elements.empty()) {
             std::cout << "[Agent] device:command invalid params" << std::endl;
@@ -816,9 +818,12 @@ private:
         std::cout << "[Agent] device:command received: key=" << commandKey
                   << ", deviceId=" << deviceId
                   << ", elements=" << elements.size()
-                  << ", readback=" << readbackCount << std::endl;
+                  << ", readback=" << readbackCount
+                  << ", fastRead=" << fastReadDurationSec << "s/"
+                  << fastReadIntervalSec << "s" << std::endl;
 
         modbusPoller_.executeWriteCommand(deviceId, elements, readbackCount,
+            fastReadDurationSec, fastReadIntervalSec,
             [this, commandKey](bool success, const std::string& message) {
                 Json::Value result(Json::objectValue);
                 result["commandKey"] = commandKey;

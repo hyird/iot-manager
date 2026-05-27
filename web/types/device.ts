@@ -53,6 +53,10 @@ export interface DeviceItem {
   online_timeout?: number;
   /** 是否允许远控（下发指令），默认 true */
   remote_control?: boolean;
+  /** 设备级读取间隔（秒），不填则使用设备类型配置 */
+  read_interval?: number;
+  /** 历史数据存储间隔（秒），默认 1 秒 */
+  storage_interval?: number;
   /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
   modbus_mode?: ModbusMode;
   /** Modbus 从站地址（1-247），默认 1 */
@@ -119,6 +123,10 @@ export interface CreateDeviceDto {
   online_timeout?: number;
   /** 是否允许远控（下发指令），默认 true */
   remote_control?: boolean;
+  /** 设备级读取间隔（秒），不填则使用设备类型配置 */
+  read_interval?: number;
+  /** 历史数据存储间隔（秒），默认 1 秒 */
+  storage_interval?: number;
   /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
   modbus_mode?: ModbusMode;
   /** Modbus 从站地址（1-247），默认 1 */
@@ -147,6 +155,10 @@ export interface UpdateDeviceDto {
   online_timeout?: number;
   /** 是否允许远控（下发指令） */
   remote_control?: boolean;
+  /** 设备级读取间隔（秒） */
+  read_interval?: number;
+  /** 历史数据存储间隔（秒） */
+  storage_interval?: number;
   /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
   modbus_mode?: ModbusMode;
   /** Modbus 从站地址（1-247），默认 1 */
@@ -175,6 +187,8 @@ export interface DeviceStaticData {
   group_id?: number | null;
   online_timeout?: number;
   remote_control?: boolean;
+  read_interval?: number;
+  storage_interval?: number;
   modbus_mode?: ModbusMode;
   slave_id?: number;
   timezone?: string;

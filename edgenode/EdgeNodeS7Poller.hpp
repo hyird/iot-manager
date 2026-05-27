@@ -50,6 +50,9 @@ public:
                 runtime.host = ep.ip;
                 runtime.port = static_cast<std::uint16_t>(ep.port > 0 ? ep.port : 102);
                 runtime.connection = parseConnection(dev.protocolConfig);
+                if (dev.readIntervalSec > 0) {
+                    runtime.connection.pollIntervalSec = std::clamp(dev.readIntervalSec, 1, 3600);
+                }
                 runtime.areas = parseAreas(dev.protocolConfig);
                 runtime.nextPollAt = std::chrono::steady_clock::now();
 

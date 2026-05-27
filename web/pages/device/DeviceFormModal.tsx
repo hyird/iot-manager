@@ -42,6 +42,8 @@ interface DeviceFormValues {
   status: Device.Status;
   online_timeout?: number;
   remote_control?: boolean;
+  read_interval?: number;
+  storage_interval?: number;
   modbus_mode?: Device.ModbusMode;
   slave_id?: number;
   timezone?: string;
@@ -91,7 +93,9 @@ const DeviceFormModal = ({
   const linkProtocolType = toProtocolType(selectedLink?.protocol);
 
   // Agent 端点列表
-  const { data: agentEndpoints = [] } = useAgentEndpoints(agentId, { enabled: !!agentId && connectionMode === "agent" });
+  const { data: agentEndpoints = [] } = useAgentEndpoints(agentId, {
+    enabled: !!agentId && connectionMode === "agent",
+  });
 
   // Agent 模式：用 React state 管理端点协议和模式（Form.useWatch 对辅助字段不可靠）
   const [endpointProtocol, setEndpointProtocol] = useState<string>();
@@ -105,9 +109,12 @@ const DeviceFormModal = ({
   const linkMode = connectionMode === "agent" ? endpointMode : selectedLink?.mode;
   const showPacketConfig = connectionMode !== "agent" && linkMode === "TCP Server";
 
-  const { data: protocolOptions, isLoading: protocolOptionsLoading } = useProtocolConfigOptions(protocolType!, {
-    enabled: !!protocolType,
-  });
+  const { data: protocolOptions, isLoading: protocolOptionsLoading } = useProtocolConfigOptions(
+    protocolType!,
+    {
+      enabled: !!protocolType,
+    }
+  );
 
   // 编辑模式：端点数据异步加载后，同步协议信息到 state
   const agentEndpointId = Form.useWatch("agent_endpoint_id", form);
@@ -154,6 +161,8 @@ const DeviceFormModal = ({
         status: editing.status,
         online_timeout: editing.online_timeout,
         remote_control: editing.remote_control ?? true,
+        read_interval: editing.read_interval,
+        storage_interval: editing.storage_interval ?? 1,
         modbus_mode: editing.modbus_mode,
         slave_id: editing.slave_id ?? 1,
         timezone: editing.timezone ?? "+08:00",
@@ -169,6 +178,7 @@ const DeviceFormModal = ({
         connection_mode: "link",
         status: "enabled",
         remote_control: true,
+        storage_interval: 1,
         timezone: "+08:00",
         heartbeat: { mode: "OFF" },
         registration: { mode: "OFF" },
@@ -272,11 +282,7 @@ const DeviceFormModal = ({
         </Form.Item>
 
         {/* 连接方式选择 */}
-        <Form.Item
-          label="连接方式"
-          name="connection_mode"
-          rules={[{ required: true }]}
-        >
+        <Form.Item label="连接方式" name="connection_mode" rules={[{ required: true }]}>
           <Radio.Group onChange={handleConnectionModeChange} disabled={!!editing}>
             <Radio.Button value="link">本地链路</Radio.Button>
             <Radio.Button value="agent">采集 Agent</Radio.Button>
@@ -308,15 +314,10 @@ const DeviceFormModal = ({
               name="agent_id"
               rules={[{ required: true, message: "请选择采集 Agent" }]}
             >
-              <Select
-                placeholder="选择 Agent"
-                onChange={handleAgentChange}
-                disabled={!!editing}
-              >
+              <Select placeholder="选择 Agent" onChange={handleAgentChange} disabled={!!editing}>
                 {agentOptions.map((agent) => (
                   <Select.Option key={agent.id} value={agent.id}>
-                    {agent.name} ({agent.code})
-                    {agent.is_online ? "" : " [离线]"}
+                    {agent.name} ({agent.code}){agent.is_online ? "" : " [离线]"}
                   </Select.Option>
                 ))}
               </Select>
@@ -329,7 +330,9 @@ const DeviceFormModal = ({
                 rules={[{ required: true, message: "请选择接入端点" }]}
               >
                 <Select
-                  placeholder={agentEndpoints.length ? "选择端点" : "该 Agent 暂无端点，请先在 Agent 页面创建"}
+                  placeholder={
+                    agentEndpoints.length ? "选择端点" : "该 Agent 暂无端点，请先在 Agent 页面创建"
+                  }
                   onChange={handleEndpointChange}
                   disabled={!!editing}
                 >
@@ -354,7 +357,13 @@ const DeviceFormModal = ({
           rules={[{ required: true, message: "请选择设备类型" }]}
         >
           <Select
-            placeholder={protocolType ? "选择设备类型" : connectionMode === "agent" ? "请先选择端点" : "请先选择链路"}
+            placeholder={
+              protocolType
+                ? "选择设备类型"
+                : connectionMode === "agent"
+                  ? "请先选择端点"
+                  : "请先选择链路"
+            }
             disabled={!!editing || !protocolType}
             loading={protocolOptionsLoading}
             notFoundContent={protocolOptionsLoading ? "加载中..." : "暂无数据"}
@@ -445,6 +454,27 @@ const DeviceFormModal = ({
                       <Switch checkedChildren="是" unCheckedChildren="否" />
                     </Form.Item>
                   )}
+                  {(protocolType === "Modbus" || protocolType === "S7") && (
+                    <Form.Item
+                      label="读取间隔"
+                      name="read_interval"
+                      extra="设备级轮询间隔，留空则使用设备类型中的默认间隔，单位：秒"
+                    >
+                      <InputNumber
+                        min={1}
+                        max={3600}
+                        placeholder="使用设备类型默认值"
+                        className="!w-full"
+                      />
+                    </Form.Item>
+                  )}
+                  <Form.Item
+                    label="存储间隔"
+                    name="storage_interval"
+                    extra="历史数据入库的最小间隔，1 表示每次读取都存储；控制下发后 60 秒内会实时存储"
+                  >
+                    <InputNumber min={1} max={86400} placeholder="默认 1 秒" className="!w-full" />
+                  </Form.Item>
                   {protocolType === "SL651" && (
                     <Form.Item
                       label="设备时区"

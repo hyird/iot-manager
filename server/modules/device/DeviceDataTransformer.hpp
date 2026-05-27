@@ -225,10 +225,12 @@ public:
      */
     static int resolveEffectiveOnlineTimeout(const DeviceCache::CachedDevice& device) {
         return DeviceConnectionStateHelper::resolveEffectiveTimeout(
-            DeviceConnectionStateHelper::resolveProtocolIntervalSec(
-                device.protocolType,
-                device.protocolConfig
-            ),
+            device.readInterval > 0
+                ? std::optional<int>(device.readInterval)
+                : DeviceConnectionStateHelper::resolveProtocolIntervalSec(
+                    device.protocolType,
+                    device.protocolConfig
+                ),
             device.onlineTimeout
         );
     }
@@ -247,6 +249,10 @@ public:
         // 默认口径：3 个轮询周期未收到最新数据则视为离线
         item["online_timeout"] = resolveEffectiveOnlineTimeout(device);
         item["remote_control"] = device.remoteControl;
+        if (device.readInterval > 0) {
+            item["read_interval"] = device.readInterval;
+        }
+        item["storage_interval"] = std::max(1, device.storageInterval);
         item["remark"] = device.remark;
         item["created_at"] = device.createdAt;
         item["link_name"] = device.linkName;

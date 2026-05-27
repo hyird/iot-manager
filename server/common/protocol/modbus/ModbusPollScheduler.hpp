@@ -47,6 +47,9 @@ public:
     /** 触发设备立即轮询 */
     void triggerNow(int deviceId);
 
+    /** 下发控制后的快读窗口：临时缩短轮询间隔 */
+    void activateFastRead(int deviceId, int durationSec = 60, int intervalSec = 1);
+
     /** 某个读组完成后，推进同设备的下一组或下一轮 */
     void onReadCompleted(int deviceId, size_t readGroupIndex, bool success);
 
@@ -68,6 +71,8 @@ private:
         bool cycleInProgress = false;
         int consecutiveFailures = 0;
         std::chrono::steady_clock::time_point nextDueTime = std::chrono::steady_clock::now();
+        std::chrono::steady_clock::time_point fastReadUntil{};
+        int fastReadIntervalSec = 1;
     };
 
     void ensureTickLocked();
@@ -75,6 +80,7 @@ private:
     void onTick();
     void resetEntryForRetry(PollEntry& entry, std::chrono::steady_clock::time_point now);
     void dispatchReads(const std::vector<std::pair<int, size_t>>& reads);
+    static int effectiveIntervalSec(const PollEntry& entry, std::chrono::steady_clock::time_point now);
 
     std::map<int, PollEntry> pollEntries_;
     EnqueueReadCallback enqueueReadCallback_;
@@ -114,6 +120,15 @@ inline void ModbusPollScheduler::resetEntryForRetry(
     entry.cycleInProgress = false;
     entry.nextGroupIndex = 0;
     entry.nextDueTime = now + std::chrono::seconds(RETRY_INTERVAL_SEC);
+}
+
+inline int ModbusPollScheduler::effectiveIntervalSec(
+    const PollEntry& entry,
+    std::chrono::steady_clock::time_point now) {
+    if (entry.fastReadUntil != std::chrono::steady_clock::time_point{} && now < entry.fastReadUntil) {
+        return (std::max)(1, entry.fastReadIntervalSec);
+    }
+    return (std::max)(1, entry.readIntervalSec);
 }
 
 inline void ModbusPollScheduler::dispatchReads(const std::vector<std::pair<int, size_t>>& reads) {
@@ -240,6 +255,33 @@ inline void ModbusPollScheduler::triggerNow(int deviceId) {
     dispatchReads(immediateReads);
 }
 
+inline void ModbusPollScheduler::activateFastRead(int deviceId, int durationSec, int intervalSec) {
+    if (durationSec <= 0) {
+        return;
+    }
+
+    std::vector<std::pair<int, size_t>> immediateReads;
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = pollEntries_.find(deviceId);
+        if (it == pollEntries_.end() || !it->second.enabled || it->second.readGroupCount == 0) return;
+
+        auto& entry = it->second;
+        entry.fastReadIntervalSec = std::clamp(intervalSec, 1, 60);
+        entry.fastReadUntil = now + std::chrono::seconds(durationSec);
+        entry.nextDueTime = now;
+
+        if (!entry.cycleInProgress) {
+            entry.cycleInProgress = true;
+            entry.nextGroupIndex = 0;
+            immediateReads.emplace_back(deviceId, 0);
+        }
+    }
+
+    dispatchReads(immediateReads);
+}
+
 inline void ModbusPollScheduler::onReadCompleted(int deviceId, size_t readGroupIndex, bool success) {
     std::vector<std::pair<int, size_t>> immediateReads;
     const auto now = std::chrono::steady_clock::now();
@@ -261,7 +303,7 @@ inline void ModbusPollScheduler::onReadCompleted(int deviceId, size_t readGroupI
             entry.cycleInProgress = false;
             entry.nextGroupIndex = 0;
 
-            int intervalSec = entry.readIntervalSec;
+            int intervalSec = effectiveIntervalSec(entry, now);
             if (entry.consecutiveFailures >= DEGRADE_THRESHOLD
                 && entry.readIntervalSec < DEGRADE_INTERVAL_SEC) {
                 intervalSec = DEGRADE_INTERVAL_SEC;
@@ -295,7 +337,7 @@ inline void ModbusPollScheduler::onReadCompleted(int deviceId, size_t readGroupI
             entry.consecutiveFailures = 0;
             entry.cycleInProgress = false;
             entry.nextGroupIndex = 0;
-            entry.nextDueTime = now + std::chrono::seconds(entry.readIntervalSec);
+            entry.nextDueTime = now + std::chrono::seconds(effectiveIntervalSec(entry, now));
         }
     }
 

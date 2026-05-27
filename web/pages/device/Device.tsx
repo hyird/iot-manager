@@ -667,6 +667,8 @@ const DevicePage = () => {
       status: device.status,
       online_timeout: device.online_timeout,
       remote_control: device.remote_control,
+      read_interval: device.read_interval,
+      storage_interval: device.storage_interval,
       modbus_mode: device.modbus_mode,
       slave_id: device.slave_id,
       timezone: device.timezone,

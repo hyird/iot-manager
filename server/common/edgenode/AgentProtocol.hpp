@@ -81,6 +81,7 @@ struct EndpointDevice {
     std::string deviceCode;   // SL651 设备编码
     int slaveId = 0;          // Modbus 从站地址
     std::string modbusMode;   // Modbus 模式 (TCP/RTU)
+    int readIntervalSec = 0;  // 设备级读取间隔，0 表示沿用协议配置
     Json::Value heartbeat;    // 心跳包配置
     Json::Value registration; // 注册包配置
     int protocolConfigId = 0; // 协议配置 ID
@@ -94,6 +95,7 @@ struct EndpointDevice {
         if (!deviceCode.empty()) json["deviceCode"] = deviceCode;
         if (slaveId > 0) json["slaveId"] = slaveId;
         if (!modbusMode.empty()) json["modbusMode"] = modbusMode;
+        if (readIntervalSec > 0) json["readInterval"] = readIntervalSec;
         if (heartbeat.isObject() && heartbeat.get("mode", "OFF").asString() != "OFF") {
             json["heartbeat"] = heartbeat;
         }
@@ -116,6 +118,7 @@ struct EndpointDevice {
         d.deviceCode = json.get("deviceCode", "").asString();
         d.slaveId = json.get("slaveId", 0).asInt();
         d.modbusMode = json.get("modbusMode", "").asString();
+        d.readIntervalSec = json.get("readInterval", 0).asInt();
         d.heartbeat = json.get("heartbeat", Json::objectValue);
         d.registration = json.get("registration", Json::objectValue);
         d.protocolConfigId = json.get("protocolConfigId", 0).asInt();

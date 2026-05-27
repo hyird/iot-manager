@@ -49,7 +49,7 @@ public:
                     runtimeContext_.notifyCommandCompletion(commandKey, responseCode, success, responseRecordId);
                 }
                 if (success && pollScheduler_) {
-                    pollScheduler_->triggerNow(deviceId);
+                    pollScheduler_->activateFastRead(deviceId);
                 }
             }
         );

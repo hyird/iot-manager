@@ -135,7 +135,9 @@ inline ModbusDeviceDef buildDeviceDef(const DeviceCache::CachedDevice& device, c
 
     const auto& config = device.protocolConfig;
     def.byteOrder = parseByteOrder(config.get("byteOrder", "BIG_ENDIAN").asString());
-    def.readInterval = config.get("readInterval", DTU_DEFAULT_READ_INTERVAL).asInt();
+    def.readInterval = device.readInterval > 0
+        ? device.readInterval
+        : config.get("readInterval", DTU_DEFAULT_READ_INTERVAL).asInt();
     if (def.readInterval < 1 || def.readInterval > 3600) {
         def.readInterval = DTU_DEFAULT_READ_INTERVAL;
     }

@@ -621,12 +621,16 @@ public:
                            const std::string& commandKey,
                            int deviceId,
                            const Json::Value& elements,
-                           int readbackCount = 3) {
+                           int readbackCount = 3,
+                           int fastReadDurationSec = 60,
+                           int fastReadIntervalSec = 1) {
         Json::Value payload(Json::objectValue);
         payload["commandKey"] = commandKey;
         payload["deviceId"] = deviceId;
         payload["elements"] = elements;
         payload["readbackCount"] = readbackCount;
+        payload["fastReadDurationSec"] = fastReadDurationSec;
+        payload["fastReadIntervalSec"] = fastReadIntervalSec;
         return sendToAgent(agentId, agent::MESSAGE_DEVICE_COMMAND, payload);
     }
 
@@ -1036,6 +1040,7 @@ private:
                 dev.deviceCode = pp.get("device_code", "").asString();
                 dev.slaveId = pp.get("slave_id", 0).asInt();
                 dev.modbusMode = pp.get("modbus_mode", "").asString();
+                dev.readIntervalSec = pp.get("read_interval", 0).asInt();
                 dev.heartbeat = pp.get("heartbeat", Json::objectValue);
                 dev.registration = pp.get("registration", Json::objectValue);
                 dev.timezone = pp.get("timezone", "+08:00").asString();

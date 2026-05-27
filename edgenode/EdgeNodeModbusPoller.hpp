@@ -71,7 +71,9 @@ public:
                     ? modbus::FrameMode::RTU
                     : modbus::FrameMode::TCP;
                 ctx.byteOrder = modbus::parseByteOrder(config.get("byteOrder", "BIG_ENDIAN").asString());
-                ctx.readIntervalSec = config.get("readInterval", 5).asInt();
+                ctx.readIntervalSec = dev.readIntervalSec > 0
+                    ? dev.readIntervalSec
+                    : config.get("readInterval", 5).asInt();
                 if (ctx.readIntervalSec < 1) ctx.readIntervalSec = 1;
                 if (ctx.readIntervalSec > 3600) ctx.readIntervalSec = 3600;
                 if (config.isMember("packet") && config["packet"].isObject()) {
@@ -273,6 +275,8 @@ public:
     void executeWriteCommand(int deviceId,
                              const Json::Value& elements,
                              int readbackCount,
+                             int fastReadDurationSec,
+                             int fastReadIntervalSec,
                              std::function<void(bool, const std::string&)> resultCallback) {
         std::lock_guard lock(mutex_);
 
@@ -337,7 +341,12 @@ public:
         writeState_ = std::make_shared<WriteCommandState>();
         writeState_->deviceId = deviceId;
         writeState_->writeFrames = std::move(writeFrames);
-        writeState_->readbackRemaining = readbackCount;
+        writeState_->readbackIntervalSec = std::clamp(fastReadIntervalSec, 1, 60);
+        const int durationCount = fastReadDurationSec > 0
+            ? ((fastReadDurationSec + writeState_->readbackIntervalSec - 1)
+                / writeState_->readbackIntervalSec)
+            : 0;
+        writeState_->readbackRemaining = std::max(readbackCount, durationCount);
         writeState_->callback = std::move(resultCallback);
 
         // 发送第一个写帧
@@ -352,7 +361,6 @@ public:
 
 private:
     static constexpr auto REQUEST_TIMEOUT = std::chrono::milliseconds(5000);
-    static constexpr auto READBACK_INTERVAL = std::chrono::seconds(5);
     static constexpr int DEFAULT_MERGE_GAP = 100;
     static constexpr int DEFAULT_MAX_REGS_PER_READ = 125;
 
@@ -392,6 +400,7 @@ private:
         std::chrono::steady_clock::time_point sentAt;
         std::vector<uint8_t> responseBuffer;
         int readbackRemaining = 0;
+        int readbackIntervalSec = 1;
         bool firstReadbackDone = false;
         std::function<void(bool, const std::string&)> callback;
     };
@@ -433,16 +442,16 @@ private:
         bool immediate = !writeState_->firstReadbackDone;
         if (immediate) {
             writeState_->firstReadbackDone = true;
-            if (ctx.readIntervalSec <= static_cast<int>(READBACK_INTERVAL.count())) {
+            if (ctx.readIntervalSec <= writeState_->readbackIntervalSec) {
                 // 轮询间隔本身就很短，一次立即回读后恢复正常轮询
                 writeState_->readbackRemaining = 0;
             }
         }
 
-        auto delay = immediate ? std::chrono::seconds(0) : READBACK_INTERVAL;
+        auto delay = immediate ? std::chrono::seconds(0) : std::chrono::seconds(writeState_->readbackIntervalSec);
         std::cout << "[AgentModbusPoller] Write readback: device=" << ctx.deviceId
                   << ", remaining=" << writeState_->readbackRemaining
-                  << (immediate ? ", immediate" : ", next in " + std::to_string(READBACK_INTERVAL.count()) + "s")
+                  << (immediate ? ", immediate" : ", next in " + std::to_string(writeState_->readbackIntervalSec) + "s")
                   << std::endl;
 
         ctx.lastPollAt = std::chrono::steady_clock::now()

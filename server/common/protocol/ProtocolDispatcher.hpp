@@ -334,6 +334,10 @@ public:
             co_return CommandResult::error("协议未注册适配器");
         }
 
+        if (req.deviceId > 0 && resultWriter_) {
+            resultWriter_->activateRealtimeStoreWindow(req.deviceId, 60);
+        }
+
         auto result = co_await adapter->sendCommand(req);
 
         if (result.ok()) {

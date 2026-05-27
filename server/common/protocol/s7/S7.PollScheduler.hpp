@@ -34,6 +34,7 @@ public:
 
     void reload(const std::vector<DeviceConfig>& devices);
     void triggerNow(int deviceId);
+    void activateFastRead(int deviceId, int durationSec = 60, int intervalSec = 1);
     void onPollCompleted(int deviceId, bool success);
 
 private:
@@ -50,6 +51,8 @@ private:
         bool cycleInProgress = false;
         int consecutiveFailures = 0;
         std::chrono::steady_clock::time_point nextDueTime = std::chrono::steady_clock::now();
+        std::chrono::steady_clock::time_point fastReadUntil{};
+        int fastReadIntervalSec = 1;
     };
 
     void ensureTickLocked();
@@ -57,6 +60,7 @@ private:
     void onTick();
     void resetEntryForRetry(PollEntry& entry, std::chrono::steady_clock::time_point now);
     void dispatchPolls(const std::vector<int>& deviceIds);
+    static int effectiveIntervalSec(const PollEntry& entry, std::chrono::steady_clock::time_point now);
 
     std::map<int, PollEntry> pollEntries_;
     EnqueuePollCallback enqueuePollCallback_;
@@ -102,6 +106,15 @@ inline void S7PollScheduler::resetEntryForRetry(
     PollEntry& entry, std::chrono::steady_clock::time_point now) {
     entry.cycleInProgress = false;
     entry.nextDueTime = now + std::chrono::seconds(RETRY_INTERVAL_SEC);
+}
+
+inline int S7PollScheduler::effectiveIntervalSec(
+    const PollEntry& entry,
+    std::chrono::steady_clock::time_point now) {
+    if (entry.fastReadUntil != std::chrono::steady_clock::time_point{} && now < entry.fastReadUntil) {
+        return (std::max)(1, entry.fastReadIntervalSec);
+    }
+    return (std::max)(1, entry.readIntervalSec);
 }
 
 inline void S7PollScheduler::dispatchPolls(const std::vector<int>& deviceIds) {
@@ -177,6 +190,34 @@ inline void S7PollScheduler::triggerNow(int deviceId) {
     dispatchPolls(immediatePolls);
 }
 
+inline void S7PollScheduler::activateFastRead(int deviceId, int durationSec, int intervalSec) {
+    if (durationSec <= 0) {
+        return;
+    }
+
+    std::vector<int> immediatePolls;
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = pollEntries_.find(deviceId);
+        if (it == pollEntries_.end() || !it->second.enabled) {
+            return;
+        }
+
+        auto& entry = it->second;
+        entry.fastReadIntervalSec = std::clamp(intervalSec, 1, 60);
+        entry.fastReadUntil = now + std::chrono::seconds(durationSec);
+        entry.nextDueTime = now;
+
+        if (!entry.cycleInProgress) {
+            entry.cycleInProgress = true;
+            immediatePolls.push_back(deviceId);
+        }
+    }
+
+    dispatchPolls(immediatePolls);
+}
+
 inline void S7PollScheduler::onPollCompleted(int deviceId, bool success) {
     const auto now = std::chrono::steady_clock::now();
 
@@ -196,29 +237,31 @@ inline void S7PollScheduler::onPollCompleted(int deviceId, bool success) {
         entry.consecutiveFailures++;
         entry.cycleInProgress = false;
 
-        int intervalSec = entry.readIntervalSec;
+        int intervalSec = effectiveIntervalSec(entry, now);
         if (entry.consecutiveFailures >= DEGRADE_THRESHOLD
             && entry.readIntervalSec < DEGRADE_INTERVAL_SEC) {
-                intervalSec = DEGRADE_INTERVAL_SEC;
-                if (entry.consecutiveFailures == DEGRADE_THRESHOLD) {
-                    LOG_WARN << "[S7][PollScheduler] Device " << (entry.deviceName.empty() ? "S7-unknown" : entry.deviceName)
-                             << "(id=" << deviceId << ")"
-                             << " degraded after " << DEGRADE_THRESHOLD
-                             << " consecutive failures, interval=" << intervalSec << "s";
-                }
+            intervalSec = DEGRADE_INTERVAL_SEC;
+            if (entry.consecutiveFailures == DEGRADE_THRESHOLD) {
+                LOG_WARN << "[S7][PollScheduler] Device "
+                         << (entry.deviceName.empty() ? "S7-unknown" : entry.deviceName)
+                         << "(id=" << deviceId << ")"
+                         << " degraded after " << DEGRADE_THRESHOLD
+                         << " consecutive failures, interval=" << intervalSec << "s";
             }
-            entry.nextDueTime = now + std::chrono::seconds(intervalSec);
-            return;
         }
+        entry.nextDueTime = now + std::chrono::seconds(intervalSec);
+        return;
+    }
 
-        if (entry.consecutiveFailures >= DEGRADE_THRESHOLD) {
-            LOG_INFO << "[S7][PollScheduler] Device " << (entry.deviceName.empty() ? "S7-unknown" : entry.deviceName)
-                     << "(id=" << deviceId << ")"
-                     << " recovered from degraded state";
-        }
+    if (entry.consecutiveFailures >= DEGRADE_THRESHOLD) {
+        LOG_INFO << "[S7][PollScheduler] Device "
+                 << (entry.deviceName.empty() ? "S7-unknown" : entry.deviceName)
+                 << "(id=" << deviceId << ")"
+                 << " recovered from degraded state";
+    }
     entry.consecutiveFailures = 0;
     entry.cycleInProgress = false;
-    entry.nextDueTime = now + std::chrono::seconds(entry.readIntervalSec);
+    entry.nextDueTime = now + std::chrono::seconds(effectiveIntervalSec(entry, now));
 }
 
 inline void S7PollScheduler::onTick() {

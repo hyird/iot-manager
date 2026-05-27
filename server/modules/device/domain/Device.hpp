@@ -481,6 +481,7 @@ public:
 
         // 协议特有参数
         for (const auto& key : {"device_code", "online_timeout", "remote_control",
+                                  "read_interval", "storage_interval",
                                   "modbus_mode", "slave_id", "timezone",
                                   "heartbeat", "registration"}) {
             if (data.isMember(key)) {
@@ -519,6 +520,8 @@ public:
     std::string deviceCode() const { return protocolParams_.get("device_code", "").asString(); }
     int onlineTimeout() const { return protocolParams_.get("online_timeout", 300).asInt(); }
     bool remoteControl() const { return protocolParams_.get("remote_control", true).asBool(); }
+    int readInterval() const { return protocolParams_.get("read_interval", 0).asInt(); }
+    int storageInterval() const { return protocolParams_.get("storage_interval", 1).asInt(); }
     std::string modbusMode() const { return protocolParams_.get("modbus_mode", "").asString(); }
     int slaveId() const { return protocolParams_.get("slave_id", 1).asInt(); }
     std::string timezone() const { return protocolParams_.get("timezone", "+08:00").asString(); }
@@ -553,6 +556,11 @@ public:
             onlineTimeout()
         );
         json["remote_control"] = remoteControl();
+        auto readIntervalSec = readInterval();
+        if (readIntervalSec > 0) {
+            json["read_interval"] = readIntervalSec;
+        }
+        json["storage_interval"] = std::max(1, storageInterval());
         json["timezone"] = timezone();
         auto mm = modbusMode();
         if (!mm.empty()) {
@@ -631,6 +639,7 @@ private:
         // 收集协议特有参数
         protocolParams_ = Json::objectValue;
         for (const auto& key : {"device_code", "online_timeout", "remote_control",
+                                  "read_interval", "storage_interval",
                                   "modbus_mode", "slave_id", "timezone",
                                   "heartbeat", "registration"}) {
             if (data.isMember(key) && !data[key].isNull()) {

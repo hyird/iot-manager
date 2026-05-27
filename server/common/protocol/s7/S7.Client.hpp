@@ -371,6 +371,7 @@ public:
         }
 
         closeSocketOnly();
+        sequence_ = 0;
         pduLength_ = kDefaultS7PduRequest;
 
         int rc = openSocket();
@@ -461,6 +462,7 @@ private:
                                                    std::uint8_t reason) const;
     int sendDisconnectProbe(std::string_view stage, std::uint16_t dstRef,
                             std::uint16_t srcRef, std::uint8_t reason);
+    std::uint16_t nextSequence() { return sequence_++; }
     std::uint16_t nextSourceRef() {
         const auto sourceRef = kSourceRefCandidates[sourceRefIndex_ % kSourceRefCandidates.size()];
         sourceRefIndex_ = (sourceRefIndex_ + 1) % kSourceRefCandidates.size();
@@ -484,6 +486,7 @@ private:
     int sendTimeoutMs_ = kDefaultTimeoutMs;
     int recvTimeoutMs_ = kDefaultTimeoutMs;
     std::uint16_t pduLength_ = kDefaultS7PduRequest;
+    std::uint16_t sequence_ = 0;
     std::size_t sourceRefIndex_ = 0;
     bool connected_ = false;
     int lastError_ = kS7Ok;
@@ -796,7 +799,7 @@ inline int Client::negotiatePduLength() {
     request.push_back(kS7ProtocolId);
     request.push_back(kS7Request);
     appendBe16(request, 0x0000);
-    appendBe16(request, 0x0000);
+    appendBe16(request, nextSequence());
     appendBe16(request, 8);
     appendBe16(request, 0);
     request.push_back(kS7FuncNegotiate);
@@ -891,7 +894,7 @@ inline std::vector<std::uint8_t> Client::buildReadRequest(int area, int dbNumber
     payload.push_back(kS7ProtocolId);
     payload.push_back(kS7Request);
     appendBe16(payload, 0x0000);
-    appendBe16(payload, 0x0000);
+    appendBe16(payload, nextSequence());
     appendBe16(payload, 14);
     appendBe16(payload, 0);
     payload.push_back(kS7FuncRead);
@@ -921,7 +924,7 @@ inline std::vector<std::uint8_t> Client::buildWriteRequest(int area, int dbNumbe
     payload.push_back(kS7ProtocolId);
     payload.push_back(kS7Request);
     appendBe16(payload, 0x0000);
-    appendBe16(payload, 0x0000);
+    appendBe16(payload, nextSequence());
     appendBe16(payload, 14);
     appendBe16(payload, static_cast<std::uint16_t>(4 + size));
     payload.push_back(kS7FuncWrite);
