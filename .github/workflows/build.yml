@@ -252,7 +252,7 @@ jobs:
           retention-days: 3
 
   l2config-windows:
-    runs-on: windows-2025
+    runs-on: windows-2022
     name: l2config - Windows Release
 
     env:
