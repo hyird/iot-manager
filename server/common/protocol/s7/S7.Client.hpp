@@ -590,6 +590,32 @@ public:
         return writeArea(S7AreaPA, 0, start, size, S7WLByte, data);
     }
 
+    std::vector<std::uint8_t> buildReadRequestForItems(
+        const std::vector<DataItem>& items, std::size_t begin, std::size_t end) {
+        return buildReadRequest(items, begin, end);
+    }
+
+    int parseReadResponseForItems(
+        const std::vector<std::uint8_t>& response,
+        std::vector<DataItem>& items,
+        std::size_t begin,
+        std::size_t end) {
+        return parseReadResponse(response, items, begin, end);
+    }
+
+    std::vector<std::uint8_t> buildWriteRequestForItems(
+        const std::vector<DataItem>& items, std::size_t begin, std::size_t end) {
+        return buildWriteRequest(items, begin, end);
+    }
+
+    int parseWriteResponseForItems(
+        const std::vector<std::uint8_t>& response,
+        std::vector<DataItem>& items,
+        std::size_t begin,
+        std::size_t end) {
+        return parseWriteResponse(response, items, begin, end);
+    }
+
 private:
     int setError(ErrorDomain domain, int code, std::string_view stage = {});
     int closeSocketOnly();
