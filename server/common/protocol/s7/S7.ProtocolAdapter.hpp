@@ -2714,35 +2714,39 @@ private:
         std::uint64_t attemptId = 0;
 
         {
-            std::scoped_lock lock(runtime->clientMutex, runtime->mutex);
+            std::lock_guard lock(runtime->mutex);
             deviceId = runtime->deviceId;
             tcpServerMode = runtime->tcpServerMode;
             connection = runtime->connection;
             alreadyConnected = runtime->connected
-                && runtime->client
-                && runtime->client->connected()
                 && (!runtime->tcpServerMode || isSessionReadyLocked(*runtime));
-            if (!alreadyConnected) {
-                if (runtime->connectInProgress || runtime->asyncConnect) {
-                    return false;
-                }
-                if (!tcpServerMode) {
-                    LOG_WARN << "[S7][Adapter] Direct S7 TCP async client is not implemented yet: "
-                             << deviceLabel(*runtime) << "(id=" << runtime->deviceId << ")"
-                             << ", host=" << connection.host;
-                    return false;
-                }
-
-                runtime->resetClient();
-                runtime->connectInProgress = true;
-                runtime->connected = false;
-                runtime->lastConnectAttempt = std::chrono::steady_clock::now();
-                attemptId = ++runtime->connectGeneration;
-            }
+        }
+        if (alreadyConnected) {
+            std::lock_guard clientLock(runtime->clientMutex);
+            alreadyConnected = runtime->client && runtime->client->connected();
         }
         if (alreadyConnected) {
             complete(true);
             return true;
+        }
+
+        {
+            std::scoped_lock lock(runtime->clientMutex, runtime->mutex);
+            if (runtime->connectInProgress || runtime->asyncConnect) {
+                return false;
+            }
+            if (!tcpServerMode) {
+                LOG_WARN << "[S7][Adapter] Direct S7 TCP async client is not implemented yet: "
+                         << deviceLabel(*runtime) << "(id=" << runtime->deviceId << ")"
+                         << ", host=" << connection.host;
+                return false;
+            }
+
+            runtime->resetClient();
+            runtime->connectInProgress = true;
+            runtime->connected = false;
+            runtime->lastConnectAttempt = std::chrono::steady_clock::now();
+            attemptId = ++runtime->connectGeneration;
         }
 
         auto client = std::make_unique<Client>();
