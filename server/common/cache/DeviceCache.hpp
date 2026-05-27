@@ -355,6 +355,16 @@ public:
     }
 
     /**
+     * @brief 同步获取设备缓存快照。
+     *
+     * 用于退出广播等不能再依赖异步刷新链路的场景。
+     */
+    std::vector<CachedDevice> getDevicesSnapshotSync() const {
+        std::shared_lock lock(mutex_);
+        return devices_;
+    }
+
+    /**
      * @brief 解析心跳/注册包内容为字节序列
      * @param mode "HEX" 或 "ASCII"
      * @param content 内容字符串

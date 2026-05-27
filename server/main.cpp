@@ -1,6 +1,14 @@
 // mimalloc: 全局替换 new/delete，必须在所有其他 include 之前
 #include <mimalloc-new-delete.h>
 
+#include <atomic>
+#include <csignal>
+#include <cstdlib>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 // Utils
 #include "common/utils/PlatformUtils.hpp"
 #include "common/utils/LoggerManager.hpp"
@@ -9,6 +17,7 @@
 #include "common/cache/ResourceVersion.hpp"
 #include "common/cache/DeviceCache.hpp"
 #include "common/edgenode/AgentBridgeManager.hpp"
+#include "common/network/WebSocketManager.hpp"
 
 // Filters
 #include "common/filters/AuthFilter.hpp"
@@ -67,6 +76,164 @@
 #include "common/protocol/s7/S7.ProtocolAdapter.hpp"
 
 using namespace drogon;
+
+namespace {
+
+std::atomic_bool gShutdownRequested{false};
+std::atomic_bool gShutdownCleanupDone{false};
+
+void broadcastShutdownSnapshot(const std::string& reason) {
+    if (WebSocketManager::instance().connectionCount() == 0) {
+        return;
+    }
+
+    try {
+        const auto devices = DeviceCache::instance().getDevicesSnapshotSync();
+        Json::Value deviceIds(Json::arrayValue);
+        Json::Value updates(Json::arrayValue);
+        for (const auto& device : devices) {
+            if (device.id <= 0) {
+                continue;
+            }
+            deviceIds.append(device.id);
+
+            Json::Value update(Json::objectValue);
+            update["id"] = device.id;
+            update["reportTime"] = Json::nullValue;
+            update["connected"] = false;
+            update["connectionState"] = "offline";
+            updates.append(std::move(update));
+        }
+
+        if (!deviceIds.empty()) {
+            Json::Value offline(Json::objectValue);
+            offline["deviceIds"] = std::move(deviceIds);
+            offline["reason"] = reason;
+            WebSocketManager::instance().broadcast("device:offline", offline);
+
+            Json::Value realtime(Json::objectValue);
+            realtime["updates"] = std::move(updates);
+            realtime["reason"] = reason;
+            WebSocketManager::instance().broadcast("device:realtime", realtime);
+        }
+
+        auto linkStatuses = TcpLinkManager::instance().getAllStatus();
+        if (linkStatuses.isArray()) {
+            for (const auto& link : linkStatuses) {
+                const int linkId = link.get("link_id", 0).asInt();
+                const auto& clients = link["clients"];
+                if (linkId <= 0 || !clients.isArray()) {
+                    continue;
+                }
+                for (const auto& client : clients) {
+                    const std::string clientAddr = client.asString();
+                    if (clientAddr.empty()) {
+                        continue;
+                    }
+                    Json::Value data(Json::objectValue);
+                    data["linkId"] = linkId;
+                    data["clientAddr"] = clientAddr;
+                    data["connected"] = false;
+                    data["reason"] = reason;
+                    WebSocketManager::instance().broadcast("link:connection", data);
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        LOG_WARN << "[Shutdown] Broadcast snapshot failed: " << e.what();
+    } catch (...) {
+        LOG_WARN << "[Shutdown] Broadcast snapshot failed with unknown exception";
+    }
+}
+
+void performShutdownCleanup(const std::string& reason) {
+    bool expected = false;
+    if (!gShutdownCleanupDone.compare_exchange_strong(expected, true)) {
+        return;
+    }
+
+    LOG_INFO << "Server is stopping, cleaning up resources... reason=" << reason;
+
+    broadcastShutdownSnapshot(reason);
+
+    // 0. Stop GB28181 SIP/media runtime first so no new camera traffic enters shutdown.
+    Gb28181Module::instance().stop();
+
+    // 1. 停止告警引擎离线检测定时器
+    AlertEngine::instance().stopOfflineChecker();
+
+    // 2. 停止所有 TCP 链路
+    TcpLinkManager::instance().stopAll();
+
+    // 3. 注销所有事件处理器（防止内存泄漏）
+    EventBus::instance().unsubscribeAll();
+
+    // 4. 清理缓存
+    DeviceCache::instance().invalidate();
+
+    LOG_INFO << "All resources cleaned up";
+}
+
+void requestShutdown(const char* reason) {
+    bool expected = false;
+    if (!gShutdownRequested.compare_exchange_strong(expected, true)) {
+        LOG_WARN << "[Shutdown] Forced exit after repeated signal";
+        std::_Exit(128);
+    }
+
+    auto shutdown = [reason = std::string(reason ? reason : "signal")]() {
+        performShutdownCleanup(reason);
+        app().quit();
+    };
+
+    try {
+        if (auto* loop = app().getLoop()) {
+            loop->queueInLoop(std::move(shutdown));
+            return;
+        }
+    } catch (...) {
+    }
+
+    shutdown();
+}
+
+void signalHandler(int signal) {
+    requestShutdown(signal == SIGINT ? "SIGINT" : "SIGTERM");
+}
+
+#ifdef _WIN32
+BOOL WINAPI consoleCtrlHandler(DWORD signal) {
+    switch (signal) {
+        case CTRL_C_EVENT:
+            requestShutdown("CTRL_C_EVENT");
+            return TRUE;
+        case CTRL_BREAK_EVENT:
+            requestShutdown("CTRL_BREAK_EVENT");
+            return TRUE;
+        case CTRL_CLOSE_EVENT:
+            requestShutdown("CTRL_CLOSE_EVENT");
+            return TRUE;
+        case CTRL_LOGOFF_EVENT:
+            requestShutdown("CTRL_LOGOFF_EVENT");
+            return TRUE;
+        case CTRL_SHUTDOWN_EVENT:
+            requestShutdown("CTRL_SHUTDOWN_EVENT");
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+#endif
+
+void installShutdownSignalHandlers() {
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
+#ifdef _WIN32
+    SetConsoleCtrlHandler(consoleCtrlHandler, TRUE);
+#endif
+}
+
+}  // namespace
 
 // ─── 启动错误输出 ──────────────────────────────────────────
 
@@ -300,28 +467,12 @@ void onServerStarted() {
  * @brief 服务器退出回调
  */
 void onServerStopping() {
-    LOG_INFO << "Server is stopping, cleaning up resources...";
-
-    // 0. Stop GB28181 SIP/media runtime first so no new camera traffic enters shutdown.
-    Gb28181Module::instance().stop();
-
-    // 1. 停止告警引擎离线检测定时器
-    AlertEngine::instance().stopOfflineChecker();
-
-    // 2. 停止所有 TCP 链路
-    TcpLinkManager::instance().stopAll();
-
-    // 3. 注销所有事件处理器（防止内存泄漏）
-    EventBus::instance().unsubscribeAll();
-
-    // 4. 清理缓存
-    DeviceCache::instance().invalidate();
-
-    LOG_INFO << "All resources cleaned up";
+    performShutdownCleanup("app_stop");
 }
 
 int main() {
     std::cout << "[Server] starting..." << std::endl;
+    installShutdownSignalHandlers();
 
     // 0. 验证 mimalloc 已激活
     int v = mi_version();

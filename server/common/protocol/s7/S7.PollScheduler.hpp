@@ -158,8 +158,10 @@ inline void S7PollScheduler::reload(const std::vector<DeviceConfig>& devices) {
 
             auto oldIt = pollEntries_.find(device.deviceId);
             if (oldIt != pollEntries_.end()) {
-                entry.cycleInProgress = false;
+                entry.cycleInProgress = oldIt->second.cycleInProgress;
                 entry.consecutiveFailures = oldIt->second.consecutiveFailures;
+                entry.nextDueTime = oldIt->second.nextDueTime;
+                entry.fastReadUntil = oldIt->second.fastReadUntil;
             }
 
             rebuilt.emplace(entry.deviceId, std::move(entry));

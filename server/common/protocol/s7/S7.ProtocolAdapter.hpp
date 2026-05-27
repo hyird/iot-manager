@@ -63,6 +63,21 @@ struct S7ConnectionConfig {
     std::string connectionType = "PG";
 };
 
+inline bool sameS7Connection(const S7ConnectionConfig& lhs, const S7ConnectionConfig& rhs) {
+    return lhs.host == rhs.host
+        && lhs.mode == rhs.mode
+        && lhs.rack == rhs.rack
+        && lhs.slot == rhs.slot
+        && lhs.localTSAP == rhs.localTSAP
+        && lhs.remoteTSAP == rhs.remoteTSAP
+        && lhs.pingTimeoutMs == rhs.pingTimeoutMs
+        && lhs.sendTimeoutMs == rhs.sendTimeoutMs
+        && lhs.recvTimeoutMs == rhs.recvTimeoutMs
+        && lhs.retryDelayMs == rhs.retryDelayMs
+        && lhs.pollIntervalSec == rhs.pollIntervalSec
+        && lhs.connectionType == rhs.connectionType;
+}
+
 struct S7ConnectionPreset {
     std::string mode = "RACK_SLOT";
     int rack = 0;
@@ -1878,6 +1893,38 @@ private:
             auto runtime = buildRuntime(device);
             if (!runtime) {
                 continue;
+            }
+
+            if (auto existing = findRuntimeLocked(runtime->deviceId)) {
+                bool resetClient = false;
+                {
+                    std::scoped_lock runtimeLock(existing->clientMutex, existing->mutex);
+                    resetClient = existing->linkId != runtime->linkId
+                        || existing->tcpServerMode != runtime->tcpServerMode
+                        || existing->sessionKey != runtime->sessionKey
+                        || !sameS7Connection(existing->connection, runtime->connection);
+
+                    if (resetClient) {
+                        ++existing->connectGeneration;
+                        existing->connectInProgress = false;
+                        existing->sessionBound = false;
+                        existing->sessionDiscoveryInFlight = false;
+                        existing->sessionDiscoveryStartedAt = {};
+                        existing->sessionLinkId = 0;
+                        existing->sessionClientAddr.clear();
+                        existing->pendingSessionToDtu.clear();
+                        existing->resetClient();
+                    }
+
+                    existing->linkId = runtime->linkId;
+                    existing->deviceName = std::move(runtime->deviceName);
+                    existing->deviceCode = std::move(runtime->deviceCode);
+                    existing->sessionKey = std::move(runtime->sessionKey);
+                    existing->connection = std::move(runtime->connection);
+                    existing->areas = std::move(runtime->areas);
+                    existing->tcpServerMode = runtime->tcpServerMode;
+                    runtime = existing;
+                }
             }
 
             if (runtime->tcpServerMode) {

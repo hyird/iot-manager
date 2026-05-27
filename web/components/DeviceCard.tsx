@@ -33,6 +33,7 @@ const normalizeGroupName = (group?: string) => group?.trim() || "";
 
 const UNGROUPED_GROUP_KEY = "__ungrouped__";
 const DENSE_SECTION_ITEM_COUNT = 8;
+const LABEL_VALUE_VISUAL_EXTRA_LENGTH = 2.5;
 
 const buildSections = (items: DeviceCardItem[]): DeviceCardSection[] => {
   const sectionMap = new Map<string, DeviceCardSection>();
@@ -72,8 +73,10 @@ const buildProcessedItems = (items: DeviceCardItem[], column: number, length: nu
           ? String(item.children)
           : "";
 
-    const total = calcWeightedLength(label) + calcWeightedLength(value);
+    const total =
+      calcWeightedLength(label) + calcWeightedLength(value) + LABEL_VALUE_VISUAL_EXTRA_LENGTH;
     let span = Math.ceil(total / length);
+    if (span < 1) span = 1;
     if (span > column) span = column;
 
     return { ...item, span };
