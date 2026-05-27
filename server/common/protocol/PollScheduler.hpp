@@ -265,6 +265,7 @@ private:
     static constexpr int RETRY_INTERVAL_SEC = 1;
     static constexpr int DEGRADE_THRESHOLD = 3;
     static constexpr int DEGRADE_INTERVAL_SEC = 10;
+    static constexpr std::size_t MAX_DISPATCH_PER_TICK = 64;
 
     struct PollEntry {
         int deviceId = 0;
@@ -356,6 +357,9 @@ private:
                 entry.cycleInProgress = true;
                 entry.nextStepIndex = 0;
                 dueSteps.emplace_back(deviceId, 0);
+                if (dueSteps.size() >= MAX_DISPATCH_PER_TICK) {
+                    break;
+                }
             }
         }
 

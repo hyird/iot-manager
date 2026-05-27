@@ -73,13 +73,13 @@ public:
 
     /** 广播给所有连接（先快照再发送，避免持锁期间调用 send） */
     void broadcast(const std::string& type, const Json::Value& data) {
-        auto msg = buildMessage(type, data);
         std::vector<WebSocketConnectionPtr> snapshot;
         {
             std::shared_lock lock(mutex_);
             if (allConns_.empty()) return;
             snapshot.assign(allConns_.begin(), allConns_.end());
         }
+        auto msg = buildMessage(type, data);
         for (const auto& conn : snapshot) {
             if (conn->connected()) {
                 conn->send(msg);
@@ -89,7 +89,6 @@ public:
 
     /** 发送给指定用户（先快照再发送，避免持锁期间调用 send） */
     void sendToUser(int userId, const std::string& type, const Json::Value& data) {
-        auto msg = buildMessage(type, data);
         std::vector<WebSocketConnectionPtr> snapshot;
         {
             std::shared_lock lock(mutex_);
@@ -97,6 +96,7 @@ public:
             if (it == userConns_.end()) return;
             snapshot.assign(it->second.begin(), it->second.end());
         }
+        auto msg = buildMessage(type, data);
         for (const auto& conn : snapshot) {
             if (conn->connected()) {
                 conn->send(msg);

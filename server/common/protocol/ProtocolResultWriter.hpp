@@ -390,10 +390,23 @@ private:
                 affectedIds.insert(r.deviceId);
             }
 
-            auto cachedDevices = co_await DeviceCache::instance().getDevices();
-            std::map<int, const DeviceCache::CachedDevice*> deviceMap;
-            for (const auto& d : cachedDevices) {
-                deviceMap[d.id] = &d;
+            std::map<int, DeviceCache::CachedDevice> deviceMap;
+            std::vector<int> missingIds;
+            for (int deviceId : affectedIds) {
+                if (auto device = DeviceCache::instance().findByIdSync(deviceId)) {
+                    deviceMap.emplace(deviceId, std::move(*device));
+                } else {
+                    missingIds.push_back(deviceId);
+                }
+            }
+
+            if (!missingIds.empty()) {
+                auto cachedDevices = co_await DeviceCache::instance().getDevices();
+                for (const auto& d : cachedDevices) {
+                    if (affectedIds.count(d.id) > 0) {
+                        deviceMap.emplace(d.id, d);
+                    }
+                }
             }
 
             auto& realtimeCache = RealtimeDataCache::instance();
@@ -408,7 +421,7 @@ private:
 
                 RealtimeDataCache::DeviceRealtimeData emptyData;
                 const auto& data = realtimeData ? *realtimeData : emptyData;
-                updates.append(DeviceDataTransformer::buildRealtimeItem(*it->second, data, latestTime, connectionChecker_));
+                updates.append(DeviceDataTransformer::buildRealtimeItem(it->second, data, latestTime, connectionChecker_));
             }
 
             Json::Value payload(Json::objectValue);

@@ -469,6 +469,9 @@ public:
                     }
 
                     if (failure.empty()) {
+                        std::vector<S7PreparedWrite> writes;
+                        writes.reserve(static_cast<std::size_t>(elements.size()));
+
                         for (const auto& elem : elements) {
                             if (!elem.isObject()) continue;
                             const auto* areaDef = findAreaDefinition(*runtime, elem);
@@ -481,45 +484,116 @@ public:
                                 break;
                             }
 
-                            std::vector<uint8_t> existingBytes;
                             if (normalizeDataType(areaDef->dataType) == "BOOL"
                                 && elem.get("valueHex", "").asString().empty()) {
-                                existingBytes.assign(
-                                    static_cast<std::size_t>(std::max(1, areaDef->size)), 0);
-                                int readRc = 0;
-                                {
-                                    std::lock_guard clientLock(runtime->clientMutex);
-                                    readRc = readArea(*runtime, *areaDef, existingBytes);
-                                }
-                                if (readRc != 0) {
-                                    failure = "S7 读取当前位值失败，错误码="
-                                        + std::to_string(readRc)
-                                        + " (" + explainClientRc(readRc) + ")";
+                                bool boolValue = false;
+                                if (!parseBoolValue(jsonValueToString(elem["value"]), boolValue)) {
+                                    failure = "S7 指令值格式错误";
                                     break;
                                 }
                             }
 
-                            auto bytes = encodeAreaValue(
-                                *areaDef, elem, existingBytes.empty() ? nullptr : &existingBytes);
-                            if (!bytes || bytes->empty()) {
-                                failure = "S7 指令值格式错误";
-                                break;
+                            writes.push_back(S7PreparedWrite{.area = areaDef, .element = elem});
+                        }
+
+                        if (failure.empty() && !writes.empty()) {
+                            std::lock_guard clientLock(runtime->clientMutex);
+
+                            std::vector<DataItem> readItems;
+                            for (auto& write : writes) {
+                                if (normalizeDataType(write.area->dataType) != "BOOL"
+                                    || !write.element.get("valueHex", "").asString().empty()) {
+                                    continue;
+                                }
+                                write.existingBytes.assign(
+                                    static_cast<std::size_t>(std::max(1, write.area->size)), 0);
+                                readItems.push_back(DataItem{
+                                    .area = areaToCode(write.area->area),
+                                    .dbNumber = resolvedDbNumber(*write.area),
+                                    .start = write.area->start,
+                                    .amount = transferAmount(write.area->area, write.existingBytes.size()),
+                                    .wordLen = areaWordLen(write.area->area),
+                                    .data = write.existingBytes.data(),
+                                    .capacity = write.existingBytes.size()
+                                });
                             }
 
-                            int rc = 0;
-                            {
-                                std::lock_guard clientLock(runtime->clientMutex);
-                                rc = writeArea(
-                                    *runtime,
-                                    areaDef->area,
-                                    resolvedDbNumber(*areaDef),
-                                    areaDef->start,
-                                    *bytes);
+                            if (!readItems.empty()) {
+                                const int readRc = runtime->client
+                                    ? runtime->client->readMultiVars(readItems)
+                                    : kS7ErrInvalidHandle;
+                                if (readRc != 0) {
+                                    failure = "S7 读取当前位值失败，错误码="
+                                        + std::to_string(readRc)
+                                        + " (" + explainClientRc(readRc) + ")";
+                                }
                             }
-                            if (rc != 0) {
-                                failure = "S7 写入失败，错误码=" + std::to_string(rc)
-                                    + " (" + explainClientRc(rc) + ")";
-                                break;
+
+                            std::vector<DataItem> writeItems;
+                            if (failure.empty()) {
+                                std::map<std::string, std::size_t> boolWriteByAddress;
+                                for (std::size_t i = 0; i < writes.size(); ++i) {
+                                    auto& write = writes[i];
+                                    const bool mergeableBool = normalizeDataType(write.area->dataType) == "BOOL"
+                                        && write.element.get("valueHex", "").asString().empty();
+                                    if (mergeableBool) {
+                                        const std::string key = write.area->area
+                                            + ":" + std::to_string(resolvedDbNumber(*write.area))
+                                            + ":" + std::to_string(write.area->start)
+                                            + ":" + std::to_string(write.area->size);
+                                        auto existingIt = boolWriteByAddress.find(key);
+                                        if (existingIt != boolWriteByAddress.end()) {
+                                            auto& base = writes[existingIt->second];
+                                            auto bytes = encodeAreaValue(*write.area, write.element, &base.writeBytes);
+                                            if (!bytes || bytes->empty()) {
+                                                failure = "S7 指令值格式错误";
+                                                break;
+                                            }
+                                            base.writeBytes = std::move(*bytes);
+                                            write.emitWrite = false;
+                                            continue;
+                                        }
+                                        boolWriteByAddress.emplace(key, i);
+                                    }
+
+                                    auto bytes = encodeAreaValue(
+                                        *write.area,
+                                        write.element,
+                                        write.existingBytes.empty() ? nullptr : &write.existingBytes);
+                                    if (!bytes || bytes->empty()) {
+                                        failure = "S7 指令值格式错误";
+                                        break;
+                                    }
+                                    write.writeBytes = std::move(*bytes);
+                                }
+                            }
+
+                            if (failure.empty()) {
+                                writeItems.reserve(writes.size());
+                                for (auto& write : writes) {
+                                    if (!write.emitWrite || write.writeBytes.empty()) {
+                                        continue;
+                                    }
+                                    writeItems.push_back(DataItem{
+                                        .area = areaToCode(write.area->area),
+                                        .dbNumber = resolvedDbNumber(*write.area),
+                                        .start = write.area->start,
+                                        .amount = transferAmount(write.area->area, write.writeBytes.size()),
+                                        .wordLen = areaWordLen(write.area->area),
+                                        .data = write.writeBytes.data(),
+                                        .capacity = write.writeBytes.size()
+                                    });
+                                }
+                            }
+
+                            if (failure.empty() && !writeItems.empty()) {
+                                const int writeRc = runtime->client
+                                    ? runtime->client->writeMultiVars(writeItems)
+                                    : kS7ErrInvalidHandle;
+                                if (writeRc != 0) {
+                                    failure = "S7 写入失败，错误码=" + std::to_string(writeRc)
+                                        + " (" + explainClientRc(writeRc) + ")";
+                                }
                             }
                         }
                     }
@@ -609,6 +683,14 @@ private:
     static int areaSpanUnits(const S7AreaDefinition& area) {
         return transferAmount(area.area, static_cast<std::size_t>(area.size));
     }
+
+    struct S7PreparedWrite {
+        const S7AreaDefinition* area = nullptr;
+        Json::Value element;
+        std::vector<uint8_t> existingBytes;
+        std::vector<uint8_t> writeBytes;
+        bool emitWrite = true;
+    };
 
     static std::vector<S7ReadBlockPlan> planReadBlocks(const std::vector<S7AreaDefinition>& areas) {
         struct Candidate {
