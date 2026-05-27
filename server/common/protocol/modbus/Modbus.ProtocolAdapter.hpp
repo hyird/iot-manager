@@ -277,7 +277,7 @@ public:
             if (session.inflight.has_value()) {
                 ++inflightSessions;
             }
-            queuedJobs += static_cast<Json::Int64>(session.highQueue.size() + session.normalQueue.size());
+            queuedJobs += static_cast<Json::Int64>(session.jobQueue.size());
             onlineRoutes += static_cast<Json::Int64>(session.deviceIdsBySlave.size());
         }
 

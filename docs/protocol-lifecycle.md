@@ -74,6 +74,31 @@
 
 ## 协议实现差异
 
+## 统一轮询与队列模型
+
+Modbus 和 S7 的轮询调度统一使用 `ProtocolPollScheduler`。
+
+调度器只负责协议无关的运行时状态：
+
+- 周期 tick 与到期投递
+- 单设备轮询周期 `cycleInProgress`
+- 多 step 推进（Modbus 读组）；S7 使用单 step
+- 失败重试、连续失败降频
+- 指令下发后的快读窗口
+- 按 `groupKey` 错峰和启停
+
+协议适配层只负责把本协议配置映射成通用任务：
+
+- Modbus: `groupKey = dtuKey`, `stepCount = readGroups.size()`
+- S7: `groupKey = deviceId`, `stepCount = 1`
+
+Session 内部任务排队统一使用 `ProtocolJobQueue` 的优先级模型：
+
+- `High`: 控制/写入任务
+- `Normal`: 轮询读、发现读等后台任务
+
+队列只负责优先级、容量和过滤；报文构建、发送、应答匹配、超时处理仍由协议引擎负责。
+
 ### Modbus
 
 - 采用 `DtuRegistry + DtuSessionManager + PollScheduler`

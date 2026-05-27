@@ -2,9 +2,9 @@
 
 #include "Modbus.Types.hpp"
 #include "common/protocol/ParsedResult.hpp"
+#include "common/protocol/ProtocolJobQueue.hpp"
 
 #include <chrono>
-#include <deque>
 #include <functional>
 #include <map>
 #include <optional>
@@ -124,8 +124,7 @@ struct DtuSession {
     std::string dtuKey;
     std::chrono::steady_clock::time_point lastSeen;
     std::vector<uint8_t> rxBuffer;
-    std::deque<ModbusJob> highQueue;
-    std::deque<ModbusJob> normalQueue;
+    ProtocolJobQueue<ModbusJob> jobQueue{MAX_QUEUE_SIZE};
     std::optional<InflightRequest> inflight;
     std::map<uint8_t, int> deviceIdsBySlave;
     bool discoveryRequested = false;
@@ -134,7 +133,7 @@ struct DtuSession {
 
     /** 检查队列是否已满 */
     bool isQueueFull() const {
-        return highQueue.size() + normalQueue.size() >= MAX_QUEUE_SIZE;
+        return jobQueue.isFull();
     }
 };
 

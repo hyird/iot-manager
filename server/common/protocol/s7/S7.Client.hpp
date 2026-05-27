@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -41,6 +42,7 @@ inline constexpr int p_u16_RemotePort = 2;
 inline constexpr int p_i32_PingTimeout = 3;
 inline constexpr int p_i32_SendTimeout = 4;
 inline constexpr int p_i32_RecvTimeout = 5;
+inline constexpr int p_u16_PduRequest = 6;
 
 inline constexpr int S7AreaPE = 0x81;
 inline constexpr int S7AreaPA = 0x82;
@@ -75,6 +77,10 @@ inline constexpr int kS7ErrNotConnected = -16;
 inline constexpr int kS7ErrPduNegotiation = -17;
 inline constexpr int kS7ErrUnsupported = -18;
 inline constexpr int kS7ErrResponseTooShort = -19;
+inline constexpr int kS7ErrSequenceMismatch = -20;
+inline constexpr int kS7ErrFunctionMismatch = -21;
+inline constexpr int kS7ErrItemCountMismatch = -22;
+inline constexpr int kS7ErrResponseLengthMismatch = -23;
 
 inline constexpr std::uint16_t kDefaultRemotePort = 102;
 inline constexpr std::uint16_t kDefaultIsoPduSize = 1024;
@@ -109,6 +115,34 @@ inline constexpr std::uint8_t kTsResByte = 0x04;
 inline constexpr std::uint8_t kTsResInt = 0x05;
 inline constexpr std::uint8_t kTsResReal = 0x07;
 inline constexpr std::uint8_t kTsResOctet = 0x09;
+
+enum class ErrorDomain {
+    None,
+    Client,
+    Transport,
+    Iso,
+    S7Header,
+    S7Item,
+    Pdu
+};
+
+struct ErrorInfo {
+    ErrorDomain domain = ErrorDomain::None;
+    int code = kS7Ok;
+    std::string stage;
+};
+
+struct DataItem {
+    int area = S7AreaDB;
+    int dbNumber = 0;
+    int start = 0;
+    int amount = 0;
+    int wordLen = S7WLByte;
+    void* data = nullptr;
+    std::size_t capacity = 0;
+    std::size_t transferred = 0;
+    int result = kS7Ok;
+};
 
 #ifdef _WIN32
 using SocketHandle = SOCKET;
@@ -277,6 +311,48 @@ inline int maxElementsPerPdu(std::uint16_t pduLength, int protocolOverhead, int 
     return std::max(1, static_cast<int>((pduLength - protocolOverhead) / elementSize));
 }
 
+inline std::size_t transferByteSize(int amount, int wordLen) {
+    const int elementSize = wordLenByteSize(wordLen);
+    if (amount <= 0 || elementSize <= 0) {
+        return 0;
+    }
+    return static_cast<std::size_t>(amount) * static_cast<std::size_t>(elementSize);
+}
+
+inline int itemStartAddress(int start, int wordLen) {
+    return (wordLen == S7WLBit || wordLen == S7WLCounter || wordLen == S7WLTimer)
+        ? start
+        : start * 8;
+}
+
+inline std::size_t paddedEven(std::size_t value) {
+    return value + (value % 2);
+}
+
+inline std::size_t readRequestPduSize(std::size_t itemCount) {
+    return 10 + 2 + itemCount * 12;
+}
+
+inline std::size_t readResponsePduSize(const std::vector<DataItem>& items, std::size_t begin, std::size_t end) {
+    std::size_t size = 12 + 2;
+    for (std::size_t i = begin; i < end; ++i) {
+        size += 4 + paddedEven(transferByteSize(items[i].amount, items[i].wordLen));
+    }
+    return size;
+}
+
+inline std::size_t writeRequestPduSize(const std::vector<DataItem>& items, std::size_t begin, std::size_t end) {
+    std::size_t size = 10 + 2 + (end - begin) * 12;
+    for (std::size_t i = begin; i < end; ++i) {
+        size += 4 + paddedEven(transferByteSize(items[i].amount, items[i].wordLen));
+    }
+    return size;
+}
+
+inline std::size_t writeResponsePduSize(std::size_t itemCount) {
+    return 12 + 2 + itemCount;
+}
+
 class Client {
 public:
     struct TransportHooks {
@@ -324,6 +400,12 @@ public:
         case p_u16_RemotePort:
             remotePort_ = *static_cast<const std::uint16_t*>(value);
             return kS7Ok;
+        case p_u16_PduRequest:
+            pduRequestLength_ = std::clamp(
+                *static_cast<const std::uint16_t*>(value),
+                static_cast<std::uint16_t>(240),
+                static_cast<std::uint16_t>(kDefaultIsoPduSize - 7));
+            return kS7Ok;
         case p_i32_PingTimeout:
             pingTimeoutMs_ = *static_cast<const std::int32_t*>(value);
             return kS7Ok;
@@ -348,6 +430,9 @@ public:
             return kS7Ok;
         case p_u16_RemotePort:
             *static_cast<std::uint16_t*>(value) = remotePort_;
+            return kS7Ok;
+        case p_u16_PduRequest:
+            *static_cast<std::uint16_t*>(value) = pduRequestLength_;
             return kS7Ok;
         case p_i32_PingTimeout:
             *static_cast<std::int32_t*>(value) = pingTimeoutMs_;
@@ -376,13 +461,14 @@ public:
     }
 
     int connect() {
+        std::lock_guard ioLock(ioMutex_);
         if (remoteAddress_.empty()) {
             return kS7ErrInvalidParams;
         }
 
         closeSocketOnly();
         sequence_ = 0;
-        pduLength_ = kDefaultS7PduRequest;
+        pduLength_ = pduRequestLength_;
 
         int rc = openSocket();
         if (rc != kS7Ok) {
@@ -407,6 +493,7 @@ public:
     }
 
     int disconnect() {
+        std::lock_guard ioLock(ioMutex_);
         connected_ = false;
         if (transportHooks_.close) {
             return closeSocketOnly();
@@ -449,10 +536,51 @@ public:
         return pduLength_;
     }
 
+    ErrorInfo lastErrorInfo() const {
+        return lastErrorInfo_;
+    }
+
     int readArea(int area, int dbNumber, int start, int amount, int wordLen, void* data);
     int writeArea(int area, int dbNumber, int start, int amount, int wordLen, void* data);
+    int readMultiVars(std::vector<DataItem>& items);
+    int writeMultiVars(std::vector<DataItem>& items);
+    std::future<int> readAreaAsync(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
+        return std::async(std::launch::async, [this, area, dbNumber, start, amount, wordLen, data]() {
+            return readArea(area, dbNumber, start, amount, wordLen, data);
+        });
+    }
+    std::future<int> writeAreaAsync(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
+        return std::async(std::launch::async, [this, area, dbNumber, start, amount, wordLen, data]() {
+            return writeArea(area, dbNumber, start, amount, wordLen, data);
+        });
+    }
+    int dbRead(int dbNumber, int start, int size, void* data) {
+        return readArea(S7AreaDB, dbNumber, start, size, S7WLByte, data);
+    }
+    int dbWrite(int dbNumber, int start, int size, void* data) {
+        return writeArea(S7AreaDB, dbNumber, start, size, S7WLByte, data);
+    }
+    int mbRead(int start, int size, void* data) {
+        return readArea(S7AreaMK, 0, start, size, S7WLByte, data);
+    }
+    int mbWrite(int start, int size, void* data) {
+        return writeArea(S7AreaMK, 0, start, size, S7WLByte, data);
+    }
+    int ebRead(int start, int size, void* data) {
+        return readArea(S7AreaPE, 0, start, size, S7WLByte, data);
+    }
+    int ebWrite(int start, int size, void* data) {
+        return writeArea(S7AreaPE, 0, start, size, S7WLByte, data);
+    }
+    int abRead(int start, int size, void* data) {
+        return readArea(S7AreaPA, 0, start, size, S7WLByte, data);
+    }
+    int abWrite(int start, int size, void* data) {
+        return writeArea(S7AreaPA, 0, start, size, S7WLByte, data);
+    }
 
 private:
+    int setError(ErrorDomain domain, int code, std::string_view stage = {});
     int closeSocketOnly();
     int sendDisconnectRequest();
     int openSocket();
@@ -467,11 +595,17 @@ private:
                         const std::vector<std::uint8_t>& request, std::vector<std::uint8_t>& response,
                         std::uint8_t expectedFunction);
     std::vector<std::uint8_t> buildReadRequest(int area, int dbNumber, int start, int amount, int wordLen);
+    std::vector<std::uint8_t> buildReadRequest(const std::vector<DataItem>& items, std::size_t begin, std::size_t end);
     std::vector<std::uint8_t> buildWriteRequest(int area, int dbNumber, int start, int amount,
                                                 int wordLen, const std::uint8_t* source, std::size_t size);
+    std::vector<std::uint8_t> buildWriteRequest(const std::vector<DataItem>& items, std::size_t begin, std::size_t end);
     int parseReadResponse(const std::vector<std::uint8_t>& response, std::uint8_t* target,
                           std::size_t capacity, std::size_t& copied);
+    int parseReadResponse(const std::vector<std::uint8_t>& response,
+                          std::vector<DataItem>& items, std::size_t begin, std::size_t end);
     int parseWriteResponse(const std::vector<std::uint8_t>& response) const;
+    int parseWriteResponse(const std::vector<std::uint8_t>& response,
+                           std::vector<DataItem>& items, std::size_t begin, std::size_t end) const;
     std::vector<std::uint8_t> buildDisconnectFrame(std::uint16_t dstRef,
                                                    std::uint16_t srcRef,
                                                    std::uint8_t reason) const;
@@ -503,16 +637,25 @@ private:
     int pingTimeoutMs_ = kDefaultTimeoutMs;
     int sendTimeoutMs_ = kDefaultTimeoutMs;
     int recvTimeoutMs_ = kDefaultTimeoutMs;
+    std::uint16_t pduRequestLength_ = kDefaultS7PduRequest;
     std::uint16_t pduLength_ = kDefaultS7PduRequest;
     std::uint16_t sequence_ = 0;
     std::size_t sourceRefIndex_ = 0;
     std::optional<std::uint16_t> connectionSourceRef_;
+    std::mutex ioMutex_;
     bool connected_ = false;
     int lastError_ = kS7Ok;
+    ErrorInfo lastErrorInfo_;
     std::vector<std::uint8_t> disconnectFrame_;
     TraceCallback traceCallback_;
     TransportHooks transportHooks_;
 };
+
+inline int Client::setError(ErrorDomain domain, int code, std::string_view stage) {
+    lastError_ = code;
+    lastErrorInfo_ = ErrorInfo{domain, code, std::string(stage)};
+    return code;
+}
 
 inline int Client::closeSocketOnly() {
     connected_ = false;
@@ -825,7 +968,7 @@ inline int Client::negotiatePduLength() {
     request.push_back(0x00);
     appendBe16(request, 1);
     appendBe16(request, 1);
-    appendBe16(request, kDefaultS7PduRequest);
+    appendBe16(request, pduRequestLength_);
 
     std::vector<std::uint8_t> response;
     const int rc = exchangePayload(
@@ -904,89 +1047,132 @@ inline int Client::exchangePayload(std::string_view requestStage, std::string_vi
     }
     if (response.size() < 12 || response[0] != kS7ProtocolId
         || (response[1] != kS7AckData && response[1] != 0x02)) {
-        return lastError_ = kS7ErrProtocol;
+        return setError(ErrorDomain::S7Header, kS7ErrProtocol, responseStage);
     }
 
     if (request.size() < 13 || readBe16(request.data() + 4) != readBe16(response.data() + 4)) {
-        return lastError_ = kS7ErrProtocol;
+        return setError(ErrorDomain::S7Header, kS7ErrSequenceMismatch, responseStage);
     }
 
     const std::uint16_t parLen = readBe16(response.data() + 6);
     if (parLen > 0) {
         const std::size_t functionOffset = response[1] == kS7AckData ? 12 : 10;
         if (functionOffset + parLen > response.size() || response[functionOffset] != expectedFunction) {
-            return lastError_ = kS7ErrProtocol;
+            return setError(ErrorDomain::S7Header, kS7ErrFunctionMismatch, responseStage);
         }
     }
 
-    return lastError_ = kS7Ok;
+    return setError(ErrorDomain::None, kS7Ok, responseStage);
 }
 
 inline std::vector<std::uint8_t> Client::buildReadRequest(int area, int dbNumber, int start, int amount, int wordLen) {
+    DataItem item{
+        .area = area,
+        .dbNumber = dbNumber,
+        .start = start,
+        .amount = amount,
+        .wordLen = wordLen
+    };
+    std::vector<DataItem> items{item};
+    return buildReadRequest(items, 0, 1);
+}
+
+inline std::vector<std::uint8_t> Client::buildReadRequest(
+    const std::vector<DataItem>& items, std::size_t begin, std::size_t end) {
     std::vector<std::uint8_t> payload;
-    payload.reserve(24);
+    payload.reserve(readRequestPduSize(end - begin));
     payload.push_back(kS7ProtocolId);
     payload.push_back(kS7Request);
     appendBe16(payload, 0x0000);
     appendBe16(payload, nextSequence());
-    appendBe16(payload, 14);
+    appendBe16(payload, static_cast<std::uint16_t>(2 + (end - begin) * 12));
     appendBe16(payload, 0);
     payload.push_back(kS7FuncRead);
-    payload.push_back(0x01);
-    payload.push_back(0x12);
-    payload.push_back(0x0A);
-    payload.push_back(0x10);
-    payload.push_back(static_cast<std::uint8_t>(wordLen & 0xFF));
-    appendBe16(payload, static_cast<std::uint16_t>(amount));
-    appendBe16(payload, static_cast<std::uint16_t>(area == S7AreaDB ? dbNumber : 0));
-    payload.push_back(static_cast<std::uint8_t>(area & 0xFF));
+    payload.push_back(static_cast<std::uint8_t>(end - begin));
+    for (std::size_t index = begin; index < end; ++index) {
+        const auto& item = items[index];
+        payload.push_back(0x12);
+        payload.push_back(0x0A);
+        payload.push_back(0x10);
+        payload.push_back(static_cast<std::uint8_t>(item.wordLen & 0xFF));
+        appendBe16(payload, static_cast<std::uint16_t>(item.amount));
+        appendBe16(payload, static_cast<std::uint16_t>(item.area == S7AreaDB ? item.dbNumber : 0));
+        payload.push_back(static_cast<std::uint8_t>(item.area & 0xFF));
 
-    const int address = (wordLen == S7WLBit || wordLen == S7WLCounter || wordLen == S7WLTimer)
-        ? start
-        : start * 8;
-    payload.push_back(static_cast<std::uint8_t>((address >> 16) & 0xFF));
-    payload.push_back(static_cast<std::uint8_t>((address >> 8) & 0xFF));
-    payload.push_back(static_cast<std::uint8_t>(address & 0xFF));
+        const int address = itemStartAddress(item.start, item.wordLen);
+        payload.push_back(static_cast<std::uint8_t>((address >> 16) & 0xFF));
+        payload.push_back(static_cast<std::uint8_t>((address >> 8) & 0xFF));
+        payload.push_back(static_cast<std::uint8_t>(address & 0xFF));
+    }
     return payload;
 }
 
 inline std::vector<std::uint8_t> Client::buildWriteRequest(int area, int dbNumber, int start, int amount,
                                                            int wordLen, const std::uint8_t* source,
                                                            std::size_t size) {
+    DataItem item{
+        .area = area,
+        .dbNumber = dbNumber,
+        .start = start,
+        .amount = amount,
+        .wordLen = wordLen,
+        .data = const_cast<std::uint8_t*>(source),
+        .capacity = size
+    };
+    std::vector<DataItem> items{item};
+    return buildWriteRequest(items, 0, 1);
+}
+
+inline std::vector<std::uint8_t> Client::buildWriteRequest(
+    const std::vector<DataItem>& items, std::size_t begin, std::size_t end) {
     std::vector<std::uint8_t> payload;
-    payload.reserve(28 + size);
+    payload.reserve(writeRequestPduSize(items, begin, end));
     payload.push_back(kS7ProtocolId);
     payload.push_back(kS7Request);
     appendBe16(payload, 0x0000);
     appendBe16(payload, nextSequence());
-    appendBe16(payload, 14);
-    appendBe16(payload, static_cast<std::uint16_t>(4 + size));
+    appendBe16(payload, static_cast<std::uint16_t>(2 + (end - begin) * 12));
+    const auto dataLengthOffset = payload.size();
+    appendBe16(payload, 0);
     payload.push_back(kS7FuncWrite);
-    payload.push_back(0x01);
-    payload.push_back(0x12);
-    payload.push_back(0x0A);
-    payload.push_back(0x10);
-    payload.push_back(static_cast<std::uint8_t>(wordLen & 0xFF));
-    appendBe16(payload, static_cast<std::uint16_t>(amount));
-    appendBe16(payload, static_cast<std::uint16_t>(area == S7AreaDB ? dbNumber : 0));
-    payload.push_back(static_cast<std::uint8_t>(area & 0xFF));
+    payload.push_back(static_cast<std::uint8_t>(end - begin));
+    for (std::size_t index = begin; index < end; ++index) {
+        const auto& item = items[index];
+        payload.push_back(0x12);
+        payload.push_back(0x0A);
+        payload.push_back(0x10);
+        payload.push_back(static_cast<std::uint8_t>(item.wordLen & 0xFF));
+        appendBe16(payload, static_cast<std::uint16_t>(item.amount));
+        appendBe16(payload, static_cast<std::uint16_t>(item.area == S7AreaDB ? item.dbNumber : 0));
+        payload.push_back(static_cast<std::uint8_t>(item.area & 0xFF));
 
-    const int address = (wordLen == S7WLBit || wordLen == S7WLCounter || wordLen == S7WLTimer)
-        ? start
-        : start * 8;
-    payload.push_back(static_cast<std::uint8_t>((address >> 16) & 0xFF));
-    payload.push_back(static_cast<std::uint8_t>((address >> 8) & 0xFF));
-    payload.push_back(static_cast<std::uint8_t>(address & 0xFF));
-
-    payload.push_back(0x00);
-    const std::uint8_t transportSize = writeTransportSize(wordLen);
-    payload.push_back(transportSize);
-    if (transportSize != kTsResOctet && transportSize != kTsResReal && transportSize != kTsResBit) {
-        appendBe16(payload, static_cast<std::uint16_t>(size * 8));
-    } else {
-        appendBe16(payload, static_cast<std::uint16_t>(size));
+        const int address = itemStartAddress(item.start, item.wordLen);
+        payload.push_back(static_cast<std::uint8_t>((address >> 16) & 0xFF));
+        payload.push_back(static_cast<std::uint8_t>((address >> 8) & 0xFF));
+        payload.push_back(static_cast<std::uint8_t>(address & 0xFF));
     }
-    payload.insert(payload.end(), source, source + size);
+
+    const auto dataStart = payload.size();
+    for (std::size_t index = begin; index < end; ++index) {
+        const auto& item = items[index];
+        const auto* source = static_cast<const std::uint8_t*>(item.data);
+        const std::size_t size = transferByteSize(item.amount, item.wordLen);
+        payload.push_back(0x00);
+        const std::uint8_t transportSize = writeTransportSize(item.wordLen);
+        payload.push_back(transportSize);
+        if (transportSize != kTsResOctet && transportSize != kTsResReal && transportSize != kTsResBit) {
+            appendBe16(payload, static_cast<std::uint16_t>(size * 8));
+        } else {
+            appendBe16(payload, static_cast<std::uint16_t>(size));
+        }
+        payload.insert(payload.end(), source, source + size);
+        if (index + 1 < end && payload.size() % 2 != 0) {
+            payload.push_back(0x00);
+        }
+    }
+    const auto dataLen = static_cast<std::uint16_t>(payload.size() - dataStart);
+    payload[dataLengthOffset] = static_cast<std::uint8_t>((dataLen >> 8) & 0xFF);
+    payload[dataLengthOffset + 1] = static_cast<std::uint8_t>(dataLen & 0xFF);
     return payload;
 }
 
@@ -1034,6 +1220,68 @@ inline int Client::parseReadResponse(const std::vector<std::uint8_t>& response, 
     return kS7Ok;
 }
 
+inline int Client::parseReadResponse(const std::vector<std::uint8_t>& response,
+                                     std::vector<DataItem>& items, std::size_t begin, std::size_t end) {
+    if (const auto error = readS7PayloadErrorCode(response); error && *error != 0) {
+        for (std::size_t index = begin; index < end; ++index) {
+            items[index].result = *error;
+        }
+        return *error;
+    }
+    if (response.size() < 18) {
+        return kS7ErrResponseTooShort;
+    }
+
+    const std::uint16_t parLen = readBe16(response.data() + 6);
+    const std::uint16_t dataLen = readBe16(response.data() + 8);
+    const std::size_t itemCount = end - begin;
+    const std::size_t dataOffset = 12 + parLen;
+    if (dataOffset + dataLen > response.size()) {
+        return kS7ErrResponseLengthMismatch;
+    }
+    if (parLen < 2 || response[12] != kS7FuncRead || response[13] != itemCount) {
+        return kS7ErrItemCountMismatch;
+    }
+
+    std::size_t cursor = dataOffset;
+    int firstError = kS7Ok;
+    for (std::size_t index = begin; index < end; ++index) {
+        auto& item = items[index];
+        item.transferred = 0;
+        item.result = kS7Ok;
+        if (cursor + 4 > response.size() || cursor + 4 > dataOffset + dataLen) {
+            item.result = kS7ErrResponseLengthMismatch;
+            return item.result;
+        }
+
+        const std::uint8_t returnCode = response[cursor];
+        if (returnCode != 0xFF) {
+            item.result = static_cast<int>(returnCode);
+            if (firstError == kS7Ok) {
+                firstError = item.result;
+            }
+            cursor += 4;
+            continue;
+        }
+
+        const std::uint8_t transportSize = response[cursor + 1];
+        const std::uint16_t payloadLength = readBe16(response.data() + cursor + 2);
+        const std::size_t copied = decodeResponseDataSize(transportSize, payloadLength);
+        if (copied > item.capacity || cursor + 4 + copied > response.size() || cursor + 4 + copied > dataOffset + dataLen) {
+            item.result = kS7ErrResponseLengthMismatch;
+            return item.result;
+        }
+        std::memcpy(item.data, response.data() + cursor + 4, copied);
+        item.transferred = copied;
+        cursor += 4 + copied;
+        if (index + 1 < end && cursor < dataOffset + dataLen && cursor % 2 != 0) {
+            ++cursor;
+        }
+    }
+
+    return firstError;
+}
+
 inline int Client::parseWriteResponse(const std::vector<std::uint8_t>& response) const {
     if (const auto error = readS7PayloadErrorCode(response); error && *error != 0) {
         return *error;
@@ -1056,7 +1304,141 @@ inline int Client::parseWriteResponse(const std::vector<std::uint8_t>& response)
     return returnCode == 0xFF ? kS7Ok : static_cast<int>(returnCode);
 }
 
+inline int Client::parseWriteResponse(const std::vector<std::uint8_t>& response,
+                                      std::vector<DataItem>& items, std::size_t begin, std::size_t end) const {
+    if (const auto error = readS7PayloadErrorCode(response); error && *error != 0) {
+        for (std::size_t index = begin; index < end; ++index) {
+            items[index].result = *error;
+        }
+        return *error;
+    }
+    if (response.size() < 15) {
+        return kS7ErrResponseTooShort;
+    }
+
+    const std::uint16_t parLen = readBe16(response.data() + 6);
+    const std::uint16_t dataLen = readBe16(response.data() + 8);
+    const std::size_t itemCount = end - begin;
+    const std::size_t dataOffset = 12 + parLen;
+    if (dataOffset + dataLen > response.size()) {
+        return kS7ErrResponseLengthMismatch;
+    }
+    if (parLen < 2 || response[12] != kS7FuncWrite || response[13] != itemCount || dataLen < itemCount) {
+        return kS7ErrItemCountMismatch;
+    }
+
+    int firstError = kS7Ok;
+    for (std::size_t index = begin; index < end; ++index) {
+        const auto returnCode = response[dataOffset + (index - begin)];
+        items[index].transferred = returnCode == 0xFF ? transferByteSize(items[index].amount, items[index].wordLen) : 0;
+        items[index].result = returnCode == 0xFF ? kS7Ok : static_cast<int>(returnCode);
+        if (firstError == kS7Ok && items[index].result != kS7Ok) {
+            firstError = items[index].result;
+        }
+    }
+    return firstError;
+}
+
+inline int Client::readMultiVars(std::vector<DataItem>& items) {
+    std::lock_guard ioLock(ioMutex_);
+    if (!connected()) {
+        return setError(ErrorDomain::Client, kS7ErrNotConnected, "readMultiVars");
+    }
+    if (items.empty()) {
+        return kS7Ok;
+    }
+
+    for (auto& item : items) {
+        item.transferred = 0;
+        item.result = kS7Ok;
+        const std::size_t size = transferByteSize(item.amount, item.wordLen);
+        if (!item.data || size == 0 || item.capacity < size || item.start < 0 || item.dbNumber < 0) {
+            item.result = kS7ErrInvalidParams;
+            return setError(ErrorDomain::Client, kS7ErrInvalidParams, "readMultiVars");
+        }
+    }
+
+    std::size_t begin = 0;
+    int firstError = kS7Ok;
+    while (begin < items.size()) {
+        std::size_t end = begin + 1;
+        while (end < items.size()) {
+            const std::size_t nextCount = end - begin + 1;
+            if (readRequestPduSize(nextCount) > pduLength_
+                || readResponsePduSize(items, begin, end + 1) > pduLength_) {
+                break;
+            }
+            ++end;
+        }
+
+        auto request = buildReadRequest(items, begin, end);
+        std::vector<std::uint8_t> response;
+        const int rc = exchangePayload("s7.read.multi.req", "s7.read.multi.resp", request, response, kS7FuncRead);
+        if (rc != kS7Ok) {
+            return rc;
+        }
+
+        const int parseRc = parseReadResponse(response, items, begin, end);
+        if (parseRc != kS7Ok && firstError == kS7Ok) {
+            firstError = parseRc;
+        }
+        begin = end;
+    }
+
+    return firstError == kS7Ok ? kS7Ok : setError(ErrorDomain::S7Item, firstError, "readMultiVars");
+}
+
+inline int Client::writeMultiVars(std::vector<DataItem>& items) {
+    std::lock_guard ioLock(ioMutex_);
+    if (!connected()) {
+        return setError(ErrorDomain::Client, kS7ErrNotConnected, "writeMultiVars");
+    }
+    if (items.empty()) {
+        return kS7Ok;
+    }
+
+    for (auto& item : items) {
+        item.transferred = 0;
+        item.result = kS7Ok;
+        const std::size_t size = transferByteSize(item.amount, item.wordLen);
+        if (!item.data || size == 0 || item.capacity < size || item.start < 0 || item.dbNumber < 0) {
+            item.result = kS7ErrInvalidParams;
+            return setError(ErrorDomain::Client, kS7ErrInvalidParams, "writeMultiVars");
+        }
+    }
+
+    std::size_t begin = 0;
+    int firstError = kS7Ok;
+    while (begin < items.size()) {
+        std::size_t end = begin + 1;
+        while (end < items.size()) {
+            const std::size_t nextCount = end - begin + 1;
+            if (writeRequestPduSize(items, begin, end + 1) > pduLength_
+                || writeResponsePduSize(nextCount) > pduLength_) {
+                break;
+            }
+            ++end;
+        }
+
+        auto request = buildWriteRequest(items, begin, end);
+        std::vector<std::uint8_t> response;
+        const int rc = exchangePayload("s7.write.multi.req", "s7.write.multi.resp", request, response, kS7FuncWrite);
+        if (rc != kS7Ok) {
+            return rc;
+        }
+
+        const int parseRc = parseWriteResponse(response, items, begin, end);
+        if (parseRc != kS7Ok && firstError == kS7Ok) {
+            firstError = parseRc;
+        }
+        begin = end;
+    }
+
+    return firstError == kS7Ok ? kS7Ok : setError(ErrorDomain::S7Item, firstError, "writeMultiVars");
+}
+
 inline int Client::readArea(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
+    std::lock_guard ioLock(ioMutex_);
     if (!connected() || !data) {
         return connected() ? kS7ErrInvalidParams : kS7ErrNotConnected;
     }
@@ -1101,6 +1483,7 @@ inline int Client::readArea(int area, int dbNumber, int start, int amount, int w
 }
 
 inline int Client::writeArea(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
+    std::lock_guard ioLock(ioMutex_);
     if (!connected() || !data) {
         return connected() ? kS7ErrInvalidParams : kS7ErrNotConnected;
     }

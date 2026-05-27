@@ -278,8 +278,7 @@ inline bool DtuSessionManager::bindSession(
                 oldSessionIt->second.deviceIdsBySlave.clear();
                 // 清除旧 session 的队列和 inflight，防止命令发到死连接
                 oldSessionIt->second.inflight.reset();
-                oldSessionIt->second.highQueue.clear();
-                oldSessionIt->second.normalQueue.clear();
+                oldSessionIt->second.jobQueue.clear();
                 oldSessionIt->second.rxBuffer.clear();
             }
             for (auto routeIt = routeBySessionAndSlave_.begin(); routeIt != routeBySessionAndSlave_.end();) {
@@ -389,18 +388,11 @@ inline void DtuSessionManager::clearInflightAndPollQueues() {
         // 清除 inflight（旧的读组索引在 reload 后可能无效）
         session.inflight.reset();
 
-        // 清除 normalQueue 和 highQueue 中的 PollRead 任务，保留 Write 任务
-        auto filterQueue = [](std::deque<ModbusJob>& queue) {
-            std::deque<ModbusJob> kept;
-            for (auto& job : queue) {
-                if (job.kind != ModbusJobKind::PollRead && job.kind != ModbusJobKind::DiscoveryRead) {
-                    kept.push_back(std::move(job));
-                }
-            }
-            queue = std::move(kept);
-        };
-        filterQueue(session.highQueue);
-        filterQueue(session.normalQueue);
+        // 清除轮询/发现任务，保留 Write 任务
+        session.jobQueue.removeIf([](const ModbusJob& job) {
+            return job.kind == ModbusJobKind::PollRead
+                || job.kind == ModbusJobKind::DiscoveryRead;
+        });
 
         // reload 后 discovery 任务已被清空，必须重置 discovery 状态，
         // 否则会话可能永远停留在 Probing/discoveryRequested=true，导致后续不再探测。

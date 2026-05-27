@@ -451,10 +451,9 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
     sessions_.mutateSession(linkId, clientAddr, [&](DtuSession& session) {
         if (session.inflight) return;
 
-        auto* queue = !session.highQueue.empty() ? &session.highQueue : &session.normalQueue;
-        if (!queue || queue->empty()) return;
+        ModbusJob job;
+        if (!session.jobQueue.popNext(job)) return;
 
-        auto job = queue->front();
         auto deviceOpt = registry_.findDevice(job.deviceId);
         if (!deviceOpt) {
             if (job.kind == ModbusJobKind::PollRead) {
@@ -463,12 +462,10 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
             if (job.kind == ModbusJobKind::DiscoveryRead) {
                 markDiscoveryFailure(session);
             }
-            queue->pop_front();
             return;
         }
 
         if (job.requestFrame.empty()) {
-            queue->pop_front();
             if (job.kind == ModbusJobKind::PollRead) {
                 failedReadJob = job;
             }
@@ -488,7 +485,6 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
         inflight.sentTime = std::chrono::steady_clock::now();
 
         session.inflight = inflight;
-        queue->pop_front();
         candidate = DispatchCandidate{session, *deviceOpt, std::move(job)};
     });
 
@@ -1044,11 +1040,9 @@ inline bool ModbusSessionEngine::enqueuePoll(int deviceId, size_t readGroupIndex
 
     bool rejected = false;
     const bool queued = sessions_.mutateSession(sessionOpt->linkId, sessionOpt->clientAddr, [&](DtuSession& session) {
-        if (session.isQueueFull()) {
+        if (!session.jobQueue.push(job, ProtocolJobPriority::Normal)) {
             rejected = true;
-            return;
         }
-        session.normalQueue.push_back(job);
     });
     if (!queued || rejected) {
         clearPollCycle(deviceId);
@@ -1151,7 +1145,9 @@ inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string&
             session.discoveryRequested = true;
             session.discoveryCursor = nextCursor;
             session.nextDiscoveryTime = now + REQUEST_TIMEOUT;
-            session.normalQueue.push_back(*discoveryJob);
+            if (!session.jobQueue.push(*discoveryJob, ProtocolJobPriority::Normal)) {
+                rejected = true;
+            }
         });
         if (queued && !rejected) {
             queuedTargets.push_back(target);
@@ -1186,18 +1182,9 @@ inline void ModbusSessionEngine::cancelDiscovery(int linkId, const std::string& 
             shouldDispatch = true;
         }
 
-        auto keepQueue = [](std::deque<ModbusJob>& queue) {
-            std::deque<ModbusJob> filtered;
-            for (auto& job : queue) {
-                if (job.kind != ModbusJobKind::DiscoveryRead) {
-                    filtered.push_back(std::move(job));
-                }
-            }
-            queue = std::move(filtered);
-        };
-
-        keepQueue(session.highQueue);
-        keepQueue(session.normalQueue);
+        session.jobQueue.removeIf([](const ModbusJob& job) {
+            return job.kind == ModbusJobKind::DiscoveryRead;
+        });
     });
 
     if (shouldDispatch) {
@@ -1299,12 +1286,15 @@ inline bool ModbusSessionEngine::submitPreparedWrite(PreparedWrite prepared) {
 
     bool rejected = false;
     const bool queued = sessions_.mutateSession(prepared.linkId, prepared.clientAddr, [&](DtuSession& session) {
-        if (session.isQueueFull()) {
+        if (!session.jobQueue.canPush(prepared.jobs.size())) {
             rejected = true;
             return;
         }
         for (auto& job : prepared.jobs) {
-            session.highQueue.push_back(std::move(job));
+            if (!session.jobQueue.push(std::move(job), ProtocolJobPriority::High)) {
+                rejected = true;
+                return;
+            }
         }
     });
     if (!queued || rejected) return false;

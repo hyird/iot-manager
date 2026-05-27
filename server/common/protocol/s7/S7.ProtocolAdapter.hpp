@@ -60,6 +60,7 @@ struct S7ConnectionConfig {
     int recvTimeoutMs = kDefaultS7RecvTimeoutMs;
     int retryDelayMs = 1000;
     int pollIntervalSec = 5;
+    std::uint16_t pduRequestLength = kDefaultS7PduRequest;
     std::string connectionType = "PG";
 };
 
@@ -75,6 +76,7 @@ inline bool sameS7Connection(const S7ConnectionConfig& lhs, const S7ConnectionCo
         && lhs.recvTimeoutMs == rhs.recvTimeoutMs
         && lhs.retryDelayMs == rhs.retryDelayMs
         && lhs.pollIntervalSec == rhs.pollIntervalSec
+        && lhs.pduRequestLength == rhs.pduRequestLength
         && lhs.connectionType == rhs.connectionType;
 }
 
@@ -1228,6 +1230,14 @@ private:
                 return "Unsupported";
             case kS7ErrResponseTooShort:
                 return "Response too short";
+            case kS7ErrSequenceMismatch:
+                return "PDU reference mismatch";
+            case kS7ErrFunctionMismatch:
+                return "S7 function mismatch";
+            case kS7ErrItemCountMismatch:
+                return "S7 item count mismatch";
+            case kS7ErrResponseLengthMismatch:
+                return "S7 response length mismatch";
             default:
                 return rc < 0 ? "Unknown client error" : explainPlcErrorRc(rc);
         }
@@ -1640,7 +1650,8 @@ private:
         connection.localTSAP = preset.localTSAP;
         connection.remoteTSAP = preset.remoteTSAP;
 
-        if (config.isMember("connection") && config["connection"].isObject()) {
+        const bool hasNestedConnection = config.isMember("connection") && config["connection"].isObject();
+        if (hasNestedConnection) {
             const auto& conn = config["connection"];
             connection.host = conn.get("host", "").asString();
             connection.connectionType = toUpper(conn.get("connectionType", "PG").asString());
@@ -1663,6 +1674,17 @@ private:
             connection.sendTimeoutMs = conn.get("sendTimeout", connection.sendTimeoutMs).asInt();
             connection.recvTimeoutMs = conn.get("recvTimeout", connection.recvTimeoutMs).asInt();
             connection.retryDelayMs = conn.get("retryDelay", connection.retryDelayMs).asInt();
+            if (conn.isMember("pduRequestLength")) {
+                connection.pduRequestLength = static_cast<std::uint16_t>(
+                    std::clamp(conn.get("pduRequestLength", static_cast<int>(connection.pduRequestLength)).asInt(),
+                        240,
+                        static_cast<int>(kDefaultIsoPduSize - 7)));
+            } else if (conn.isMember("pduLength")) {
+                connection.pduRequestLength = static_cast<std::uint16_t>(
+                    std::clamp(conn.get("pduLength", static_cast<int>(connection.pduRequestLength)).asInt(),
+                        240,
+                        static_cast<int>(kDefaultIsoPduSize - 7)));
+            }
             if (connection.pingTimeoutMs <= 0) connection.pingTimeoutMs = kDefaultS7RecvTimeoutMs;
             if (connection.sendTimeoutMs <= 0) connection.sendTimeoutMs = kDefaultS7SendTimeoutMs;
             if (connection.recvTimeoutMs <= 0) connection.recvTimeoutMs = kDefaultS7RecvTimeoutMs;
@@ -1672,6 +1694,35 @@ private:
             }
             if (connection.pingTimeoutMs < connection.recvTimeoutMs) {
                 connection.pingTimeoutMs = connection.recvTimeoutMs;
+            }
+        }
+        if (!hasNestedConnection) {
+            const Json::Value* compatConn = &config;
+            connection.host = compatConn->get("host", connection.host).asString();
+            connection.connectionType = toUpper(compatConn->get("connectionType", connection.connectionType).asString());
+            if (compatConn->isMember("mode")) {
+                connection.mode = normalizeConnectionMode(compatConn->get("mode", connection.mode).asString());
+            } else if (compatConn->isMember("localTSAP") || compatConn->isMember("remoteTSAP")) {
+                connection.mode = "TSAP";
+            }
+            connection.rack = compatConn->get("rack", connection.rack).asInt();
+            connection.slot = compatConn->get("slot", connection.slot).asInt();
+            if (auto localTSAP = parseTsapHex((*compatConn)["localTSAP"])) {
+                connection.localTSAP = *localTSAP;
+            }
+            if (auto remoteTSAP = parseTsapHex((*compatConn)["remoteTSAP"])) {
+                connection.remoteTSAP = *remoteTSAP;
+            }
+            if (compatConn->isMember("pduRequestLength")) {
+                connection.pduRequestLength = static_cast<std::uint16_t>(
+                    std::clamp(compatConn->get("pduRequestLength", static_cast<int>(connection.pduRequestLength)).asInt(),
+                        240,
+                        static_cast<int>(kDefaultIsoPduSize - 7)));
+            } else if (compatConn->isMember("pduLength")) {
+                connection.pduRequestLength = static_cast<std::uint16_t>(
+                    std::clamp(compatConn->get("pduLength", static_cast<int>(connection.pduRequestLength)).asInt(),
+                        240,
+                        static_cast<int>(kDefaultIsoPduSize - 7)));
             }
         }
         if (isS7_200) {
@@ -2298,6 +2349,12 @@ private:
         setTimeout(p_i32_PingTimeout, connection.pingTimeoutMs, "PingTimeout");
         setTimeout(p_i32_SendTimeout, connection.sendTimeoutMs, "SendTimeout");
         setTimeout(p_i32_RecvTimeout, connection.recvTimeoutMs, "RecvTimeout");
+        std::uint16_t pduRequestLength = connection.pduRequestLength;
+        if (client.setParam(p_u16_PduRequest, &pduRequestLength) != 0) {
+            LOG_DEBUG << "[S7][Adapter] Failed to set PduRequestLength"
+                      << " for host=" << connection.host
+                      << ", value=" << pduRequestLength;
+        }
     }
 
     static bool isSessionReadyLocked(const S7DeviceRuntime& runtime) {
@@ -2848,12 +2905,12 @@ private:
             sessionBound = runtime->sessionBound;
             areas = runtime->areas;
         }
-        const auto readBlocks = planReadBlocks(areas);
+        const auto readPlans = planReadBlocks(areas);
 
         LOG_DEBUG << "[S7][Adapter] Poll " << deviceLabel(*runtime)
                   << "(id=" << deviceId << ")"
                   << ", areas=" << areas.size()
-                  << ", blocks=" << readBlocks.size()
+                  << ", blocks=" << readPlans.size()
                   << ", session=" << (tcpServerMode ? "yes" : "no")
                   << ", bound=" << (sessionBound ? "yes" : "no");
 
@@ -2862,13 +2919,17 @@ private:
         bool pollFailed = false;
         bool anyBlockSucceeded = false;
 
-        for (const auto& block : readBlocks) {
-            std::vector<uint8_t> buffer(block.byteSize, 0);
-            int rc = 0;
-            {
-                std::lock_guard clientLock(runtime->clientMutex);
-                rc = readBlock(*runtime, block, buffer);
-            }
+        std::vector<std::vector<uint8_t>> blockBuffers;
+        std::vector<int> blockResults;
+        {
+            std::lock_guard clientLock(runtime->clientMutex);
+            blockResults = readBlocks(*runtime, readPlans, blockBuffers);
+        }
+
+        for (std::size_t blockIndex = 0; blockIndex < readPlans.size(); ++blockIndex) {
+            const auto& block = readPlans[blockIndex];
+            auto& buffer = blockBuffers[blockIndex];
+            const int rc = blockResults[blockIndex];
             if (rc != 0) {
                 bool advanceCursor = false;
                 {
@@ -2971,6 +3032,59 @@ private:
             block.amount,
             block.wordLen,
             buffer.data());
+    }
+
+    std::vector<int> readBlocks(const S7DeviceRuntime& runtime,
+                                const std::vector<S7ReadBlockPlan>& blocks,
+                                std::vector<std::vector<uint8_t>>& buffers) const {
+        buffers.clear();
+        buffers.reserve(blocks.size());
+        std::vector<int> results(blocks.size(), -1);
+        if (!runtime.client) {
+            return results;
+        }
+
+        std::vector<DataItem> batchItems;
+        std::vector<std::size_t> batchIndexes;
+
+        auto flushBatch = [&]() {
+            if (batchItems.empty()) {
+                return;
+            }
+            const int rc = runtime.client->readMultiVars(batchItems);
+            for (std::size_t i = 0; i < batchItems.size(); ++i) {
+                results[batchIndexes[i]] = batchItems[i].result == kS7Ok
+                    ? (rc < kS7Ok ? rc : kS7Ok)
+                    : batchItems[i].result;
+            }
+            batchItems.clear();
+            batchIndexes.clear();
+        };
+
+        const std::uint16_t pduLength = runtime.client->negotiatedPduLength();
+        for (std::size_t index = 0; index < blocks.size(); ++index) {
+            const auto& block = blocks[index];
+            auto& buffer = buffers.emplace_back(block.byteSize, 0);
+            const std::size_t singleReadResponseSize = 12 + 2 + 4 + paddedEven(block.byteSize);
+            if (singleReadResponseSize > pduLength) {
+                flushBatch();
+                results[index] = readBlock(runtime, block, buffer);
+                continue;
+            }
+
+            batchIndexes.push_back(index);
+            batchItems.push_back(DataItem{
+                .area = block.areaCode,
+                .dbNumber = block.dbNumber,
+                .start = block.start,
+                .amount = block.amount,
+                .wordLen = block.wordLen,
+                .data = buffer.data(),
+                .capacity = buffer.size()
+            });
+        }
+        flushBatch();
+        return results;
     }
 
     int readArea(const S7DeviceRuntime& runtime, const S7AreaDefinition& area,
