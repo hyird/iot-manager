@@ -237,12 +237,13 @@ private:
 
         const auto steadyNow = std::chrono::steady_clock::now();
         std::map<int, std::chrono::system_clock::time_point> stagedLastTimes;
+        std::map<int, Json::Value> stagedLastData;
 
         std::lock_guard lock(storageMutex_);
         pruneRealtimeStoreWindowsLocked(steadyNow);
 
         for (const auto& r : batch) {
-            if (shouldPersistResultLocked(r, steadyNow, stagedLastTimes)) {
+            if (shouldPersistResultLocked(r, steadyNow, stagedLastTimes, stagedLastData)) {
                 result.push_back(r);
             }
         }
@@ -253,7 +254,8 @@ private:
     bool shouldPersistResultLocked(
         const ParsedFrameResult& result,
         std::chrono::steady_clock::time_point steadyNow,
-        std::map<int, std::chrono::system_clock::time_point>& stagedLastTimes) const {
+        std::map<int, std::chrono::system_clock::time_point>& stagedLastTimes,
+        std::map<int, Json::Value>& stagedLastData) const {
         if (result.deviceId <= 0) {
             return true;
         }
@@ -268,6 +270,15 @@ private:
 
         auto fastIt = realtimeStoreUntil_.find(result.deviceId);
         if (fastIt != realtimeStoreUntil_.end() && steadyNow < fastIt->second) {
+            auto stagedDataIt = stagedLastData.find(result.deviceId);
+            auto lastDataIt = lastStoredData_.find(result.deviceId);
+            const Json::Value* lastData = stagedDataIt != stagedLastData.end()
+                ? &stagedDataIt->second
+                : (lastDataIt != lastStoredData_.end() ? &lastDataIt->second : nullptr);
+            if (lastData != nullptr && *lastData == result.data) {
+                return false;
+            }
+            stagedLastData[result.deviceId] = result.data;
             return true;
         }
 
@@ -308,6 +319,7 @@ private:
             if (last == std::chrono::system_clock::time_point{} || reportTime > last) {
                 last = reportTime;
             }
+            lastStoredData_[r.deviceId] = r.data;
         }
     }
 
@@ -417,5 +429,6 @@ private:
     std::atomic<int64_t> totalBatchFallbacks_{0};
     mutable std::mutex storageMutex_;
     std::map<int, std::chrono::system_clock::time_point> lastStoredReportTimes_;
+    std::map<int, Json::Value> lastStoredData_;
     std::map<int, std::chrono::steady_clock::time_point> realtimeStoreUntil_;
 };
