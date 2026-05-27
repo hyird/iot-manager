@@ -464,7 +464,8 @@ private:
     int sendPayload(std::string_view stage, const std::vector<std::uint8_t>& payload);
     int recvPayload(std::string_view stage, std::vector<std::uint8_t>& payload);
     int exchangePayload(std::string_view requestStage, std::string_view responseStage,
-                        const std::vector<std::uint8_t>& request, std::vector<std::uint8_t>& response);
+                        const std::vector<std::uint8_t>& request, std::vector<std::uint8_t>& response,
+                        std::uint8_t expectedFunction);
     std::vector<std::uint8_t> buildReadRequest(int area, int dbNumber, int start, int amount, int wordLen);
     std::vector<std::uint8_t> buildWriteRequest(int area, int dbNumber, int start, int amount,
                                                 int wordLen, const std::uint8_t* source, std::size_t size);
@@ -827,7 +828,8 @@ inline int Client::negotiatePduLength() {
     appendBe16(request, kDefaultS7PduRequest);
 
     std::vector<std::uint8_t> response;
-    const int rc = exchangePayload("s7.setup-comm.req", "s7.setup-comm.resp", request, response);
+    const int rc = exchangePayload(
+        "s7.setup-comm.req", "s7.setup-comm.resp", request, response, kS7FuncNegotiate);
     if (rc != kS7Ok) {
         return rc;
     }
@@ -890,7 +892,8 @@ inline int Client::recvPayload(std::string_view stage, std::vector<std::uint8_t>
 
 inline int Client::exchangePayload(std::string_view requestStage, std::string_view responseStage,
                                    const std::vector<std::uint8_t>& request,
-                                   std::vector<std::uint8_t>& response) {
+                                   std::vector<std::uint8_t>& response,
+                                   std::uint8_t expectedFunction) {
     int rc = sendPayload(requestStage, request);
     if (rc != kS7Ok) {
         return rc;
@@ -903,6 +906,19 @@ inline int Client::exchangePayload(std::string_view requestStage, std::string_vi
         || (response[1] != kS7AckData && response[1] != 0x02)) {
         return lastError_ = kS7ErrProtocol;
     }
+
+    if (request.size() < 13 || readBe16(request.data() + 4) != readBe16(response.data() + 4)) {
+        return lastError_ = kS7ErrProtocol;
+    }
+
+    const std::uint16_t parLen = readBe16(response.data() + 6);
+    if (parLen > 0) {
+        const std::size_t functionOffset = response[1] == kS7AckData ? 12 : 10;
+        if (functionOffset + parLen > response.size() || response[functionOffset] != expectedFunction) {
+            return lastError_ = kS7ErrProtocol;
+        }
+    }
+
     return lastError_ = kS7Ok;
 }
 
@@ -998,6 +1014,9 @@ inline int Client::parseReadResponse(const std::vector<std::uint8_t>& response, 
     if (dataOffset + 4 > response.size() || dataOffset + dataLen > response.size()) {
         return kS7ErrProtocol;
     }
+    if (parLen < 2 || response[12] != kS7FuncRead || response[13] != 0x01 || dataLen < 4) {
+        return kS7ErrProtocol;
+    }
 
     const std::uint8_t returnCode = response[dataOffset];
     if (returnCode != 0xFF) {
@@ -1024,8 +1043,12 @@ inline int Client::parseWriteResponse(const std::vector<std::uint8_t>& response)
     }
 
     const std::uint16_t parLen = readBe16(response.data() + 6);
+    const std::uint16_t dataLen = readBe16(response.data() + 8);
     const std::size_t dataOffset = 12 + parLen;
-    if (dataOffset >= response.size()) {
+    if (dataOffset >= response.size() || dataOffset + dataLen > response.size()) {
+        return kS7ErrProtocol;
+    }
+    if (parLen < 2 || response[12] != kS7FuncWrite || response[13] != 0x01 || dataLen < 1) {
         return kS7ErrProtocol;
     }
 
@@ -1054,7 +1077,7 @@ inline int Client::readArea(int area, int dbNumber, int start, int amount, int w
         const int sliceElements = std::min(remaining, maxElements);
         auto request = buildReadRequest(area, dbNumber, currentStart, sliceElements, wordLen);
         std::vector<std::uint8_t> response;
-        const int rc = exchangePayload("s7.read.req", "s7.read.resp", request, response);
+        const int rc = exchangePayload("s7.read.req", "s7.read.resp", request, response, kS7FuncRead);
         if (rc != kS7Ok) {
             return rc;
         }
@@ -1100,7 +1123,7 @@ inline int Client::writeArea(int area, int dbNumber, int start, int amount, int 
         auto request = buildWriteRequest(area, dbNumber, currentStart, sliceElements,
             wordLen, source + offset, sliceBytes);
         std::vector<std::uint8_t> response;
-        const int rc = exchangePayload("s7.write.req", "s7.write.resp", request, response);
+        const int rc = exchangePayload("s7.write.req", "s7.write.resp", request, response, kS7FuncWrite);
         if (rc != kS7Ok) {
             return rc;
         }
