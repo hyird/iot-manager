@@ -353,6 +353,17 @@ inline std::size_t writeResponsePduSize(std::size_t itemCount) {
     return 12 + 2 + itemCount;
 }
 
+inline bool readItemFitsPdu(const DataItem& item, std::uint16_t pduLength) {
+    return readRequestPduSize(1) <= pduLength
+        && (12 + 2 + 4 + paddedEven(transferByteSize(item.amount, item.wordLen))) <= pduLength;
+}
+
+inline bool writeItemFitsPdu(const DataItem& item, std::uint16_t pduLength) {
+    std::vector<DataItem> itemView{item};
+    return writeRequestPduSize(itemView, 0, 1) <= pduLength
+        && writeResponsePduSize(1) <= pduLength;
+}
+
 class Client {
 public:
     struct TransportHooks {
@@ -606,6 +617,8 @@ private:
     int parseWriteResponse(const std::vector<std::uint8_t>& response) const;
     int parseWriteResponse(const std::vector<std::uint8_t>& response,
                            std::vector<DataItem>& items, std::size_t begin, std::size_t end) const;
+    int readAreaUnlocked(int area, int dbNumber, int start, int amount, int wordLen, void* data);
+    int writeAreaUnlocked(int area, int dbNumber, int start, int amount, int wordLen, void* data);
     std::vector<std::uint8_t> buildDisconnectFrame(std::uint16_t dstRef,
                                                    std::uint16_t srcRef,
                                                    std::uint8_t reason) const;
@@ -1162,6 +1175,8 @@ inline std::vector<std::uint8_t> Client::buildWriteRequest(
         payload.push_back(transportSize);
         if (transportSize != kTsResOctet && transportSize != kTsResReal && transportSize != kTsResBit) {
             appendBe16(payload, static_cast<std::uint16_t>(size * 8));
+        } else if (transportSize == kTsResBit) {
+            appendBe16(payload, static_cast<std::uint16_t>(item.amount));
         } else {
             appendBe16(payload, static_cast<std::uint16_t>(size));
         }
@@ -1361,6 +1376,18 @@ inline int Client::readMultiVars(std::vector<DataItem>& items) {
     std::size_t begin = 0;
     int firstError = kS7Ok;
     while (begin < items.size()) {
+        if (!readItemFitsPdu(items[begin], pduLength_)) {
+            auto& item = items[begin];
+            const int rc = readAreaUnlocked(item.area, item.dbNumber, item.start, item.amount, item.wordLen, item.data);
+            item.result = rc;
+            item.transferred = rc == kS7Ok ? transferByteSize(item.amount, item.wordLen) : 0;
+            if (rc != kS7Ok && firstError == kS7Ok) {
+                firstError = rc;
+            }
+            ++begin;
+            continue;
+        }
+
         std::size_t end = begin + 1;
         while (end < items.size()) {
             const std::size_t nextCount = end - begin + 1;
@@ -1410,6 +1437,18 @@ inline int Client::writeMultiVars(std::vector<DataItem>& items) {
     std::size_t begin = 0;
     int firstError = kS7Ok;
     while (begin < items.size()) {
+        if (!writeItemFitsPdu(items[begin], pduLength_)) {
+            auto& item = items[begin];
+            const int rc = writeAreaUnlocked(item.area, item.dbNumber, item.start, item.amount, item.wordLen, item.data);
+            item.result = rc;
+            item.transferred = rc == kS7Ok ? transferByteSize(item.amount, item.wordLen) : 0;
+            if (rc != kS7Ok && firstError == kS7Ok) {
+                firstError = rc;
+            }
+            ++begin;
+            continue;
+        }
+
         std::size_t end = begin + 1;
         while (end < items.size()) {
             const std::size_t nextCount = end - begin + 1;
@@ -1439,6 +1478,10 @@ inline int Client::writeMultiVars(std::vector<DataItem>& items) {
 
 inline int Client::readArea(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
     std::lock_guard ioLock(ioMutex_);
+    return readAreaUnlocked(area, dbNumber, start, amount, wordLen, data);
+}
+
+inline int Client::readAreaUnlocked(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
     if (!connected() || !data) {
         return connected() ? kS7ErrInvalidParams : kS7ErrNotConnected;
     }
@@ -1484,6 +1527,10 @@ inline int Client::readArea(int area, int dbNumber, int start, int amount, int w
 
 inline int Client::writeArea(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
     std::lock_guard ioLock(ioMutex_);
+    return writeAreaUnlocked(area, dbNumber, start, amount, wordLen, data);
+}
+
+inline int Client::writeAreaUnlocked(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
     if (!connected() || !data) {
         return connected() ? kS7ErrInvalidParams : kS7ErrNotConnected;
     }

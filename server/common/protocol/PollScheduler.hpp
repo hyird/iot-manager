@@ -53,6 +53,10 @@ public:
     }
 
     void reload(const std::vector<TaskConfig>& configs) {
+        reload(configs, true);
+    }
+
+    void reload(const std::vector<TaskConfig>& configs, bool preserveInProgress) {
         std::vector<std::pair<int, size_t>> immediateSteps;
         const auto now = std::chrono::steady_clock::now();
 
@@ -82,11 +86,15 @@ public:
                 auto oldIt = pollEntries_.find(config.deviceId);
                 if (oldIt != pollEntries_.end()) {
                     entry.enabled = config.enabled;
-                    entry.cycleInProgress = oldIt->second.cycleInProgress;
+                    entry.cycleInProgress = preserveInProgress && oldIt->second.cycleInProgress;
                     entry.consecutiveFailures = oldIt->second.consecutiveFailures;
                     entry.fastReadUntil = oldIt->second.fastReadUntil;
                     entry.nextDueTime = oldIt->second.nextDueTime;
                     entry.nextStepIndex = std::min(oldIt->second.nextStepIndex, entry.stepCount - 1);
+                    if (!preserveInProgress && entry.enabled) {
+                        entry.nextStepIndex = 0;
+                        entry.nextDueTime = now;
+                    }
                 } else if (entry.enabled) {
                     const int idx = groupStagger[entry.groupKey]++;
                     if (idx == 0) {

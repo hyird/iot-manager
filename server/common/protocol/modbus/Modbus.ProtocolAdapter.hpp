@@ -116,7 +116,7 @@ public:
             sessionEngine_->clearDiscoveryLocks();
         }
         if (pollScheduler_ && dtuRegistry_) {
-            pollScheduler_->reload(*dtuRegistry_);
+            pollScheduler_->reload(*dtuRegistry_, false);
         }
 
         refreshBoundDtuRuntime();

@@ -26,7 +26,7 @@ public:
         scheduler_.setEnqueueCallback(std::move(cb));
     }
 
-    void reload(const DtuRegistry& registry) {
+    void reload(const DtuRegistry& registry, bool preserveInProgress = true) {
         std::vector<ProtocolPollScheduler::TaskConfig> tasks;
         auto definitions = registry.getAllDefinitions();
 
@@ -51,7 +51,7 @@ public:
             }
         }
 
-        scheduler_.reload(tasks);
+        scheduler_.reload(tasks, preserveInProgress);
     }
 
     void onSessionBound(const DtuDefinition& dtu) {
