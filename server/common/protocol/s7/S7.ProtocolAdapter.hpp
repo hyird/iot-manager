@@ -2751,7 +2751,7 @@ private:
 
         auto runtime = findRuntimeLocked(deviceId);
         const auto pollQueueKey = runtimeQueueKey(runtime);
-        auto outcome = co_await CoroutineExecutor::instance().submitSerialKey(pollQueueKey, false, [this, deviceId, runtime]() {
+        auto outcome = co_await CoroutineExecutor::instance().submitSerialKey(pollQueueKey, false, [this, runtime]() {
             ScheduledPollOutcome result;
             try {
                 if (runtime) {
