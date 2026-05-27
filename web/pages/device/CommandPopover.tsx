@@ -2,7 +2,7 @@
  * 指令下发 Popover 内容组件
  */
 
-import { Alert, App, Button, Checkbox, Flex, Input } from "antd";
+import { App, Button, Checkbox, Flex, Input } from "antd";
 import { useCallback, useState } from "react";
 import { useDeviceCommand } from "@/services";
 import type { Device } from "@/types";
@@ -121,7 +121,7 @@ const validateValue = (el: CommandElement): string | null => {
 };
 
 const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
-  const { message, modal } = App.useApp();
+  const { message } = App.useApp();
   const commandMutation = useDeviceCommand();
   const isS7SingleSelect = device.protocol_type === "S7";
 
@@ -142,26 +142,11 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
       device.connectionState
     );
     if (connectionState !== "online") {
-      return new Promise((resolve) => {
-        modal.confirm({
-          title: "设备当前离线",
-          content: (
-            <Alert
-              message="设备离线，指令可能无法送达"
-              type="warning"
-              showIcon
-              className="!mt-2"
-            />
-          ),
-          okText: "仍然下发",
-          cancelText: "取消",
-          onOk: () => resolve(true),
-          onCancel: () => resolve(false),
-        });
-      });
+      message.warning("设备离线");
+      return Promise.resolve(false);
     }
     return Promise.resolve(true);
-  }, [device.connected, device.connectionState, device.reportTime, device.online_timeout, modal]);
+  }, [device.connected, device.connectionState, device.reportTime, device.online_timeout, message]);
 
   const checkLinkId = useCallback(() => {
     if (device.link_id == null && !device.agent_id) {

@@ -33,7 +33,7 @@
 namespace s7 {
 
 inline constexpr int kDefaultS7SendTimeoutMs = kDefaultTimeoutMs;
-inline constexpr int kDefaultS7RecvTimeoutMs = 45000;
+inline constexpr int kDefaultS7RecvTimeoutMs = 15000;
 
 struct S7AreaDefinition {
     std::string id;
