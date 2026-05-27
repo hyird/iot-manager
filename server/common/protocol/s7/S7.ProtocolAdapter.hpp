@@ -10,12 +10,10 @@
 #include "common/protocol/ProtocolAdapter.hpp"
 #include "common/protocol/ProtocolJobQueue.hpp"
 #include "common/utils/Constants.hpp"
-#include "common/utils/CoroutineExecutor.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <condition_variable>
 #include <coroutine>
 #include <cstdint>
 #include <cstring>
@@ -109,9 +107,25 @@ struct S7ReadBlockPlan {
 };
 
 struct S7DeviceRuntime {
+    struct AsyncConnect {
+        enum class Stage {
+            IsoConfirm,
+            SetupCommunication
+        };
+
+        Stage stage = Stage::IsoConfirm;
+        std::uint64_t attemptId = 0;
+        std::deque<uint8_t> rxBuffer;
+        std::function<void(bool)> complete;
+        trantor::TimerId timerId{0};
+        bool done = false;
+    };
+
     struct AsyncExchange {
         std::uint16_t pduRef = 0;
         std::uint8_t expectedFunction = 0;
+        std::uint8_t expectedCotp = kCotpDt;
+        bool rawFrame = false;
         std::string responseStage;
         std::function<void(int, std::vector<std::uint8_t>)> complete;
         trantor::TimerId timerId{0};
@@ -125,9 +139,6 @@ struct S7DeviceRuntime {
 
     mutable std::mutex mutex;
     mutable std::mutex clientMutex;
-    mutable std::mutex sessionIoMutex;
-    std::condition_variable sessionIoCv;
-    std::condition_variable asyncCv;
     int deviceId = 0;
     int linkId = 0;
     std::string deviceName;
@@ -137,16 +148,14 @@ struct S7DeviceRuntime {
     int sessionLinkId = 0;
     S7ConnectionConfig connection;
     std::vector<S7AreaDefinition> areas;
-    std::deque<std::vector<uint8_t>> pendingSessionToDtu;
-    std::deque<uint8_t> sessionRxBuffer;
     std::deque<uint8_t> asyncRxBuffer;
+    std::shared_ptr<AsyncConnect> asyncConnect;
     std::shared_ptr<AsyncExchange> asyncExchange;
     ProtocolJobQueue<QueuedOperation> operationQueue{256};
     std::unique_ptr<Client> client;
     bool connected = false;
     bool tcpServerMode = false;
     bool sessionBound = false;
-    bool sessionTransportOpen = false;
     bool sessionDiscoveryInFlight = false;
     bool connectInProgress = false;
     bool operationRunning = false;
@@ -174,16 +183,14 @@ struct S7DeviceRuntime {
         , sessionLinkId(other.sessionLinkId)
         , connection(std::move(other.connection))
         , areas(std::move(other.areas))
-        , pendingSessionToDtu(std::move(other.pendingSessionToDtu))
-        , sessionRxBuffer(std::move(other.sessionRxBuffer))
         , asyncRxBuffer(std::move(other.asyncRxBuffer))
+        , asyncConnect(std::move(other.asyncConnect))
         , asyncExchange(std::move(other.asyncExchange))
         , operationQueue(std::move(other.operationQueue))
         , client(std::move(other.client))
         , connected(other.connected)
         , tcpServerMode(other.tcpServerMode)
         , sessionBound(other.sessionBound)
-        , sessionTransportOpen(other.sessionTransportOpen)
         , sessionDiscoveryInFlight(other.sessionDiscoveryInFlight)
         , connectInProgress(other.connectInProgress)
         , operationRunning(other.operationRunning)
@@ -210,16 +217,14 @@ struct S7DeviceRuntime {
         sessionLinkId = other.sessionLinkId;
         connection = std::move(other.connection);
         areas = std::move(other.areas);
-        pendingSessionToDtu = std::move(other.pendingSessionToDtu);
-        sessionRxBuffer = std::move(other.sessionRxBuffer);
         asyncRxBuffer = std::move(other.asyncRxBuffer);
+        asyncConnect = std::move(other.asyncConnect);
         asyncExchange = std::move(other.asyncExchange);
         operationQueue = std::move(other.operationQueue);
         client = std::move(other.client);
         connected = other.connected;
         tcpServerMode = other.tcpServerMode;
         sessionBound = other.sessionBound;
-        sessionTransportOpen = other.sessionTransportOpen;
         sessionDiscoveryInFlight = other.sessionDiscoveryInFlight;
         connectInProgress = other.connectInProgress;
         operationRunning = other.operationRunning;
@@ -236,17 +241,11 @@ struct S7DeviceRuntime {
             client->disconnect();
             client.reset();
         }
-        {
-            std::lock_guard sessionIoLock(sessionIoMutex);
-            sessionTransportOpen = false;
-            sessionRxBuffer.clear();
-            asyncRxBuffer.clear();
-            asyncExchange.reset();
-            operationQueue.clear();
-            operationRunning = false;
-        }
-        sessionIoCv.notify_all();
-        asyncCv.notify_all();
+        asyncRxBuffer.clear();
+        asyncConnect.reset();
+        asyncExchange.reset();
+        operationQueue.clear();
+        operationRunning = false;
         connected = false;
     }
 };
@@ -484,7 +483,7 @@ public:
             bool useAsyncDeviceQueue = false;
             {
                 std::lock_guard runtimeLock(runtime->mutex);
-                useAsyncDeviceQueue = runtime->tcpServerMode && isSessionReadyLocked(*runtime);
+                useAsyncDeviceQueue = runtime->tcpServerMode;
             }
 
             if (useAsyncDeviceQueue) {
@@ -496,16 +495,30 @@ public:
                             ProtocolJobPriority::High,
                             [this, runtime, elements = std::move(elements), completePtr](
                                 std::function<void()> done) mutable {
-                                startAsyncWriteCommand(
+                                auto elementsPtr = std::make_shared<Json::Value>(std::move(elements));
+                                startAsyncConnectDevice(
                                     runtime,
-                                    std::move(elements),
-                                    [done = std::move(done), completePtr](std::string failure) mutable {
-                                        if (completePtr && *completePtr) {
-                                            (*completePtr)(std::move(failure));
+                                    [this, runtime, elementsPtr, done = std::move(done), completePtr](bool connected) mutable {
+                                        if (!connected) {
+                                            if (completePtr && *completePtr) {
+                                                (*completePtr)("S7 设备离线");
+                                            }
+                                            if (done) {
+                                                done();
+                                            }
+                                            return;
                                         }
-                                        if (done) {
-                                            done();
-                                        }
+                                        startAsyncWriteCommand(
+                                            runtime,
+                                            std::move(*elementsPtr),
+                                            [done = std::move(done), completePtr](std::string failure) mutable {
+                                                if (completePtr && *completePtr) {
+                                                    (*completePtr)(std::move(failure));
+                                                }
+                                                if (done) {
+                                                    done();
+                                                }
+                                            });
                                     });
                             })) {
                             if (completePtr && *completePtr) {
@@ -535,154 +548,9 @@ public:
                 co_return CommandResult::success();
             }
 
-            const auto commandQueueKey = runtimeQueueKey(runtime);
-            const auto commandQueuedAt = std::chrono::steady_clock::now();
-            auto failure = co_await CoroutineExecutor::instance().submitSerialKey(commandQueueKey, true, [this, runtime, elements = req.elements, commandQueuedAt]() {
-                const auto queueDelayMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - commandQueuedAt).count();
-                if (queueDelayMs > 1000) {
-                    LOG_WARN << "[S7][Adapter] Write command waited in S7 serial queue: "
-                             << deviceLabel(*runtime)
-                             << "(id=" << runtime->deviceId << ")"
-                             << ", wait=" << queueDelayMs << "ms";
-                }
-                std::string failure;
-                int asyncWaitMs = kDefaultS7RecvTimeoutMs + 1000;
-                {
-                    std::lock_guard runtimeLock(runtime->mutex);
-                    asyncWaitMs = std::max(1000, runtime->connection.recvTimeoutMs + 1000);
-                }
-                if (!waitForAsyncExchangeIdle(runtime, asyncWaitMs)) {
-                    failure = "S7 设备正在处理上一条读写请求";
-                } else if (!ensureConnected(runtime, std::chrono::steady_clock::now())) {
-                    failure = "S7 设备离线";
-                } else {
-                    {
-                        std::lock_guard runtimeLock(runtime->mutex);
-                        if (runtime->tcpServerMode && !runtime->sessionBound) {
-                            failure = "S7 会话未就绪";
-                        }
-                    }
-
-                    if (failure.empty()) {
-                        std::vector<S7PreparedWrite> writes;
-                        writes.reserve(static_cast<std::size_t>(elements.size()));
-
-                        for (const auto& elem : elements) {
-                            if (!elem.isObject()) continue;
-                            const auto* areaDef = findAreaDefinition(*runtime, elem);
-                            if (!areaDef) {
-                                failure = "未找到 S7 要素对应的写入地址";
-                                break;
-                            }
-                            if (!areaDef->writable) {
-                                failure = "S7 要素未启用写入: " + areaDef->name;
-                                break;
-                            }
-
-                            if (normalizeDataType(areaDef->dataType) == "BOOL"
-                                && elem.get("valueHex", "").asString().empty()) {
-                                bool boolValue = false;
-                                if (!parseBoolValue(jsonValueToString(elem["value"]), boolValue)) {
-                                    failure = "S7 指令值格式错误";
-                                    break;
-                                }
-                            }
-
-                            writes.push_back(S7PreparedWrite{.area = areaDef, .element = elem});
-                        }
-
-                        if (failure.empty() && !writes.empty()) {
-                            std::lock_guard clientLock(runtime->clientMutex);
-
-                            std::vector<DataItem> readItems;
-                            for (auto& write : writes) {
-                                if (normalizeDataType(write.area->dataType) != "BOOL"
-                                    || !write.element.get("valueHex", "").asString().empty()) {
-                                    continue;
-                                }
-                                write.existingBytes.assign(
-                                    static_cast<std::size_t>(std::max(1, write.area->size)), 0);
-                                readItems.push_back(DataItem{
-                                    .area = areaToCode(write.area->area),
-                                    .dbNumber = resolvedDbNumber(*write.area),
-                                    .start = write.area->start,
-                                    .amount = transferAmount(write.area->area, write.existingBytes.size()),
-                                    .wordLen = areaWordLen(write.area->area),
-                                    .data = write.existingBytes.data(),
-                                    .capacity = write.existingBytes.size()
-                                });
-                            }
-
-                            if (!readItems.empty()) {
-                                const int readRc = runtime->client
-                                    ? runtime->client->readMultiVars(readItems)
-                                    : kS7ErrInvalidHandle;
-                                if (readRc != 0) {
-                                    failure = "S7 读取当前位值失败，错误码="
-                                        + std::to_string(readRc)
-                                        + " (" + explainClientRc(readRc) + ")";
-                                }
-                            }
-
-                            if (failure.empty()) {
-                                for (auto& write : writes) {
-                                    auto bytes = encodeAreaValue(
-                                        *write.area,
-                                        write.element,
-                                        write.existingBytes.empty() ? nullptr : &write.existingBytes);
-                                    if (!bytes || bytes->empty()) {
-                                        failure = "S7 指令值格式错误";
-                                        break;
-                                    }
-                                    write.writeBytes = std::move(*bytes);
-                                }
-                            }
-
-                            if (failure.empty()) {
-                                for (auto& write : writes) {
-                                    if (write.writeBytes.empty()) {
-                                        continue;
-                                    }
-                                    const int writeRc = writeArea(
-                                        *runtime,
-                                        write.area->area,
-                                        resolvedDbNumber(*write.area),
-                                        write.area->start,
-                                        write.writeBytes);
-                                    if (writeRc != 0) {
-                                        failure = "S7 写入失败: " + write.area->name
-                                            + "，错误码=" + std::to_string(writeRc)
-                                            + " (" + explainClientRc(writeRc) + ")";
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                return failure;
-            });
-
-            if (!failure.empty()) {
-                co_await runtimeContext_.commandStore.updateCommandStatus(downCommandId, "SEND_FAILED", failure);
-                co_return CommandResult::sendFailed(failure);
-            }
-
-            co_await runtimeContext_.commandStore.updateCommandStatus(downCommandId, "SUCCESS", "S7 写入成功");
-            if (runtimeContext_.notifyCommandCompletion) {
-                runtimeContext_.notifyCommandCompletion(deviceCode,
-                    "SUCCESS", true, downCommandId);
-            }
-            if (pollScheduler_) {
-                pollScheduler_->activateFastRead(
-                    deviceId,
-                    deviceOpt->commandFastReadDuration,
-                    deviceOpt->commandFastReadInterval
-                );
-            }
-            guard.release();
-            co_return CommandResult::success();
+            auto failure = std::string("S7 直连 TCP 非阻塞客户端尚未启用");
+            co_await runtimeContext_.commandStore.updateCommandStatus(downCommandId, "SEND_FAILED", failure);
+            co_return CommandResult::sendFailed(failure);
         } catch (const std::exception& e) {
             co_return CommandResult::error(e.what());
         }
@@ -774,6 +642,15 @@ private:
         std::vector<std::pair<std::size_t, std::size_t>> readBatches;
         std::size_t nextReadBatch = 0;
         std::size_t nextWrite = 0;
+    };
+
+    struct LinkQueuedOperation {
+        std::function<void(std::function<void()>)> run;
+    };
+
+    struct LinkOperationRuntime {
+        ProtocolJobQueue<LinkQueuedOperation> queue{256};
+        bool running = false;
     };
 
     class AsyncStringAwaiter {
@@ -2221,7 +2098,6 @@ private:
                         existing->sessionDiscoveryStartedAt = {};
                         existing->sessionLinkId = 0;
                         existing->sessionClientAddr.clear();
-                        existing->pendingSessionToDtu.clear();
                         existing->resetClient();
                     }
 
@@ -2289,278 +2165,6 @@ private:
         co_return;
     }
 
-    bool ensureConnected(const std::shared_ptr<S7DeviceRuntime>& runtime,
-                         std::chrono::steady_clock::time_point now) {
-        if (!runtime) {
-            return false;
-        }
-
-        const auto destroyClient = [](std::unique_ptr<Client>& client) {
-            if (client) {
-                client->disconnect();
-                client.reset();
-            }
-        };
-        const auto markConnectFailed = [&](const std::shared_ptr<S7DeviceRuntime>& failedRuntime) {
-            if (!failedRuntime) {
-                return;
-            }
-            std::lock_guard runtimeLock(failedRuntime->mutex);
-            failedRuntime->lastConnectAttempt = std::chrono::steady_clock::now();
-        };
-
-        int deviceId = 0;
-        int linkId = 0;
-        bool tcpServerMode = false;
-        bool sessionBound = false;
-        S7ConnectionConfig connection;
-        std::uint64_t attemptId = 0;
-
-        {
-            std::scoped_lock runtimeLock(runtime->clientMutex, runtime->mutex);
-            if (runtime->connected && runtime->client && runtime->client->connected()) {
-                return true;
-            }
-            if (runtime->connectInProgress) {
-                return false;
-            }
-
-            deviceId = runtime->deviceId;
-            linkId = runtime->linkId;
-            tcpServerMode = runtime->tcpServerMode;
-            sessionBound = runtime->sessionBound
-                && runtime->sessionLinkId > 0
-                && !runtime->sessionClientAddr.empty();
-            connection = runtime->connection;
-            if (runtime->lastConnectAttempt != std::chrono::steady_clock::time_point{}
-                && connection.retryDelayMs > 0
-                && std::chrono::duration_cast<std::chrono::milliseconds>(now - runtime->lastConnectAttempt).count()
-                    < connection.retryDelayMs) {
-                return false;
-            }
-
-            LOG_DEBUG << "[S7][Adapter] Connecting " << deviceLabel(*runtime)
-                      << "(id=" << deviceId << ")"
-                      << " to " << connection.host
-                      << " mode=" << connection.mode
-                      << (tcpServerMode ? " (session)" : "")
-                      << ", pingTimeout=" << connection.pingTimeoutMs << "ms"
-                      << ", sendTimeout=" << connection.sendTimeoutMs << "ms"
-                      << ", recvTimeout=" << connection.recvTimeoutMs << "ms"
-                      << ", retryDelay=" << connection.retryDelayMs << "ms";
-
-            runtime->resetClient();
-            runtime->lastConnectAttempt = now;
-            runtime->connectInProgress = true;
-            attemptId = ++runtime->connectGeneration;
-        }
-
-        if (tcpServerMode && !sessionBound) {
-            auto probingSessions = acquireLinkDiscoverySessions(linkId, deviceId);
-            if (probingSessions.empty()) {
-                {
-                    std::lock_guard runtimeLock(runtime->mutex);
-                    if (runtime->connectGeneration == attemptId) {
-                        runtime->connectInProgress = false;
-                        runtime->connected = false;
-                        runtime->sessionDiscoveryInFlight = false;
-                        runtime->sessionDiscoveryStartedAt = {};
-                        runtime->pendingSessionToDtu.clear();
-                        runtime->lastConnectAttempt = now;
-                    }
-                }
-                LOG_DEBUG << "[S7][Adapter] Skip TCP server connect; no eligible DTU session: "
-                          << deviceLabel(*runtime) << "(id=" << deviceId << ")"
-                          << ", linkId=" << linkId;
-                return false;
-            }
-
-            bool generationChanged = false;
-            {
-                std::lock_guard runtimeLock(runtime->mutex);
-                generationChanged = runtime->connectGeneration != attemptId;
-                if (!generationChanged) {
-                    runtime->sessionDiscoveryInFlight = true;
-                    runtime->sessionDiscoveryStartedAt = now;
-                }
-            }
-            if (generationChanged) {
-                if (sessionManager_) {
-                    sessionManager_->releaseProbingSession(deviceId, false);
-                }
-                return false;
-            }
-        }
-
-        auto client = std::unique_ptr<Client>(new (std::nothrow) Client());
-        if (!client) {
-            if (tcpServerMode) {
-                clearDiscoveryState(runtime, false);
-            }
-            std::lock_guard runtimeLock(runtime->mutex);
-            if (runtime->connectGeneration == attemptId) {
-                runtime->connectInProgress = false;
-                runtime->connected = false;
-                runtime->lastConnectAttempt = std::chrono::steady_clock::now();
-            }
-            return false;
-        }
-
-        applyConnectionTimeouts(*client, connection);
-        const auto assignConnectionSourceRef = [&]() {
-            std::lock_guard runtimeLock(runtime->mutex);
-            if (runtime->connectGeneration != attemptId) {
-                return false;
-            }
-            const auto sourceRef = kSourceRefCandidates[runtime->sourceRefIndex % kSourceRefCandidates.size()];
-            runtime->sourceRefIndex = (runtime->sourceRefIndex + 1) % kSourceRefCandidates.size();
-            client->setConnectionSourceRef(sourceRef);
-            return true;
-        };
-        const std::string deviceName = runtime->deviceName;
-        client->setTraceCallback(
-            [deviceId, deviceName](std::string_view stage, bool outbound, const std::vector<std::uint8_t>& frame) {
-                const std::string summary = summarizePacket(stage, outbound, frame);
-                LOG_DEBUG << "[S7][Packet] " << (deviceName.empty() ? "S7-unknown" : deviceName)
-                          << "(id=" << deviceId << ")"
-                          << " " << (outbound ? "TX " : "RX ")
-                          << stage
-                          << " len=" << frame.size()
-                          << summary
-                          << " hex=" << bytesToHex(frame);
-            }
-        );
-        if (tcpServerMode) {
-            client->setTransportHooks({
-                .open = [runtime](const std::string&, std::uint16_t, int, int, int, std::uint16_t& localPort) {
-                    return openSessionTransport(runtime, localPort);
-                },
-                .close = [runtime]() {
-                    closeSessionTransport(runtime);
-                },
-                .connected = [runtime]() {
-                    return isSessionTransportOpen(runtime);
-                },
-                .send = [this, runtime](const std::uint8_t* data, std::size_t size) {
-                    return sendSessionPayload(runtime, data, size);
-                },
-                .recv = [runtime](std::uint8_t* data, std::size_t size, int timeoutMs) {
-                    return recvSessionPayload(runtime, data, size, timeoutMs);
-                }
-            });
-        }
-
-        int rc = -1;
-        if (connection.mode == "TSAP") {
-            if (client->setConnectionParams(
-                    connection.host.c_str(),
-                    connection.localTSAP,
-                    connection.remoteTSAP) != 0) {
-                LOG_WARN << "[S7][Adapter] Connect setup failed: " << deviceLabel(*runtime)
-                         << "(id=" << deviceId << ")"
-                         << ", host=" << connection.host;
-                destroyClient(client);
-                if (tcpServerMode) {
-                    clearDiscoveryState(runtime, false);
-                }
-                std::lock_guard runtimeLock(runtime->mutex);
-                if (runtime->connectGeneration == attemptId) {
-                    runtime->connectInProgress = false;
-                    runtime->connected = false;
-                    runtime->lastConnectAttempt = std::chrono::steady_clock::now();
-                }
-                return false;
-            }
-            if (!assignConnectionSourceRef()) {
-                destroyClient(client);
-                return false;
-            }
-            rc = client->connect();
-        } else {
-            if (client->setConnectionType(connectionTypeToCode(connection.connectionType)) != 0) {
-                LOG_WARN << "[S7][Adapter] Connect setup failed: " << deviceLabel(*runtime)
-                         << "(id=" << deviceId << ")"
-                         << ", type=" << connection.connectionType;
-                destroyClient(client);
-                if (tcpServerMode) {
-                    clearDiscoveryState(runtime, false);
-                }
-                std::lock_guard runtimeLock(runtime->mutex);
-                if (runtime->connectGeneration == attemptId) {
-                    runtime->connectInProgress = false;
-                    runtime->connected = false;
-                    runtime->lastConnectAttempt = std::chrono::steady_clock::now();
-                }
-                return false;
-            }
-            if (!assignConnectionSourceRef()) {
-                destroyClient(client);
-                return false;
-            }
-            rc = client->connectTo(connection.host.c_str(), connection.rack, connection.slot);
-        }
-
-        const bool transportWasOpen = client->transportOpen();
-        const bool connected = (rc == 0) && client->connected();
-        {
-            std::scoped_lock runtimeLock(runtime->clientMutex, runtime->mutex);
-            if (runtime->connectGeneration != attemptId) {
-                destroyClient(client);
-                return runtime->connected && runtime->client && runtime->client->connected();
-            }
-
-            runtime->connectInProgress = false;
-            runtime->connected = connected;
-
-            if (connected) {
-                runtime->client = std::move(client);
-            }
-        }
-
-        if (!connected) {
-            LOG_WARN << "[S7][Adapter] Connect failed: " << deviceLabel(*runtime)
-                     << "(id=" << deviceId << ")"
-                     << ", rc=" << rc
-                     << " (" << explainClientRc(rc) << ")"
-                     << ", host=" << connection.host
-                     << ", mode=" << connection.mode
-                     << ", transportOpen=" << (transportWasOpen ? "yes" : "no");
-            destroyClient(client);
-            if (tcpServerMode) {
-                bool advanceCursor = false;
-                std::size_t droppedQueuedFrames = 0;
-                {
-                    std::lock_guard runtimeLock(runtime->mutex);
-                    if (!runtime->sessionBound) {
-                        advanceCursor = runtime->sessionDiscoveryInFlight;
-                        droppedQueuedFrames = runtime->pendingSessionToDtu.size();
-                        runtime->pendingSessionToDtu.clear();
-                        runtime->sessionDiscoveryInFlight = false;
-                        runtime->sessionDiscoveryStartedAt = {};
-                    }
-                }
-                if (advanceCursor && sessionManager_) {
-                    sessionManager_->releaseProbingSession(deviceId, true);
-                }
-                if (droppedQueuedFrames > 0) {
-                    LOG_DEBUG << "[S7][Adapter] Dropping stale queued session payloads after connect failure: "
-                              << deviceLabel(*runtime) << "(id=" << deviceId << ")"
-                              << ", queued=" << droppedQueuedFrames;
-                }
-            }
-            markConnectFailed(runtime);
-            return false;
-        }
-
-        LOG_INFO << "[S7][Adapter] Connected " << deviceLabel(*runtime)
-                 << "(id=" << deviceId << ")"
-                 << ", linkId=" << linkId
-                 << ", host=" << connection.host
-                 << ", mode=" << connection.mode
-                 << ", session=" << (tcpServerMode ? "yes" : "no");
-        return true;
-    }
-
     std::shared_ptr<S7DeviceRuntime> findRuntimeLocked(int deviceId) {
         std::lock_guard lock(devicesMutex_);
         auto it = devices_.find(deviceId);
@@ -2578,13 +2182,6 @@ private:
             runtimes.push_back(runtime);
         }
         return runtimes;
-    }
-
-    static void prependQueue(std::deque<std::vector<uint8_t>>& target, std::deque<std::vector<uint8_t>>& source) {
-        while (!source.empty()) {
-            target.push_front(std::move(source.back()));
-            source.pop_back();
-        }
     }
 
     static std::string bytesToString(const std::vector<uint8_t>& bytes) {
@@ -2624,61 +2221,6 @@ private:
             && runtime.sessionLinkId > 0;
     }
 
-    static int openSessionTransport(const std::shared_ptr<S7DeviceRuntime>& runtime,
-                                   std::uint16_t& localPort) {
-        if (!runtime) {
-            return kS7ErrInvalidHandle;
-        }
-
-        {
-            std::lock_guard sessionIoLock(runtime->sessionIoMutex);
-            runtime->sessionTransportOpen = true;
-            runtime->sessionRxBuffer.clear();
-        }
-        runtime->sessionIoCv.notify_all();
-        localPort = 0;
-        return kS7Ok;
-    }
-
-    static void closeSessionTransport(const std::shared_ptr<S7DeviceRuntime>& runtime) {
-        if (!runtime) {
-            return;
-        }
-
-        {
-            std::lock_guard sessionIoLock(runtime->sessionIoMutex);
-            runtime->sessionTransportOpen = false;
-            runtime->sessionRxBuffer.clear();
-        }
-        runtime->sessionIoCv.notify_all();
-    }
-
-    static bool isSessionTransportOpen(const std::shared_ptr<S7DeviceRuntime>& runtime) {
-        if (!runtime) {
-            return false;
-        }
-
-        std::lock_guard sessionIoLock(runtime->sessionIoMutex);
-        return runtime->sessionTransportOpen;
-    }
-
-    static std::size_t queuePendingSessionPayload(const std::shared_ptr<S7DeviceRuntime>& runtime,
-                                                  std::vector<uint8_t> bytes,
-                                                  bool& droppedOldest) {
-        droppedOldest = false;
-        if (!runtime) {
-            return 0;
-        }
-
-        std::lock_guard runtimeLock(runtime->mutex);
-        if (runtime->pendingSessionToDtu.size() >= kMaxPendingSessionFrames) {
-            runtime->pendingSessionToDtu.pop_front();
-            droppedOldest = true;
-        }
-        runtime->pendingSessionToDtu.push_back(std::move(bytes));
-        return runtime->pendingSessionToDtu.size();
-    }
-
     std::vector<S7DtuSession> acquireLinkDiscoverySessions(int linkId, int deviceId) {
         if (!sessionManager_ || linkId <= 0 || deviceId <= 0) {
             return {};
@@ -2711,173 +2253,7 @@ private:
         }
     }
 
-    int sendSessionPayload(const std::shared_ptr<S7DeviceRuntime>& runtime,
-                          const std::uint8_t* data,
-                          std::size_t size) {
-        if (!runtime) {
-            return kS7ErrInvalidHandle;
-        }
-        if (!data || size == 0) {
-            return kS7Ok;
-        }
-
-        std::vector<uint8_t> bytes(data, data + size);
-        const std::string payload = bytesToString(bytes);
-
-        int deviceId = 0;
-        int requestLinkId = 0;
-        bool sessionBound = false;
-        std::string sessionClientAddr;
-        int sessionLinkId = 0;
-
-        {
-            std::lock_guard runtimeLock(runtime->mutex);
-            if (!runtime->tcpServerMode) {
-                return kS7ErrInvalidHandle;
-            }
-
-            deviceId = runtime->deviceId;
-            requestLinkId = runtime->linkId;
-            sessionBound = runtime->sessionBound;
-            sessionClientAddr = runtime->sessionClientAddr;
-            sessionLinkId = runtime->sessionLinkId;
-        }
-
-        if (!sessionBound || sessionClientAddr.empty() || sessionLinkId <= 0) {
-            auto probingSessions = acquireLinkDiscoverySessions(requestLinkId, deviceId);
-            if (probingSessions.empty()) {
-                clearDiscoveryState(runtime, false);
-
-                bool droppedOldest = false;
-                const std::size_t pendingToDtu = queuePendingSessionPayload(runtime, std::move(bytes), droppedOldest);
-                if (droppedOldest) {
-                    LOG_WARN << "[S7][Adapter] Pending session payload queue reached limit while waiting "
-                             << "for an eligible probing session: " << deviceLabel(*runtime)
-                             << "(id=" << deviceId << ")"
-                             << ", linkId=" << requestLinkId
-                             << ", limit=" << kMaxPendingSessionFrames;
-                }
-                LOG_DEBUG << "[S7][Adapter] Discovery probe has no eligible session yet; queued payload: "
-                          << deviceLabel(*runtime) << "(id=" << deviceId << ")"
-                          << ", linkId=" << requestLinkId
-                          << ", pendingToDtu=" << pendingToDtu;
-                return kS7Ok;
-            }
-
-            {
-                std::lock_guard runtimeLock(runtime->mutex);
-                runtime->sessionDiscoveryInFlight = true;
-                runtime->sessionDiscoveryStartedAt = std::chrono::steady_clock::now();
-            }
-
-            std::size_t sentCount = 0;
-            std::size_t failedCount = 0;
-            for (const auto& probingSession : probingSessions) {
-                if (probingSession.clientAddr.empty() || probingSession.linkId <= 0) {
-                    continue;
-                }
-                LOG_DEBUG << "[S7][Adapter] TX probe to session linkId=" << probingSession.linkId
-                          << ", client=" << probingSession.clientAddr
-                          << ", device=" << deviceLabel(*runtime) << "(id=" << deviceId << ")"
-                          << ", bytes=" << bytes.size()
-                          << ", hex=" << bytesToHex(bytes);
-                if (LinkTransportFacade::instance().sendToClient(
-                        probingSession.linkId, probingSession.clientAddr, payload)) {
-                    ++sentCount;
-                    continue;
-                }
-                ++failedCount;
-                LinkTransportFacade::instance().forceDisconnectServerClient(
-                    probingSession.linkId, probingSession.clientAddr);
-            }
-
-            if (sentCount > 0) {
-                LOG_INFO << "[S7][Adapter] Broadcast discovery probe: " << deviceLabel(*runtime)
-                         << "(id=" << deviceId << ")"
-                         << ", linkId=" << requestLinkId
-                         << ", sent=" << sentCount
-                         << ", failed=" << failedCount
-                         << ", bytes=" << bytes.size();
-                return kS7Ok;
-            }
-
-            clearDiscoveryState(runtime, true);
-
-            bool droppedOldest = false;
-            const std::size_t pendingToDtu = queuePendingSessionPayload(runtime, std::move(bytes), droppedOldest);
-            if (droppedOldest) {
-                LOG_WARN << "[S7][Adapter] Pending session payload queue reached limit after discovery send failure: "
-                         << deviceLabel(*runtime) << "(id=" << deviceId << ")"
-                         << ", linkId=" << requestLinkId
-                         << ", limit=" << kMaxPendingSessionFrames;
-            }
-            LOG_WARN << "[S7][Adapter] Failed to forward discovery payload to any session: "
-                     << deviceLabel(*runtime) << "(id=" << deviceId << ")"
-                     << ", linkId=" << requestLinkId
-                     << ", sessions=" << probingSessions.size()
-                     << ", failed=" << failedCount
-                     << ", pendingToDtu=" << pendingToDtu;
-            return kS7Ok;
-        }
-
-        if (LinkTransportFacade::instance().sendToClient(sessionLinkId, sessionClientAddr, payload)) {
-            return kS7Ok;
-        }
-
-        LinkTransportFacade::instance().forceDisconnectServerClient(sessionLinkId, sessionClientAddr);
-        std::lock_guard runtimeLock(runtime->mutex);
-        runtime->pendingSessionToDtu.clear();
-        runtime->sessionDiscoveryInFlight = false;
-        runtime->sessionDiscoveryStartedAt = {};
-        LOG_WARN << "[S7][Adapter] Failed to forward payload, session binding closed: "
-                 << deviceLabel(*runtime) << "(id=" << deviceId << ")"
-                 << ", linkId=" << sessionLinkId
-                 << ", client=" << sessionClientAddr
-                 << ", bytes=" << bytes.size()
-                 << ", pendingToDtu=0";
-        return kS7Ok;
-    }
-
-    static int recvSessionPayload(const std::shared_ptr<S7DeviceRuntime>& runtime,
-                                 std::uint8_t* data,
-                                 std::size_t size,
-                                 int timeoutMs) {
-        if (!runtime || (!data && size > 0)) {
-            return kS7ErrInvalidParams;
-        }
-        if (size == 0) {
-            return kS7Ok;
-        }
-
-        std::unique_lock sessionIoLock(runtime->sessionIoMutex);
-        const auto ready = [&]() {
-            return runtime->sessionRxBuffer.size() >= size || !runtime->sessionTransportOpen;
-        };
-
-        if (timeoutMs > 0) {
-            if (!runtime->sessionIoCv.wait_for(
-                    sessionIoLock,
-                    std::chrono::milliseconds(timeoutMs),
-                    ready)) {
-                return kS7ErrTimeout;
-            }
-        } else {
-            runtime->sessionIoCv.wait(sessionIoLock, ready);
-        }
-
-        if (runtime->sessionRxBuffer.size() < size) {
-            return runtime->sessionTransportOpen ? kS7ErrTimeout : kS7ErrSocketIo;
-        }
-
-        for (std::size_t i = 0; i < size; ++i) {
-            data[i] = runtime->sessionRxBuffer.front();
-            runtime->sessionRxBuffer.pop_front();
-        }
-        return kS7Ok;
-    }
-
     void attachSessionBinding(int deviceId, int linkId, const std::string& clientAddr, const std::string& sessionKey) {
-        bool shouldFlush = false;
         bool shouldLog = false;
         std::string deviceName;
         {
@@ -2900,7 +2276,6 @@ private:
             if (!sessionKey.empty()) {
                 runtime->sessionKey = sessionKey;
             }
-            shouldFlush = runtime->sessionTransportOpen && !runtime->pendingSessionToDtu.empty();
         }
 
         if (shouldLog) {
@@ -2911,9 +2286,6 @@ private:
                      << ", sessionKey=" << (sessionKey.empty() ? "<unknown>" : sessionKey);
         }
 
-        if (shouldFlush) {
-            flushSessionBinding(deviceId);
-        }
         if (shouldLog && pollScheduler_) {
             pollScheduler_->triggerNow(deviceId);
         }
@@ -2937,7 +2309,6 @@ private:
             runtime->sessionDiscoveryStartedAt = {};
             runtime->sessionLinkId = 0;
             runtime->sessionClientAddr.clear();
-            runtime->pendingSessionToDtu.clear();
             runtime->connected = false;
         }
 
@@ -2980,30 +2351,9 @@ private:
             complete = std::move(exchange->complete);
             runtime->asyncExchange.reset();
         }
-        runtime->asyncCv.notify_all();
-
         if (complete) {
             complete(rc, std::move(payload));
         }
-    }
-
-    static bool waitForAsyncExchangeIdle(const std::shared_ptr<S7DeviceRuntime>& runtime, int timeoutMs) {
-        if (!runtime) {
-            return false;
-        }
-        std::unique_lock lock(runtime->mutex);
-        if (timeoutMs <= 0) {
-            runtime->asyncCv.wait(lock, [&runtime]() {
-                return !runtime->asyncExchange;
-            });
-            return true;
-        }
-        return runtime->asyncCv.wait_for(
-            lock,
-            std::chrono::milliseconds(timeoutMs),
-            [&runtime]() {
-                return !runtime->asyncExchange;
-            });
     }
 
     bool enqueueDeviceOperation(
@@ -3071,6 +2421,414 @@ private:
         if (hasNext) {
             startNextDeviceOperation(runtime);
         }
+    }
+
+    bool enqueueLinkOperation(
+        int linkId,
+        std::function<void(std::function<void()>)> run) {
+
+        if (linkId <= 0 || !run) {
+            return false;
+        }
+
+        bool shouldStart = false;
+        {
+            std::lock_guard lock(linkOperationMutex_);
+            auto& runtime = linkOperationQueues_[linkId];
+            if (!runtime.queue.push(LinkQueuedOperation{.run = std::move(run)})) {
+                LOG_WARN << "[S7][Adapter] Link broadcast queue full: linkId=" << linkId
+                         << ", high=" << runtime.queue.highSize()
+                         << ", normal=" << runtime.queue.normalSize();
+                return false;
+            }
+            shouldStart = !runtime.running;
+        }
+
+        if (shouldStart) {
+            startNextLinkOperation(linkId);
+        }
+        return true;
+    }
+
+    void startNextLinkOperation(int linkId) {
+        LinkQueuedOperation op;
+        {
+            std::lock_guard lock(linkOperationMutex_);
+            auto it = linkOperationQueues_.find(linkId);
+            if (it == linkOperationQueues_.end() || it->second.running) {
+                return;
+            }
+            if (!it->second.queue.popNext(op)) {
+                return;
+            }
+            it->second.running = true;
+        }
+
+        op.run([this, linkId]() {
+            finishLinkOperation(linkId);
+        });
+    }
+
+    void finishLinkOperation(int linkId) {
+        bool hasNext = false;
+        {
+            std::lock_guard lock(linkOperationMutex_);
+            auto it = linkOperationQueues_.find(linkId);
+            if (it == linkOperationQueues_.end()) {
+                return;
+            }
+            it->second.running = false;
+            hasNext = !it->second.queue.empty();
+            if (!hasNext) {
+                linkOperationQueues_.erase(it);
+            }
+        }
+        if (hasNext) {
+            startNextLinkOperation(linkId);
+        }
+    }
+
+    bool sendAsyncSessionFrame(
+        const std::shared_ptr<S7DeviceRuntime>& runtime,
+        const std::vector<uint8_t>& frame,
+        bool allowBroadcast) {
+
+        if (!runtime || frame.empty()) {
+            return false;
+        }
+
+        int deviceId = 0;
+        int requestLinkId = 0;
+        bool sessionBound = false;
+        int sessionLinkId = 0;
+        std::string sessionClientAddr;
+        {
+            std::lock_guard lock(runtime->mutex);
+            deviceId = runtime->deviceId;
+            requestLinkId = runtime->linkId;
+            sessionBound = runtime->sessionBound
+                && runtime->sessionLinkId > 0
+                && !runtime->sessionClientAddr.empty();
+            sessionLinkId = runtime->sessionLinkId;
+            sessionClientAddr = runtime->sessionClientAddr;
+        }
+
+        const std::string payload = bytesToString(frame);
+        if (sessionBound) {
+            if (LinkTransportFacade::instance().sendToClient(sessionLinkId, sessionClientAddr, payload)) {
+                return true;
+            }
+            LinkTransportFacade::instance().forceDisconnectServerClient(sessionLinkId, sessionClientAddr);
+            return false;
+        }
+
+        if (!allowBroadcast) {
+            return false;
+        }
+
+        auto probingSessions = acquireLinkDiscoverySessions(requestLinkId, deviceId);
+        if (probingSessions.empty()) {
+            return false;
+        }
+
+        {
+            std::lock_guard lock(runtime->mutex);
+            runtime->sessionDiscoveryInFlight = true;
+            runtime->sessionDiscoveryStartedAt = std::chrono::steady_clock::now();
+        }
+
+        std::size_t sentCount = 0;
+        std::size_t failedCount = 0;
+        for (const auto& probingSession : probingSessions) {
+            if (probingSession.clientAddr.empty() || probingSession.linkId <= 0) {
+                continue;
+            }
+            LOG_DEBUG << "[S7][Adapter] TX async probe to session linkId=" << probingSession.linkId
+                      << ", client=" << probingSession.clientAddr
+                      << ", device=" << deviceLabel(*runtime) << "(id=" << deviceId << ")"
+                      << ", bytes=" << frame.size()
+                      << ", hex=" << bytesToHex(frame);
+            if (LinkTransportFacade::instance().sendToClient(
+                    probingSession.linkId, probingSession.clientAddr, payload)) {
+                ++sentCount;
+                continue;
+            }
+            ++failedCount;
+            LinkTransportFacade::instance().forceDisconnectServerClient(
+                probingSession.linkId, probingSession.clientAddr);
+        }
+
+        if (sentCount > 0) {
+            LOG_INFO << "[S7][Adapter] Broadcast discovery probe: " << deviceLabel(*runtime)
+                     << "(id=" << deviceId << ")"
+                     << ", linkId=" << requestLinkId
+                     << ", sent=" << sentCount
+                     << ", failed=" << failedCount
+                     << ", bytes=" << frame.size()
+                     << ", async=yes";
+            return true;
+        }
+        return false;
+    }
+
+    void completeAsyncConnect(
+        const std::shared_ptr<S7DeviceRuntime>& runtime,
+        const std::shared_ptr<S7DeviceRuntime::AsyncConnect>& connect,
+        bool success) {
+
+        if (!runtime || !connect) {
+            return;
+        }
+
+        std::function<void(bool)> complete;
+        int deviceId = 0;
+        {
+            std::lock_guard lock(runtime->mutex);
+            if (connect->done || runtime->asyncConnect != connect) {
+                return;
+            }
+            connect->done = true;
+            complete = std::move(connect->complete);
+            runtime->asyncConnect.reset();
+            runtime->connectInProgress = false;
+            runtime->connected = success;
+            runtime->lastConnectAttempt = std::chrono::steady_clock::now();
+            if (!success) {
+                runtime->sessionDiscoveryInFlight = false;
+                runtime->sessionDiscoveryStartedAt = {};
+            }
+            deviceId = runtime->deviceId;
+        }
+
+        if (!success && sessionManager_ && deviceId > 0) {
+            sessionManager_->releaseProbingSession(deviceId, true);
+        }
+        if (complete) {
+            complete(success);
+        }
+    }
+
+    void processAsyncConnectBytes(const std::shared_ptr<S7DeviceRuntime>& runtime, std::vector<uint8_t> bytes) {
+        if (!runtime || bytes.empty()) {
+            return;
+        }
+
+        std::vector<std::pair<std::shared_ptr<S7DeviceRuntime::AsyncConnect>, std::vector<uint8_t>>> frames;
+        {
+            std::lock_guard lock(runtime->mutex);
+            auto connect = runtime->asyncConnect;
+            if (!connect) {
+                return;
+            }
+            connect->rxBuffer.insert(connect->rxBuffer.end(), bytes.begin(), bytes.end());
+            while (connect->rxBuffer.size() >= 4) {
+                if (connect->rxBuffer[0] != kIsoTcpVersion) {
+                    frames.emplace_back(connect, std::vector<uint8_t>{});
+                    connect->rxBuffer.clear();
+                    break;
+                }
+                const std::uint16_t totalLength = static_cast<std::uint16_t>(
+                    (static_cast<std::uint16_t>(connect->rxBuffer[2]) << 8)
+                    | connect->rxBuffer[3]);
+                if (totalLength < 7) {
+                    frames.emplace_back(connect, std::vector<uint8_t>{});
+                    connect->rxBuffer.clear();
+                    break;
+                }
+                if (connect->rxBuffer.size() < totalLength) {
+                    break;
+                }
+
+                std::vector<uint8_t> frame;
+                frame.reserve(totalLength);
+                for (std::uint16_t i = 0; i < totalLength; ++i) {
+                    frame.push_back(connect->rxBuffer.front());
+                    connect->rxBuffer.pop_front();
+                }
+                frames.emplace_back(connect, std::move(frame));
+            }
+        }
+
+        for (auto& [connect, frame] : frames) {
+            if (frame.empty()) {
+                completeAsyncConnect(runtime, connect, false);
+                continue;
+            }
+
+            if (connect->stage == S7DeviceRuntime::AsyncConnect::Stage::IsoConfirm) {
+                int rc = kS7ErrInvalidHandle;
+                std::vector<uint8_t> setupFrame;
+                {
+                    std::lock_guard clientLock(runtime->clientMutex);
+                    if (runtime->client) {
+                        rc = runtime->client->parseConnectionConfirmFrame(frame);
+                        if (rc == kS7Ok) {
+                            setupFrame = wrapS7Payload(runtime->client->buildSetupCommunicationRequest());
+                        }
+                    }
+                }
+                if (rc != kS7Ok || setupFrame.empty()) {
+                    completeAsyncConnect(runtime, connect, false);
+                    continue;
+                }
+                connect->stage = S7DeviceRuntime::AsyncConnect::Stage::SetupCommunication;
+                if (!sendAsyncSessionFrame(runtime, setupFrame, false)) {
+                    completeAsyncConnect(runtime, connect, false);
+                }
+                continue;
+            }
+
+            if (frame.size() < 7 || frame[4] != kCotpDtLength || frame[5] != kCotpDt) {
+                completeAsyncConnect(runtime, connect, false);
+                continue;
+            }
+
+            std::vector<uint8_t> payload(frame.begin() + 7, frame.end());
+            int rc = kS7ErrInvalidHandle;
+            {
+                std::lock_guard clientLock(runtime->clientMutex);
+                if (runtime->client) {
+                    rc = runtime->client->parseSetupCommunicationResponse(payload);
+                }
+            }
+            completeAsyncConnect(runtime, connect, rc == kS7Ok);
+        }
+    }
+
+    bool startAsyncConnectDevice(
+        const std::shared_ptr<S7DeviceRuntime>& runtime,
+        std::function<void(bool)> complete) {
+
+        if (!runtime || !complete) {
+            return false;
+        }
+
+        int deviceId = 0;
+        bool tcpServerMode = false;
+        bool alreadyConnected = false;
+        S7ConnectionConfig connection;
+        std::uint64_t attemptId = 0;
+
+        {
+            std::scoped_lock lock(runtime->clientMutex, runtime->mutex);
+            deviceId = runtime->deviceId;
+            tcpServerMode = runtime->tcpServerMode;
+            connection = runtime->connection;
+            alreadyConnected = runtime->connected
+                && runtime->client
+                && runtime->client->connected()
+                && (!runtime->tcpServerMode || isSessionReadyLocked(*runtime));
+            if (!alreadyConnected) {
+                if (runtime->connectInProgress || runtime->asyncConnect) {
+                    return false;
+                }
+                if (!tcpServerMode) {
+                    LOG_WARN << "[S7][Adapter] Direct S7 TCP async client is not implemented yet: "
+                             << deviceLabel(*runtime) << "(id=" << runtime->deviceId << ")"
+                             << ", host=" << connection.host;
+                    return false;
+                }
+
+                runtime->resetClient();
+                runtime->connectInProgress = true;
+                runtime->connected = false;
+                runtime->lastConnectAttempt = std::chrono::steady_clock::now();
+                attemptId = ++runtime->connectGeneration;
+            }
+        }
+        if (alreadyConnected) {
+            complete(true);
+            return true;
+        }
+
+        auto client = std::make_unique<Client>();
+        applyConnectionTimeouts(*client, connection);
+        {
+            std::lock_guard runtimeLock(runtime->mutex);
+            const auto sourceRef = kSourceRefCandidates[runtime->sourceRefIndex % kSourceRefCandidates.size()];
+            runtime->sourceRefIndex = (runtime->sourceRefIndex + 1) % kSourceRefCandidates.size();
+            client->setConnectionSourceRef(sourceRef);
+        }
+        const std::string deviceName = runtime->deviceName;
+        client->setTraceCallback(
+            [deviceId, deviceName](std::string_view stage, bool outbound, const std::vector<std::uint8_t>& frame) {
+                const std::string summary = summarizePacket(stage, outbound, frame);
+                LOG_DEBUG << "[S7][Packet] " << (deviceName.empty() ? "S7-unknown" : deviceName)
+                          << "(id=" << deviceId << ")"
+                          << " " << (outbound ? "TX " : "RX ")
+                          << stage
+                          << " len=" << frame.size()
+                          << summary
+                          << " hex=" << bytesToHex(frame);
+            });
+        client->setTransportHooks({
+            .close = []() {},
+            .connected = [runtime]() {
+                std::lock_guard lock(runtime->mutex);
+                return isSessionReadyLocked(*runtime);
+            }
+        });
+
+        int rc = kS7Ok;
+        if (connection.mode == "TSAP") {
+            rc = client->setConnectionParams(
+                connection.host.c_str(),
+                connection.localTSAP,
+                connection.remoteTSAP);
+        } else {
+            rc = client->setConnectionType(connectionTypeToCode(connection.connectionType));
+            if (rc == kS7Ok) {
+                const auto remoteTsap = static_cast<std::uint16_t>(
+                    (connectionTypeToCode(connection.connectionType) << 8)
+                    + (connection.rack * 0x20)
+                    + connection.slot);
+                rc = client->setConnectionParams(connection.host.c_str(), connection.localTSAP, remoteTsap);
+            }
+        }
+        if (rc != kS7Ok) {
+            {
+                std::lock_guard lock(runtime->mutex);
+                runtime->connectInProgress = false;
+                runtime->connected = false;
+                runtime->lastConnectAttempt = std::chrono::steady_clock::now();
+            }
+            return false;
+        }
+
+        std::vector<uint8_t> frame;
+        {
+            std::lock_guard clientLock(runtime->clientMutex);
+            runtime->client = std::move(client);
+            runtime->client->resetAsyncSessionState();
+            frame = runtime->client->buildConnectionRequestFrame();
+        }
+
+        auto connect = std::make_shared<S7DeviceRuntime::AsyncConnect>();
+        connect->attemptId = attemptId;
+        connect->complete = std::move(complete);
+        {
+            std::lock_guard lock(runtime->mutex);
+            if (runtime->connectGeneration != attemptId) {
+                runtime->connectInProgress = false;
+                runtime->connected = false;
+                runtime->lastConnectAttempt = std::chrono::steady_clock::now();
+                return false;
+            }
+            runtime->asyncConnect = connect;
+        }
+
+        auto loop = TcpLinkManager::instance().getNextIoLoop();
+        if (loop) {
+            const double timeoutSec = static_cast<double>(std::max(1000, connection.recvTimeoutMs)) / 1000.0;
+            connect->timerId = loop->runAfter(timeoutSec, [this, runtime, connect]() {
+                completeAsyncConnect(runtime, connect, false);
+            });
+        }
+
+        if (!sendAsyncSessionFrame(runtime, frame, true)) {
+            completeAsyncConnect(runtime, connect, false);
+        }
+        return true;
     }
 
     void processAsyncSessionBytes(const std::shared_ptr<S7DeviceRuntime>& runtime, std::vector<uint8_t> bytes) {
@@ -3249,23 +3007,24 @@ private:
             std::lock_guard runtimeLock(runtime->mutex);
             linkId = runtime->linkId;
             sessionClientAddr = runtime->sessionClientAddr;
-            if (runtime->asyncExchange) {
+            if (runtime->asyncConnect) {
+                accepted = true;
+            } else if (runtime->asyncExchange) {
                 accepted = true;
             }
         }
         if (accepted) {
-            processAsyncSessionBytes(runtime, std::move(bytes));
+            bool isConnectPayload = false;
+            {
+                std::lock_guard runtimeLock(runtime->mutex);
+                isConnectPayload = static_cast<bool>(runtime->asyncConnect);
+            }
+            if (isConnectPayload) {
+                processAsyncConnectBytes(runtime, std::move(bytes));
+            } else {
+                processAsyncSessionBytes(runtime, std::move(bytes));
+            }
             return;
-        }
-        {
-            std::lock_guard sessionIoLock(runtime->sessionIoMutex);
-            if (runtime->sessionTransportOpen) {
-                runtime->sessionRxBuffer.insert(runtime->sessionRxBuffer.end(), bytes.begin(), bytes.end());
-                accepted = true;
-            }
-        }
-        if (accepted) {
-            runtime->sessionIoCv.notify_all();
         }
 
         if (!accepted) {
@@ -3273,80 +3032,6 @@ private:
                       << deviceLabel(*runtime) << "(id=" << deviceId << ")"
                       << ", linkId=" << linkId
                       << ", bytes=" << byteCount;
-        }
-    }
-
-    void flushSessionBinding(int deviceId) {
-        std::deque<std::vector<uint8_t>> pendingToDtu;
-        std::string sessionClientAddr;
-        int sessionLinkId = 0;
-        std::string deviceName;
-
-        {
-            auto runtime = findRuntimeLocked(deviceId);
-            if (!runtime) {
-                return;
-            }
-
-            std::lock_guard runtimeLock(runtime->mutex);
-            if (!isSessionReadyLocked(*runtime)) {
-                return;
-            }
-            sessionClientAddr = runtime->sessionClientAddr;
-            sessionLinkId = runtime->sessionLinkId;
-            deviceName = runtime->deviceName;
-            pendingToDtu.swap(runtime->pendingSessionToDtu);
-        }
-
-        const std::size_t queuedToDtu = pendingToDtu.size();
-
-        auto sendPending = [&](std::deque<std::vector<uint8_t>>& queue, auto&& sender) {
-            std::deque<std::vector<uint8_t>> remaining;
-            while (!queue.empty()) {
-                auto frame = std::move(queue.front());
-                queue.pop_front();
-                if (!sender(frame)) {
-                    remaining.push_back(std::move(frame));
-                    break;
-                }
-            }
-            while (!queue.empty()) {
-                remaining.push_back(std::move(queue.front()));
-                queue.pop_front();
-            }
-            return remaining;
-        };
-
-        bool transportFailed = false;
-        auto remainingToDtu = sendPending(pendingToDtu, [&](const std::vector<uint8_t>& frame) {
-            const bool sent = LinkTransportFacade::instance().sendToClient(
-                sessionLinkId, sessionClientAddr, bytesToString(frame));
-            if (!sent) {
-                transportFailed = true;
-                LinkTransportFacade::instance().forceDisconnectServerClient(sessionLinkId, sessionClientAddr);
-            }
-            return sent;
-        });
-
-        const std::size_t flushedToDtu = queuedToDtu - remainingToDtu.size();
-        if (flushedToDtu > 0 || !remainingToDtu.empty()) {
-            LOG_INFO << "[S7][Adapter] Flushed session binding for " << (deviceName.empty() ? "S7-unknown" : deviceName)
-                     << "(id=" << deviceId << ")"
-                     << ", session=" << flushedToDtu << "/" << queuedToDtu
-                     << ", linkId=" << sessionLinkId
-                     << ", client=" << sessionClientAddr;
-        }
-
-        if (transportFailed) {
-            return;
-        }
-
-        if (!remainingToDtu.empty()) {
-            auto runtime = findRuntimeLocked(deviceId);
-            if (runtime && runtime->tcpServerMode) {
-                std::lock_guard runtimeLock(runtime->mutex);
-                prependQueue(runtime->pendingSessionToDtu, remainingToDtu);
-            }
         }
     }
 
@@ -3873,35 +3558,113 @@ private:
     }
 
     Task<> runScheduledPoll(int deviceId) {
-        struct ScheduledPollOutcome {
-            bool success = false;
-            std::vector<ParsedFrameResult> results;
-            std::string deviceName = "S7-unknown";
-            std::string error;
-            bool asyncStarted = false;
+        auto runtime = findRuntimeLocked(deviceId);
+        if (!runtime) {
+            if (pollScheduler_) {
+                pollScheduler_->onPollCompleted(deviceId, false);
+            }
+            co_return;
+        }
+
+        bool tcpServerMode = false;
+        bool sessionReady = false;
+        int linkId = 0;
+        {
+            std::lock_guard runtimeLock(runtime->mutex);
+            tcpServerMode = runtime->tcpServerMode;
+            sessionReady = isSessionReadyLocked(*runtime);
+            linkId = runtime->linkId;
+        }
+
+        auto enqueuePollOnDeviceQueue = [this, runtime, deviceId]() {
+            if (!enqueueDeviceOperation(
+                    runtime,
+                    ProtocolJobPriority::Normal,
+                    [this, runtime, deviceId](std::function<void()> done) mutable {
+                        auto donePtr = std::make_shared<std::function<void()>>(std::move(done));
+                        auto finishFailure = [this, deviceId, donePtr]() mutable {
+                            if (pollScheduler_) {
+                                pollScheduler_->onPollCompleted(deviceId, false);
+                            }
+                            if (donePtr && *donePtr) {
+                                auto fn = std::move(*donePtr);
+                                *donePtr = nullptr;
+                                fn();
+                            }
+                        };
+                        if (!startAsyncConnectDevice(
+                                runtime,
+                                [this, runtime, deviceId, donePtr](bool connected) mutable {
+                                    if (!connected) {
+                                        if (pollScheduler_) {
+                                            pollScheduler_->onPollCompleted(deviceId, false);
+                                        }
+                                        if (donePtr && *donePtr) {
+                                            auto fn = std::move(*donePtr);
+                                            *donePtr = nullptr;
+                                            fn();
+                                        }
+                                        return;
+                                    }
+                                    if (donePtr && *donePtr) {
+                                        auto pollDone = [donePtr]() mutable {
+                                            if (donePtr && *donePtr) {
+                                                auto fn = std::move(*donePtr);
+                                                *donePtr = nullptr;
+                                                fn();
+                                            }
+                                        };
+                                        if (!startAsyncPollDevice(runtime, std::move(pollDone))) {
+                                            if (pollScheduler_) {
+                                                pollScheduler_->onPollCompleted(deviceId, false);
+                                            }
+                                            if (donePtr && *donePtr) {
+                                                auto fn = std::move(*donePtr);
+                                                *donePtr = nullptr;
+                                                fn();
+                                            }
+                                        }
+                                    }
+                                })) {
+                            finishFailure();
+                        }
+                    })) {
+                if (pollScheduler_) {
+                    pollScheduler_->onPollCompleted(deviceId, false);
+                }
+            }
         };
 
-        auto runtime = findRuntimeLocked(deviceId);
-        bool canUseAsyncDeviceQueue = false;
-        {
-            std::lock_guard runtimeLock(runtime ? runtime->mutex : devicesMutex_);
-            canUseAsyncDeviceQueue = runtime
-                && runtime->tcpServerMode
-                && isSessionReadyLocked(*runtime);
+        if (!tcpServerMode) {
+            LOG_WARN << "[S7][Adapter] Direct S7 TCP poll skipped because non-blocking TcpClient path is not enabled: "
+                     << deviceLabel(*runtime) << "(id=" << deviceId << ")";
+            if (pollScheduler_) {
+                pollScheduler_->onPollCompleted(deviceId, false);
+            }
+            co_return;
         }
-        if (canUseAsyncDeviceQueue) {
-            if (!enqueueDeviceOperation(
-                runtime,
-                ProtocolJobPriority::Normal,
-                [this, runtime](std::function<void()> done) mutable {
-                    if (!ensureConnected(runtime, std::chrono::steady_clock::now())
-                        || !startAsyncPollDevice(runtime, std::move(done))) {
+
+        if (sessionReady) {
+            enqueuePollOnDeviceQueue();
+            co_return;
+        }
+
+        if (!enqueueLinkOperation(
+                linkId,
+                [this, runtime, deviceId, enqueuePollOnDeviceQueue](std::function<void()> done) mutable {
+                    if (!startAsyncConnectDevice(
+                            runtime,
+                            [this, deviceId, enqueuePollOnDeviceQueue, done = std::move(done)](bool connected) mutable {
+                                if (connected) {
+                                    enqueuePollOnDeviceQueue();
+                                } else if (pollScheduler_) {
+                                    pollScheduler_->onPollCompleted(deviceId, false);
+                                }
+                                if (done) {
+                                    done();
+                                }
+                            })) {
                         if (pollScheduler_) {
-                            int deviceId = 0;
-                            {
-                                std::lock_guard runtimeLock(runtime->mutex);
-                                deviceId = runtime->deviceId;
-                            }
                             pollScheduler_->onPollCompleted(deviceId, false);
                         }
                         if (done) {
@@ -3909,281 +3672,17 @@ private:
                         }
                     }
                 })) {
-                if (pollScheduler_) {
-                    pollScheduler_->onPollCompleted(deviceId, false);
-                }
+            if (pollScheduler_) {
+                pollScheduler_->onPollCompleted(deviceId, false);
             }
-            co_return;
-        }
-
-        const auto pollQueueKey = runtimeQueueKey(runtime);
-        auto outcome = co_await CoroutineExecutor::instance().submitSerialKey(pollQueueKey, false, [this, runtime]() {
-            ScheduledPollOutcome result;
-            try {
-                if (runtime) {
-                    result.deviceName = runtime->deviceName.empty() ? "S7-unknown" : runtime->deviceName;
-                }
-                if (runtime && ensureConnected(runtime, std::chrono::steady_clock::now())) {
-                    bool tcpServerMode = false;
-                    {
-                        std::lock_guard runtimeLock(runtime->mutex);
-                        tcpServerMode = runtime->tcpServerMode;
-                    }
-                    (void)tcpServerMode;
-                    result.success = pollDevice(runtime, result.results);
-                }
-            } catch (const std::exception& e) {
-                result.error = e.what();
-            } catch (...) {
-                result.error = "<unknown>";
-            }
-            return result;
-        });
-
-        if (!outcome.error.empty()) {
-            LOG_WARN << "[S7][Adapter] Scheduled poll failed: " << outcome.deviceName
-                     << "(id=" << deviceId << "), error=" << outcome.error;
-        }
-
-        if (!outcome.results.empty() && runtimeContext_.submitParsedResults) {
-            runtimeContext_.submitParsedResults(std::move(outcome.results));
-        }
-
-        if (pollScheduler_ && !outcome.asyncStarted) {
-            pollScheduler_->onPollCompleted(deviceId, outcome.success);
         }
         co_return;
     }
 
-    bool pollDevice(const std::shared_ptr<S7DeviceRuntime>& runtime, std::vector<ParsedFrameResult>& results) {
-        if (!runtime) {
-            return false;
-        }
-
-        int deviceId = 0;
-        int linkId = 0;
-        bool tcpServerMode = false;
-        bool sessionBound = false;
-        std::vector<S7AreaDefinition> areas;
-        {
-            std::lock_guard runtimeLock(runtime->mutex);
-            deviceId = runtime->deviceId;
-            linkId = runtime->linkId;
-            tcpServerMode = runtime->tcpServerMode;
-            sessionBound = runtime->sessionBound;
-            areas = runtime->areas;
-        }
-        const auto readPlans = planReadBlocks(areas);
-
-        LOG_DEBUG << "[S7][Adapter] Poll " << deviceLabel(*runtime)
-                  << "(id=" << deviceId << ")"
-                  << ", areas=" << areas.size()
-                  << ", blocks=" << readPlans.size()
-                  << ", session=" << (tcpServerMode ? "yes" : "no")
-                  << ", bound=" << (sessionBound ? "yes" : "no");
-
-        Json::Value aggregatedData(Json::objectValue);
-        const std::string reportTime = makeUtcNowString();
-        bool pollFailed = false;
-        bool anyBlockSucceeded = false;
-
-        std::vector<std::vector<uint8_t>> blockBuffers;
-        std::vector<int> blockResults;
-        {
-            std::lock_guard clientLock(runtime->clientMutex);
-            blockResults = readBlocks(*runtime, readPlans, blockBuffers);
-        }
-
-        for (std::size_t blockIndex = 0; blockIndex < readPlans.size(); ++blockIndex) {
-            const auto& block = readPlans[blockIndex];
-            auto& buffer = blockBuffers[blockIndex];
-            const int rc = blockResults[blockIndex];
-            if (rc != 0) {
-                bool advanceCursor = false;
-                {
-                    std::lock_guard runtimeLock(runtime->mutex);
-                    if (runtime->tcpServerMode && !runtime->sessionBound) {
-                        const std::size_t droppedQueuedFrames = runtime->pendingSessionToDtu.size();
-                        LOG_DEBUG << "[S7][Adapter] RX block pending session bind: "
-                                  << deviceLabel(*runtime) << "(id=" << runtime->deviceId
-                                  << ")"
-                                  << ", area=" << block.area
-                                  << ", db=" << block.dbNumber
-                                  << ", start=" << block.start
-                                  << ", amount=" << block.amount
-                                  << ", rc=" << rc;
-                        if (runtime->sessionDiscoveryInFlight) {
-                            LOG_DEBUG << "[S7][Adapter] Clearing discovery probe state after RX block failure: "
-                                      << deviceLabel(*runtime) << "(id=" << runtime->deviceId
-                                      << ")"
-                                      << ", area=" << block.area
-                                      << ", start=" << block.start;
-                            advanceCursor = true;
-                        }
-                        if (droppedQueuedFrames > 0) {
-                            LOG_DEBUG << "[S7][Adapter] Dropping stale queued session payloads after RX block failure: "
-                                      << deviceLabel(*runtime) << "(id=" << runtime->deviceId << ")"
-                                      << ", queued=" << droppedQueuedFrames;
-                            runtime->pendingSessionToDtu.clear();
-                        }
-                        runtime->sessionDiscoveryInFlight = false;
-                        runtime->sessionDiscoveryStartedAt = {};
-                    } else {
-                        LOG_WARN << "[S7][Adapter] RX block failed: " << deviceLabel(*runtime)
-                                 << "(id=" << runtime->deviceId << ")"
-                                 << ", area=" << block.area
-                                 << ", db=" << block.dbNumber
-                                 << ", start=" << block.start
-                                 << ", amount=" << block.amount
-                                 << ", mergedAreas=" << block.members.size()
-                                 << ", rc=" << rc
-                                 << " (" << explainClientRc(rc) << ")"
-                                 << ", session=" << (runtime->tcpServerMode ? "yes" : "no")
-                                 << ", bound=" << (runtime->sessionBound ? "yes" : "no");
-                    }
-                }
-                if (advanceCursor && sessionManager_) {
-                    sessionManager_->releaseProbingSession(deviceId, true);
-                }
-                pollFailed = true;
-                continue;
-            }
-
-            LOG_DEBUG << "[S7][Adapter] RX block OK: " << deviceLabel(*runtime)
-                      << "(id=" << deviceId << ")"
-                      << ", area=" << block.area
-                      << ", db=" << block.dbNumber
-                      << ", start=" << block.start
-                      << ", amount=" << block.amount
-                      << ", bytes=" << buffer.size()
-                      << ", mergedAreas=" << block.members.size();
-
-            for (const auto& member : block.members) {
-                if (!member.area || member.offsetBytes + static_cast<std::size_t>(member.area->size) > buffer.size()) {
-                    LOG_WARN << "[S7][Adapter] RX block slice out of range: " << deviceLabel(*runtime)
-                             << "(id=" << deviceId << ")"
-                             << ", area=" << block.area
-                             << ", blockStart=" << block.start
-                             << ", blockBytes=" << buffer.size();
-                    pollFailed = true;
-                    continue;
-                }
-
-                std::vector<uint8_t> areaBuffer(
-                    buffer.begin() + static_cast<std::ptrdiff_t>(member.offsetBytes),
-                    buffer.begin() + static_cast<std::ptrdiff_t>(member.offsetBytes + member.area->size));
-                aggregatedData[member.area->id] = buildReadElement(*member.area, areaBuffer);
-                anyBlockSucceeded = true;
-            }
-        }
-
-        if (pollFailed && !anyBlockSucceeded) {
-            std::lock_guard clientLock(runtime->clientMutex);
-            runtime->resetClient();
-        }
-
-        if (aggregatedData.isObject() && !aggregatedData.empty()) {
-            results.push_back(buildPollReadResult(deviceId, linkId, std::move(aggregatedData), reportTime));
-        }
-        return anyBlockSucceeded;
-    }
-
-    int readBlock(const S7DeviceRuntime& runtime, const S7ReadBlockPlan& block,
-                  std::vector<uint8_t>& buffer) const {
-        if (!runtime.client) {
-            return -1;
-        }
-        return runtime.client->readArea(
-            block.areaCode,
-            block.dbNumber,
-            block.start,
-            block.amount,
-            block.wordLen,
-            buffer.data());
-    }
-
-    std::vector<int> readBlocks(const S7DeviceRuntime& runtime,
-                                const std::vector<S7ReadBlockPlan>& blocks,
-                                std::vector<std::vector<uint8_t>>& buffers) const {
-        buffers.clear();
-        buffers.reserve(blocks.size());
-        std::vector<int> results(blocks.size(), -1);
-        if (!runtime.client) {
-            return results;
-        }
-
-        std::vector<DataItem> batchItems;
-        std::vector<std::size_t> batchIndexes;
-
-        auto flushBatch = [&]() {
-            if (batchItems.empty()) {
-                return;
-            }
-            if (batchItems.size() > 1) {
-                LOG_DEBUG << "[S7][Adapter] MultiVar read batch: "
-                          << deviceLabel(runtime)
-                          << "(id=" << runtime.deviceId << ")"
-                          << ", items=" << batchItems.size();
-            }
-            const int rc = runtime.client->readMultiVars(batchItems);
-            for (std::size_t i = 0; i < batchItems.size(); ++i) {
-                results[batchIndexes[i]] = batchItems[i].result == kS7Ok
-                    ? (rc < kS7Ok ? rc : kS7Ok)
-                    : batchItems[i].result;
-            }
-            batchItems.clear();
-            batchIndexes.clear();
-        };
-
-        const std::uint16_t pduLength = runtime.client->negotiatedPduLength();
-        for (std::size_t index = 0; index < blocks.size(); ++index) {
-            const auto& block = blocks[index];
-            auto& buffer = buffers.emplace_back(block.byteSize, 0);
-            const std::size_t singleReadResponseSize = 12 + 2 + 4 + paddedEven(block.byteSize);
-            if (singleReadResponseSize > pduLength) {
-                flushBatch();
-                results[index] = readBlock(runtime, block, buffer);
-                continue;
-            }
-
-            batchIndexes.push_back(index);
-            batchItems.push_back(DataItem{
-                .area = block.areaCode,
-                .dbNumber = block.dbNumber,
-                .start = block.start,
-                .amount = block.amount,
-                .wordLen = block.wordLen,
-                .data = buffer.data(),
-                .capacity = buffer.size()
-            });
-        }
-        flushBatch();
-        return results;
-    }
-
-    int readArea(const S7DeviceRuntime& runtime, const S7AreaDefinition& area,
-                 std::vector<uint8_t>& buffer) const {
-        if (!runtime.client) {
-            return -1;
-        }
-        const int dbNumber = resolvedDbNumber(area);
-        return runtime.client->readArea(areaToCode(area.area), dbNumber, area.start,
-            transferAmount(area.area, buffer.size()), areaWordLen(area.area), buffer.data());
-    }
-
-    int writeArea(const S7DeviceRuntime& runtime, const std::string& area, int dbNumber,
-                  int start, const std::vector<uint8_t>& buffer) const {
-        if (!runtime.client) {
-            return -1;
-        }
-        auto writable = buffer;
-        const int resolvedDbNumber = area == "V" && dbNumber <= 0 ? 1 : dbNumber;
-        return runtime.client->writeArea(areaToCode(area), resolvedDbNumber, start,
-            transferAmount(area, writable.size()), areaWordLen(area), writable.data());
-    }
-
     mutable std::mutex devicesMutex_;
     std::unordered_map<int, std::shared_ptr<S7DeviceRuntime>> devices_;
+    mutable std::mutex linkOperationMutex_;
+    std::unordered_map<int, LinkOperationRuntime> linkOperationQueues_;
     std::unique_ptr<DtuRegistry> sessionRegistry_;
     std::unique_ptr<DtuSessionManager> sessionManager_;
     std::unique_ptr<RegistrationNormalizer> sessionNormalizer_;

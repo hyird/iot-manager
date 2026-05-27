@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -551,20 +550,91 @@ public:
         return lastErrorInfo_;
     }
 
+    void resetAsyncSessionState() {
+        std::lock_guard ioLock(ioMutex_);
+        connected_ = false;
+        sequence_ = 0;
+        pduLength_ = pduRequestLength_;
+        disconnectFrame_.clear();
+    }
+
+    std::vector<std::uint8_t> buildConnectionRequestFrame() {
+        const auto sourceRef = nextSourceRef();
+        std::vector<std::uint8_t> frame;
+        frame.reserve(22);
+        frame.push_back(kIsoTcpVersion);
+        frame.push_back(0x00);
+        appendBe16(frame, 22);
+        frame.push_back(0x11);
+        frame.push_back(kCotpCr);
+        frame.push_back(0x00);
+        frame.push_back(0x00);
+        appendBe16(frame, sourceRef);
+        frame.push_back(0x00);
+        frame.push_back(0xC0);
+        frame.push_back(0x01);
+        frame.push_back(encodeTpduSize(kDefaultIsoPduSize));
+        frame.push_back(0xC1);
+        frame.push_back(0x02);
+        appendBe16(frame, localTsap_);
+        frame.push_back(0xC2);
+        frame.push_back(0x02);
+        appendBe16(frame, remoteTsap_);
+        traceFrame("iso.cr", true, frame);
+        return frame;
+    }
+
+    int parseConnectionConfirmFrame(const std::vector<std::uint8_t>& frame) {
+        traceFrame("iso.cc", false, frame);
+        if (frame.size() < 11 || frame[0] != kIsoTcpVersion || frame[5] != kCotpCc) {
+            return setError(ErrorDomain::Iso, kS7ErrProtocol, "iso.cc");
+        }
+        disconnectFrame_ = frame;
+        return setError(ErrorDomain::None, kS7Ok, "iso.cc");
+    }
+
+    std::vector<std::uint8_t> buildSetupCommunicationRequest() {
+        std::vector<std::uint8_t> request;
+        request.reserve(18);
+        request.push_back(kS7ProtocolId);
+        request.push_back(kS7Request);
+        appendBe16(request, 0x0000);
+        appendBe16(request, nextSequence());
+        appendBe16(request, 8);
+        appendBe16(request, 0);
+        request.push_back(kS7FuncNegotiate);
+        request.push_back(0x00);
+        appendBe16(request, 1);
+        appendBe16(request, 1);
+        appendBe16(request, pduRequestLength_);
+        return request;
+    }
+
+    int parseSetupCommunicationResponse(const std::vector<std::uint8_t>& response) {
+        if (response.size() < 20 || response[0] != kS7ProtocolId) {
+            return setError(ErrorDomain::Pdu, kS7ErrPduNegotiation, "s7.setup-comm.resp");
+        }
+        const std::uint16_t error = readBe16(response.data() + 10);
+        if (error != 0) {
+            return setError(ErrorDomain::Pdu, static_cast<int>(error), "s7.setup-comm.resp");
+        }
+        const std::uint16_t parLen = readBe16(response.data() + 6);
+        if (12 + parLen > response.size() || parLen < 8) {
+            return setError(ErrorDomain::Pdu, kS7ErrPduNegotiation, "s7.setup-comm.resp");
+        }
+
+        pduLength_ = readBe16(response.data() + 18);
+        if (pduLength_ == 0) {
+            pduLength_ = kDefaultS7PduRequest;
+        }
+        connected_ = true;
+        return setError(ErrorDomain::None, kS7Ok, "s7.setup-comm.resp");
+    }
+
     int readArea(int area, int dbNumber, int start, int amount, int wordLen, void* data);
     int writeArea(int area, int dbNumber, int start, int amount, int wordLen, void* data);
     int readMultiVars(std::vector<DataItem>& items);
     int writeMultiVars(std::vector<DataItem>& items);
-    std::future<int> readAreaAsync(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
-        return std::async(std::launch::async, [this, area, dbNumber, start, amount, wordLen, data]() {
-            return readArea(area, dbNumber, start, amount, wordLen, data);
-        });
-    }
-    std::future<int> writeAreaAsync(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
-        return std::async(std::launch::async, [this, area, dbNumber, start, amount, wordLen, data]() {
-            return writeArea(area, dbNumber, start, amount, wordLen, data);
-        });
-    }
     int dbRead(int dbNumber, int start, int size, void* data) {
         return readArea(S7AreaDB, dbNumber, start, size, S7WLByte, data);
     }
