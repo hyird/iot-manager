@@ -90,7 +90,7 @@ struct S7ConnectionPreset {
 };
 
 struct S7ReadBlockMember {
-    const S7AreaDefinition* area = nullptr;
+    S7AreaDefinition area;
     std::size_t offsetBytes = 0;
 };
 
@@ -770,7 +770,7 @@ private:
             }
 
             current->members.push_back(S7ReadBlockMember{
-                .area = candidate.area,
+                .area = *candidate.area,
                 .offsetBytes = static_cast<std::size_t>(candidate.start - current->start) * current->unitSize
             });
         }
@@ -3380,15 +3380,15 @@ private:
                       << ", async=yes";
 
             for (const auto& member : block.members) {
-                if (!member.area || member.offsetBytes + static_cast<std::size_t>(member.area->size) > buffer.size()) {
+                if (member.offsetBytes + static_cast<std::size_t>(member.area.size) > buffer.size()) {
                     pollFailed = true;
                     continue;
                 }
 
                 std::vector<uint8_t> areaBuffer(
                     buffer.begin() + static_cast<std::ptrdiff_t>(member.offsetBytes),
-                    buffer.begin() + static_cast<std::ptrdiff_t>(member.offsetBytes + member.area->size));
-                aggregatedData[member.area->id] = buildReadElement(*member.area, areaBuffer);
+                    buffer.begin() + static_cast<std::ptrdiff_t>(member.offsetBytes + member.area.size));
+                aggregatedData[member.area.id] = buildReadElement(member.area, areaBuffer);
                 anyBlockSucceeded = true;
             }
         }
