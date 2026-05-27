@@ -102,7 +102,7 @@ drogon::Task<std::optional<OpenRtpServerResult>> ZlmClient::openRtpServerCoro(co
     request->setMethod(drogon::Get);
     request->setPath(path.str());
 
-    LOG_INFO << "[GB28181][ZLM] openRtpServer request, device=" << deviceId
+    LOG_DEBUG << "[GB28181][ZLM] openRtpServer request, device=" << deviceId
              << ", channel=" << channelId
              << ", mode=" << mode
              << ", stream_id=" << streamId
@@ -143,7 +143,7 @@ drogon::Task<std::optional<OpenRtpServerResult>> ZlmClient::openRtpServerCoro(co
     openResult.streamId = streamId;
     openResult.port = port != nullptr && port->is_int64() ? static_cast<uint16_t>(port->as_int64()) : requestedPort;
     openResult.playUrls = buildPlayUrls(streamId);
-    LOG_INFO << "[GB28181][ZLM] openRtpServer success, stream_id=" << streamId
+    LOG_DEBUG << "[GB28181][ZLM] openRtpServer success, stream_id=" << streamId
              << ", requested_port=" << requestedPort
              << ", actual_port=" << openResult.port
              << ", http_flv=" << openResult.playUrls.httpFlv
@@ -163,7 +163,7 @@ drogon::Task<bool> ZlmClient::closeRtpServerCoro(const std::string& streamId) {
     request->setMethod(drogon::Get);
     request->setPath(path.str());
 
-    LOG_INFO << "[GB28181][ZLM] closeRtpServer request, stream_id=" << streamId
+    LOG_DEBUG << "[GB28181][ZLM] closeRtpServer request, stream_id=" << streamId
              << ", base_url=" << baseUrl;
 
     auto response = co_await client->sendRequestCoro(request, 3.0);
@@ -172,7 +172,7 @@ drogon::Task<bool> ZlmClient::closeRtpServerCoro(const std::string& streamId) {
         co_return false;
     }
 
-    LOG_INFO << "[GB28181][ZLM] closeRtpServer response, stream_id=" << streamId
+    LOG_DEBUG << "[GB28181][ZLM] closeRtpServer response, stream_id=" << streamId
              << ", http_status=" << static_cast<int>(response->getStatusCode())
              << ", body=\"" << compactForLog(std::string(response->body()), 800) << "\"";
     co_return true;

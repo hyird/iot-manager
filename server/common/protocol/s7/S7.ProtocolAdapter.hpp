@@ -413,19 +413,8 @@ public:
                 co_return CommandResult::offline("S7 设备离线");
             }
 
-            const bool connected = co_await CoroutineExecutor::instance().submit([this, runtime]() {
-                return ensureConnected(runtime, std::chrono::steady_clock::now());
-            });
-            if (!connected) {
-                co_return CommandResult::offline("S7 设备离线");
-            }
-
             {
                 std::lock_guard runtimeLock(runtime->mutex);
-                if (runtime->tcpServerMode && !runtime->sessionBound) {
-                    co_return CommandResult::offline("S7 会话未就绪");
-                }
-
                 linkId = runtime->linkId;
                 if (!runtime->deviceCode.empty()) {
                     deviceCode = runtime->deviceCode;
@@ -440,7 +429,17 @@ public:
                 deviceId, linkId, Constants::PROTOCOL_S7,
                 req.funcCode, "S7 写入", "", req.userId, req.elements);
 
-            auto failure = co_await CoroutineExecutor::instance().submit([this, runtime, elements = req.elements]() {
+            const auto commandQueueKey = runtimeQueueKey(runtime);
+            const auto commandQueuedAt = std::chrono::steady_clock::now();
+            auto failure = co_await CoroutineExecutor::instance().submitSerialKey(commandQueueKey, true, [this, runtime, elements = req.elements, commandQueuedAt]() {
+                const auto queueDelayMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - commandQueuedAt).count();
+                if (queueDelayMs > 1000) {
+                    LOG_WARN << "[S7][Adapter] Write command waited in S7 serial queue: "
+                             << deviceLabel(*runtime)
+                             << "(id=" << runtime->deviceId << ")"
+                             << ", wait=" << queueDelayMs << "ms";
+                }
                 std::string failure;
                 if (!ensureConnected(runtime, std::chrono::steady_clock::now())) {
                     failure = "S7 设备离线";
@@ -1743,6 +1742,31 @@ private:
             : runtime.deviceName;
     }
 
+    static std::uintptr_t deviceQueueKey(const std::shared_ptr<S7DeviceRuntime>& runtime) {
+        return reinterpret_cast<std::uintptr_t>(runtime.get());
+    }
+
+    static std::uintptr_t discoveryQueueKey(int linkId) {
+        constexpr std::uintptr_t tag = static_cast<std::uintptr_t>(1)
+            << (sizeof(std::uintptr_t) * 8 - 1);
+        return tag | static_cast<std::uintptr_t>(static_cast<std::uint32_t>(linkId));
+    }
+
+    static std::uintptr_t runtimeQueueKey(const std::shared_ptr<S7DeviceRuntime>& runtime) {
+        if (!runtime) {
+            return 0;
+        }
+
+        std::lock_guard runtimeLock(runtime->mutex);
+        const bool sessionReady = runtime->sessionBound
+            && runtime->sessionLinkId > 0
+            && !runtime->sessionClientAddr.empty();
+        if (runtime->tcpServerMode && !sessionReady) {
+            return discoveryQueueKey(runtime->linkId);
+        }
+        return deviceQueueKey(runtime);
+    }
+
     void triggerLinkDiscoveryNow(int linkId) {
         if (!pollScheduler_ || linkId <= 0) {
             return;
@@ -2725,10 +2749,11 @@ private:
             std::string error;
         };
 
-        auto outcome = co_await CoroutineExecutor::instance().submit([this, deviceId]() {
+        auto runtime = findRuntimeLocked(deviceId);
+        const auto pollQueueKey = runtimeQueueKey(runtime);
+        auto outcome = co_await CoroutineExecutor::instance().submitSerialKey(pollQueueKey, false, [this, deviceId, runtime]() {
             ScheduledPollOutcome result;
             try {
-                auto runtime = findRuntimeLocked(deviceId);
                 if (runtime) {
                     result.deviceName = runtime->deviceName.empty() ? "S7-unknown" : runtime->deviceName;
                 }

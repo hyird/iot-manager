@@ -138,8 +138,6 @@ AppConfig AppConfig::loadFromFile(const std::string& path) {
     const auto server = requireObject(root, "server");
     const auto sip = requireObject(root, "sip");
     const auto media = requireObject(root, "media");
-    const auto log = requireObject(root, "log");
-
     AppConfig config;
     config.server.host = getString(server, "host", config.server.host);
     config.server.port = getUInt16(server, "port", config.server.port);
@@ -159,8 +157,6 @@ AppConfig AppConfig::loadFromFile(const std::string& path) {
     config.media.rtpPublicIp = getString(media, "rtp_public_ip", config.sip.publicIp);
     config.media.rtpPortRangeStart = getUInt16(media, "rtp_port_range_start", config.media.rtpPortRangeStart);
     config.media.rtpPortRangeEnd = getUInt16(media, "rtp_port_range_end", config.media.rtpPortRangeEnd);
-
-    config.log.level = getString(log, "level", config.log.level);
 
     return config;
 }
@@ -198,10 +194,6 @@ AppConfig AppConfig::fromJson(const Json::Value& root) {
     config.media.rtpPublicIp = getJsonString(media, "rtp_public_ip", config.sip.publicIp);
     config.media.rtpPortRangeStart = getJsonUInt16(media, "rtp_port_range_start", config.media.rtpPortRangeStart);
     config.media.rtpPortRangeEnd = getJsonUInt16(media, "rtp_port_range_end", config.media.rtpPortRangeEnd);
-
-    if (root.isMember("log") && root["log"].isObject()) {
-        config.log.level = getJsonString(root["log"], "level", config.log.level);
-    }
 
     return config;
 }

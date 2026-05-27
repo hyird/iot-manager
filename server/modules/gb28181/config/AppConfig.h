@@ -29,10 +29,6 @@ struct MediaConfig {
     uint16_t rtpPortRangeEnd{30500};
 };
 
-struct LogConfig {
-    std::string level{"info"};
-};
-
 struct AppConfig {
     bool enabled{false};
     bool autoFirewall{false};
@@ -40,7 +36,6 @@ struct AppConfig {
     ServerConfig server;
     SipConfig sip;
     MediaConfig media;
-    LogConfig log;
 
     static AppConfig loadFromFile(const std::string& path);
     static AppConfig fromJson(const Json::Value& root);

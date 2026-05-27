@@ -113,6 +113,7 @@ public:
         if (sessionEngine_) {
             // 清除残留的轮询周期聚合数据
             sessionEngine_->clearAllPollCycles();
+            sessionEngine_->clearDiscoveryLocks();
         }
         if (pollScheduler_ && dtuRegistry_) {
             pollScheduler_->reload(*dtuRegistry_);
@@ -169,7 +170,8 @@ public:
 
             logRegistrationMatch(linkId, clientAddr, normalized);
 
-            if (normalized.sessionBound && !normalized.dtuKey.empty()) {
+            const bool sessionJustBound = normalized.sessionBound && !normalized.dtuKey.empty();
+            if (sessionJustBound) {
                 if (normalized.kind == RegistrationMatchKind::StandaloneFrame && sessionEngine_) {
                     sessionEngine_->cancelDiscovery(linkId, clientAddr);
                 }
@@ -206,6 +208,18 @@ public:
 
             bytes = std::move(normalized.payload);
             if (bytes.empty()) return;
+
+            auto engineResult = sessionEngine_->onPayload(linkId, clientAddr, bytes);
+            if (sessionJustBound
+                && normalized.kind == RegistrationMatchKind::PrefixedPayload
+                && sessionEngine_
+                && !engineResult.handledInflight) {
+                sessionEngine_->releaseDiscoveryLock(linkId);
+            }
+            if (!engineResult.parsedResults.empty() && runtimeContext_.submitParsedResults) {
+                runtimeContext_.submitParsedResults(std::move(engineResult.parsedResults));
+            }
+            return;
         }
 
         auto engineResult = sessionEngine_->onPayload(linkId, clientAddr, bytes);

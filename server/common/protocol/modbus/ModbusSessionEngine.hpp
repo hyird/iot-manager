@@ -109,6 +109,12 @@ public:
     /** 清除所有设备的 poll cycle 聚合数据（配置热重载时调用） */
     void clearAllPollCycles();
 
+    /** 清除链路 discovery 占用（配置热重载时调用） */
+    void clearDiscoveryLocks();
+
+    /** 绑定已确认时释放对应链路 discovery 占用 */
+    void releaseDiscoveryLock(int linkId);
+
     /** 独立注册码已完成绑定时，取消残留的 discovery 请求 */
     void cancelDiscovery(int linkId, const std::string& clientAddr);
 
@@ -210,6 +216,8 @@ private:
     }
 
     std::optional<FrameMode> getSessionFrameMode(const DtuSession& session) const;
+    bool reserveLinkDiscovery(int linkId);
+    void releaseLinkDiscovery(int linkId);
     std::vector<ModbusResponse> appendAndParseSessionFrames(
         DtuSession& session,
         FrameMode mode,
@@ -257,7 +265,30 @@ private:
     std::map<int, PollCycleAggregate> pollCycleAggregates_;
     mutable std::mutex discoveryMutex_;
     std::map<int, size_t> linkDiscoveryCursor_;
+    std::map<int, bool> linkDiscoveryInFlight_;
 };
+
+inline bool ModbusSessionEngine::reserveLinkDiscovery(int linkId) {
+    if (linkId <= 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(discoveryMutex_);
+    if (linkDiscoveryInFlight_[linkId]) {
+        return false;
+    }
+    linkDiscoveryInFlight_[linkId] = true;
+    return true;
+}
+
+inline void ModbusSessionEngine::releaseLinkDiscovery(int linkId) {
+    if (linkId <= 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(discoveryMutex_);
+    linkDiscoveryInFlight_[linkId] = false;
+}
 
 inline std::optional<FrameMode> ModbusSessionEngine::getSessionFrameMode(const DtuSession& session) const {
     if (session.dtuKey.empty()) return std::nullopt;
@@ -394,12 +425,13 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
         ModbusJob job;
     };
 
-    auto markDiscoveryFailure = [](DtuSession& session) {
+    auto markDiscoveryFailure = [this](DtuSession& session) {
         session.discoveryRequested = false;
         if (session.bindState != SessionBindState::Bound) {
             session.bindState = SessionBindState::Unknown;
         }
         session.nextDiscoveryTime = std::chrono::steady_clock::now() + DISCOVERY_RETRY_DELAY;
+        releaseLinkDiscovery(session.linkId);
     };
 
     auto sameInflightJob = [](const InflightRequest& inflight, const ModbusJob& job) {
@@ -733,6 +765,15 @@ inline void ModbusSessionEngine::clearAllPollCycles() {
     pollCycleAggregates_.clear();
 }
 
+inline void ModbusSessionEngine::clearDiscoveryLocks() {
+    std::lock_guard<std::mutex> lock(discoveryMutex_);
+    linkDiscoveryInFlight_.clear();
+}
+
+inline void ModbusSessionEngine::releaseDiscoveryLock(int linkId) {
+    releaseLinkDiscovery(linkId);
+}
+
 inline void ModbusSessionEngine::onConnected(int linkId, const std::string& clientAddr) {
     sessions_.onConnected(linkId, clientAddr);
 }
@@ -743,6 +784,9 @@ inline void ModbusSessionEngine::onDisconnected(int linkId, const std::string& c
         for (const auto& [slaveId, deviceId] : sessionOpt->deviceIdsBySlave) {
             (void)slaveId;
             clearPollCycle(deviceId);
+        }
+        if (sessionOpt->bindState == SessionBindState::Probing || sessionOpt->discoveryRequested) {
+            releaseLinkDiscovery(linkId);
         }
     }
     sessions_.onDisconnected(linkId, clientAddr);
@@ -834,6 +878,7 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onPayload(
                 session.discoveryRequested = false;
                 session.nextDiscoveryTime = std::chrono::steady_clock::time_point{};
             });
+            releaseLinkDiscovery(linkId);
         }
 
         auto deviceOpt = registry_.findDevice(inflightOpt->job.deviceId);
@@ -1017,6 +1062,9 @@ inline bool ModbusSessionEngine::enqueuePoll(int deviceId, size_t readGroupIndex
 inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string& clientAddr) {
     (void)clientAddr;
     if (linkId <= 0) return false;
+    if (!reserveLinkDiscovery(linkId)) {
+        return false;
+    }
 
     const auto now = std::chrono::steady_clock::now();
     auto sessions = sessions_.listSessions();
@@ -1024,6 +1072,7 @@ inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string&
     for (const auto& session : sessions) {
         if (session.linkId != linkId) continue;
         if (session.bindState == SessionBindState::Probing) {
+            releaseLinkDiscovery(linkId);
             return false;
         }
         if (session.bindState != SessionBindState::Unknown) continue;
@@ -1035,6 +1084,7 @@ inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string&
         targets.push_back(session);
     }
     if (targets.empty()) {
+        releaseLinkDiscovery(linkId);
         return false;
     }
 
@@ -1053,6 +1103,7 @@ inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string&
         }
     }
     if (candidates.empty()) {
+        releaseLinkDiscovery(linkId);
         return false;
     }
 
@@ -1081,6 +1132,7 @@ inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string&
         }
     }
     if (!discoveryJob) {
+        releaseLinkDiscovery(linkId);
         return false;
     }
 
@@ -1117,6 +1169,8 @@ inline bool ModbusSessionEngine::triggerDiscovery(int linkId, const std::string&
                  << ", sessions=" << queuedTargets.size()
                  << ", device=" << (deviceOpt ? deviceOpt->deviceName : std::string("<unknown>"))
                  << "(id=" << candidates[candidateIndex].deviceId << ")";
+    } else {
+        releaseLinkDiscovery(linkId);
     }
     return dispatched;
 }
@@ -1149,6 +1203,7 @@ inline void ModbusSessionEngine::cancelDiscovery(int linkId, const std::string& 
     if (shouldDispatch) {
         tryDispatchNext(linkId, clientAddr);
     }
+    releaseLinkDiscovery(linkId);
 }
 
 inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::processTimeouts() {
@@ -1177,6 +1232,7 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::processTimeouts()
                         session.bindState = SessionBindState::Unknown;
                     }
                     session.nextDiscoveryTime = now + DISCOVERY_RETRY_DELAY;
+                    releaseLinkDiscovery(session.linkId);
                 }
             });
 

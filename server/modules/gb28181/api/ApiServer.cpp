@@ -191,7 +191,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 deviceId = "34020000001320000001";
             }
             deviceRegistry_.upsertRegistration(deviceId, request->peerAddr().toIpPort(), "mock");
-            LOG_INFO << "[GB28181][API] Mock register, device=" << deviceId
+            LOG_DEBUG << "[GB28181][API] Mock register, device=" << deviceId
                      << ", client=" << request->peerAddr().toIpPort();
             callback(jsonResponse({{"registered", true}, {"device_id", deviceId}}));
         },
@@ -200,7 +200,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
     drogon::app().registerHandler(
         prefix + "/devices/{1}/catalog/query",
         [this](const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& deviceId) {
-            LOG_INFO << "[GB28181][API] Catalog query requested, device=" << deviceId
+            LOG_DEBUG << "[GB28181][API] Catalog query requested, device=" << deviceId
                      << ", client=" << request->peerAddr().toIpPort();
             const auto sent = sipServer_.queryCatalog(deviceId);
             if (!sent) {
@@ -209,7 +209,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 callback(jsonNotFound("设备不在线"));
                 return;
             }
-            LOG_INFO << "[GB28181][API] Catalog query accepted, device=" << deviceId
+            LOG_DEBUG << "[GB28181][API] Catalog query accepted, device=" << deviceId
                      << ", client=" << request->peerAddr().toIpPort();
             callback(jsonResponse({{"sent", true}, {"device_id", deviceId}}));
         },
@@ -219,7 +219,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
         prefix + "/devices/{1}/channels/{2}/preview/start",
         [this](const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& deviceId, const std::string& channelId) {
             const auto client = request->peerAddr().toIpPort();
-            LOG_INFO << "[GB28181][API] Preview start requested, device=" << deviceId
+            LOG_DEBUG << "[GB28181][API] Preview start requested, device=" << deviceId
                      << ", channel=" << channelId
                      << ", client=" << client;
             drogon::async_run([this, callback = std::move(callback), deviceId, channelId, client]() -> drogon::Task<> {
@@ -231,7 +231,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                     callback(jsonNotFound("设备或通道不可用"));
                     co_return;
                 }
-                LOG_INFO << "[GB28181][API] Preview start accepted, device=" << deviceId
+                LOG_DEBUG << "[GB28181][API] Preview start accepted, device=" << deviceId
                          << ", channel=" << channelId
                          << ", session=" << result->sessionId
                          << ", stream_id=" << result->streamId
@@ -266,7 +266,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
             if (!speedText.empty()) {
                 speed = static_cast<uint8_t>(std::clamp(std::stoi(speedText), 0, 255));
             }
-            LOG_INFO << "[GB28181][API] PTZ requested, device=" << deviceId
+            LOG_DEBUG << "[GB28181][API] PTZ requested, device=" << deviceId
                      << ", channel=" << channelId
                      << ", action=" << action
                      << ", speed=" << static_cast<unsigned int>(speed)
@@ -280,7 +280,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 callback(jsonNotFound("设备或通道不可用"));
                 return;
             }
-            LOG_INFO << "[GB28181][API] PTZ accepted, device=" << deviceId
+            LOG_DEBUG << "[GB28181][API] PTZ accepted, device=" << deviceId
                      << ", channel=" << channelId
                      << ", action=" << action
                      << ", client=" << request->peerAddr().toIpPort();
@@ -301,7 +301,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 callback(jsonBadRequest("缺少时间范围"));
                 return;
             }
-            LOG_INFO << "[GB28181][API] Record query requested, device=" << deviceId
+            LOG_DEBUG << "[GB28181][API] Record query requested, device=" << deviceId
                      << ", channel=" << channelId
                      << ", start_time=" << startTime
                      << ", end_time=" << endTime
@@ -314,7 +314,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 callback(jsonNotFound("设备或通道不可用"));
                 return;
             }
-            LOG_INFO << "[GB28181][API] Record query accepted, device=" << deviceId
+            LOG_DEBUG << "[GB28181][API] Record query accepted, device=" << deviceId
                      << ", channel=" << channelId
                      << ", client=" << request->peerAddr().toIpPort();
             callback(jsonResponse({{"sent", true}, {"device_id", deviceId}, {"channel_id", channelId}}));
@@ -335,7 +335,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 return;
             }
             const auto client = request->peerAddr().toIpPort();
-            LOG_INFO << "[GB28181][API] Playback start requested, device=" << deviceId
+            LOG_DEBUG << "[GB28181][API] Playback start requested, device=" << deviceId
                      << ", channel=" << channelId
                      << ", start_time=" << startTime
                      << ", end_time=" << endTime
@@ -349,7 +349,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                     callback(jsonNotFound("设备或通道不可用"));
                     co_return;
                 }
-                LOG_INFO << "[GB28181][API] Playback start accepted, device=" << deviceId
+                LOG_DEBUG << "[GB28181][API] Playback start accepted, device=" << deviceId
                          << ", channel=" << channelId
                          << ", session=" << result->sessionId
                          << ", stream_id=" << result->streamId
@@ -391,7 +391,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
         prefix + "/previews/{1}/stop",
         [this](const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& sessionId) {
             const auto client = request->peerAddr().toIpPort();
-            LOG_INFO << "[GB28181][API] Preview stop requested, session=" << sessionId
+            LOG_DEBUG << "[GB28181][API] Preview stop requested, session=" << sessionId
                      << ", client=" << client;
             drogon::async_run([this, callback = std::move(callback), sessionId, client]() -> drogon::Task<> {
                 const auto result = co_await sipServer_.stopPreviewCoro(sessionId);
@@ -401,7 +401,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                     callback(jsonNotFound("预览会话不存在"));
                     co_return;
                 }
-                LOG_INFO << "[GB28181][API] Preview stop accepted, session=" << sessionId
+                LOG_DEBUG << "[GB28181][API] Preview stop accepted, session=" << sessionId
                          << ", stream_id=" << result->streamId
                          << ", bye_sent=" << result->byeSent
                          << ", rtp_server_closed=" << result->rtpServerClosed
@@ -443,7 +443,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 if (!stream.empty()) {
                     streamRegistry_.updateStreamChanged(app, stream, schema, online);
                     sipServer_.markStreamOnline(stream, online);
-                    LOG_INFO << "[GB28181][ZLM] Stream changed, app=" << app
+                    LOG_DEBUG << "[GB28181][ZLM] Stream changed, app=" << app
                              << ", stream=" << stream
                              << ", schema=" << schema
                              << ", online=" << online;
@@ -470,19 +470,19 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                         const auto stopResult = co_await sipServer_.stopPreviewByStreamCoro(stream);
                         if (stopResult.has_value()) {
                             closeStream = true;
-                            LOG_INFO << "[GB28181][ZLM] Stream none reader closed session, app=" << app
+                            LOG_DEBUG << "[GB28181][ZLM] Stream none reader closed session, app=" << app
                                      << ", stream=" << stream
                                      << ", schema=" << schema
                                      << ", bye_sent=" << stopResult->byeSent
                                      << ", rtp_server_closed=" << stopResult->rtpServerClosed;
                         } else if (app == "rtp" && isGb28181StreamId(stream)) {
                             closeStream = co_await sipServer_.forceCloseRtpServerCoro(stream);
-                            LOG_INFO << "[GB28181][ZLM] Stream none reader closed orphan RTP stream, app=" << app
+                            LOG_DEBUG << "[GB28181][ZLM] Stream none reader closed orphan RTP stream, app=" << app
                                      << ", stream=" << stream
                                      << ", schema=" << schema
                                      << ", closed=" << closeStream;
                         } else {
-                            LOG_INFO << "[GB28181][ZLM] Stream none reader for unmanaged stream, app=" << app
+                            LOG_DEBUG << "[GB28181][ZLM] Stream none reader for unmanaged stream, app=" << app
                                      << ", stream=" << stream
                                      << ", schema=" << schema;
                         }
@@ -519,11 +519,11 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                                      << ", ssrc=" << ssrc
                                      << ", closed=" << closed;
                         } else {
-                            LOG_INFO << "[GB28181][ZLM] RTP server timeout for unmanaged stream, stream=" << stream
+                            LOG_DEBUG << "[GB28181][ZLM] RTP server timeout for unmanaged stream, stream=" << stream
                                      << ", ssrc=" << ssrc;
                         }
                         if (localPort != nullptr && localPort->is_int64()) {
-                            LOG_INFO << "[GB28181][ZLM] RTP server timeout local_port=" << localPort->as_int64()
+                            LOG_DEBUG << "[GB28181][ZLM] RTP server timeout local_port=" << localPort->as_int64()
                                      << ", stream=" << stream;
                         }
                     }
@@ -544,7 +544,7 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                 const auto app = jsonString(object, "app");
                 const auto ssrc = jsonString(object, "ssrc");
                 const auto dstUrl = firstJsonString(object, {"dst_url", "dstUrl", "dst_ip"});
-                LOG_INFO << "[GB28181][ZLM] Send RTP stopped, app=" << app
+                LOG_DEBUG << "[GB28181][ZLM] Send RTP stopped, app=" << app
                          << ", stream=" << stream
                          << ", ssrc=" << ssrc
                          << ", dst=" << dstUrl;

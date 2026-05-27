@@ -374,11 +374,11 @@ SipServer::~SipServer() {
 
 void SipServer::start() {
     if (running_.exchange(true)) {
-        LOG_INFO << "[GB28181][SIP] Start skipped: server already running";
+        LOG_DEBUG << "[GB28181][SIP] Start skipped: server already running";
         return;
     }
 
-    LOG_INFO << "[GB28181][SIP] Starting, listen=" << sipConfig_.host << ":" << sipConfig_.port
+    LOG_DEBUG << "[GB28181][SIP] Starting, listen=" << sipConfig_.host << ":" << sipConfig_.port
              << ", domain=" << sipConfig_.domain
              << ", sip_id=" << sipConfig_.id
              << ", public_ip=" << sipConfig_.publicIp
@@ -413,15 +413,15 @@ void SipServer::start() {
 
 void SipServer::stop() {
     if (!running_.exchange(false)) {
-        LOG_INFO << "[GB28181][SIP] Stop skipped: server is not running";
+        LOG_DEBUG << "[GB28181][SIP] Stop skipped: server is not running";
         return;
     }
 
     if (ioLoop_ == nullptr) {
-        LOG_INFO << "[GB28181][SIP] Stop skipped: IO loop is not available";
+        LOG_DEBUG << "[GB28181][SIP] Stop skipped: IO loop is not available";
         return;
     }
-    LOG_INFO << "[GB28181][SIP] Stopping";
+    LOG_DEBUG << "[GB28181][SIP] Stopping";
     if (ioLoop_->isInLoopThread()) {
         stopInLoop();
     } else {
@@ -474,8 +474,8 @@ void SipServer::startInLoop() {
     });
     tcpServer_->start();
 
-    LOG_INFO << "[GB28181][SIP] UDP listening on " << sipConfig_.host << ":" << sipConfig_.port << " via TcpIoPool";
-    LOG_INFO << "[GB28181][SIP] TCP listening on " << sipConfig_.host << ":" << sipConfig_.port << " via TcpIoPool";
+    LOG_DEBUG << "[GB28181][SIP] UDP listening on " << sipConfig_.host << ":" << sipConfig_.port << " via TcpIoPool";
+    LOG_DEBUG << "[GB28181][SIP] TCP listening on " << sipConfig_.host << ":" << sipConfig_.port << " via TcpIoPool";
 }
 
 void SipServer::stopInLoop() {
@@ -512,7 +512,7 @@ void SipServer::stopInLoop() {
         tcpConnections_.clear();
     }
 
-    LOG_INFO << "[GB28181][SIP] Stopped, active_sessions=" << sessionCount
+    LOG_DEBUG << "[GB28181][SIP] Stopped, active_sessions=" << sessionCount
              << ", active_viewers=" << viewerCount
              << ", tcp_connections=" << tcpConnectionCount;
 }
@@ -564,7 +564,7 @@ void SipServer::handleTcpConnection(const trantor::TcpConnectionPtr& connection)
             std::lock_guard lock(tcpConnectionsMutex_);
             tcpConnections_[key] = connection;
         }
-        LOG_INFO << "[GB28181][SIP] TCP connected from " << key;
+        LOG_DEBUG << "[GB28181][SIP] TCP connected from " << key;
         return;
     }
 
@@ -576,7 +576,7 @@ void SipServer::handleTcpConnection(const trantor::TcpConnectionPtr& connection)
         }
     }
     connection->clearContext();
-    LOG_INFO << "[GB28181][SIP] TCP disconnected from " << key;
+    LOG_DEBUG << "[GB28181][SIP] TCP disconnected from " << key;
 }
 
 void SipServer::handleTcpMessage(const trantor::TcpConnectionPtr& connection, trantor::MsgBuffer* buffer) {
@@ -702,7 +702,7 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
     const auto cseq = extractCSeqNumber(message.header("CSeq"));
     const auto toTag = extractTag(to);
     if (!message.body.empty()) {
-        LOG_INFO << "[GB28181][Invite] 200 OK SDP received, session=" << session.sessionId
+        LOG_DEBUG << "[GB28181][Invite] 200 OK SDP received, session=" << session.sessionId
                  << ", mode=" << session.mode
                  << ", device=" << session.deviceId
                  << ", channel=" << session.channelId
@@ -740,7 +740,7 @@ void SipServer::handleInviteOk(const SipMessage& message, const SipPeer& remote)
         << "Content-Length: 0\r\n\r\n";
 
     sendRequest(ack.str(), remote);
-    LOG_INFO << "[GB28181][Invite] ACK sent, session=" << session.sessionId
+    LOG_DEBUG << "[GB28181][Invite] ACK sent, session=" << session.sessionId
              << ", mode=" << session.mode
              << ", device=" << session.deviceId
              << ", channel=" << session.channelId
@@ -759,7 +759,7 @@ void SipServer::handleRegister(const SipMessage& message, const SipPeer& remote)
              << "\", nonce=\"" << nonce
              << "\", algorithm=MD5, qop=\"auth\"\r\n";
         sendResponse(message, remote, 401, "Unauthorized", auth.str());
-        LOG_INFO << "[GB28181][Register] Auth challenge sent, device_hint="
+        LOG_DEBUG << "[GB28181][Register] Auth challenge sent, device_hint="
                  << extractUserFromSipUri(message.header("From"))
                  << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
                  << ", call_id=" << message.header("Call-ID")
@@ -811,7 +811,7 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
         return;
     }
     const auto snText = xmlText(root, "SN");
-    LOG_INFO << "[GB28181][Message] Received, cmd_type=" << cmdType
+    LOG_DEBUG << "[GB28181][Message] Received, cmd_type=" << cmdType
              << ", device=" << deviceId
              << ", sn=" << snText
              << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
@@ -828,7 +828,7 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
         } else {
             deviceRegistry_.markOffline(deviceId);
         }
-        LOG_INFO << "[GB28181][Keepalive] device=" << deviceId
+        LOG_DEBUG << "[GB28181][Keepalive] device=" << deviceId
                  << ", status=" << status
                  << ", online=" << statusOnline(status)
                  << ", catalog_scheduled=" << shouldQueryCatalog
@@ -861,7 +861,7 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
         }
         const auto channelCount = channels.size();
         deviceRegistry_.updateCatalog(deviceId, std::move(channels));
-        LOG_INFO << "[GB28181][Catalog] Updated, device=" << deviceId
+        LOG_DEBUG << "[GB28181][Catalog] Updated, device=" << deviceId
                  << ", sn=" << snText
                  << ", channels=" << channelCount
                  << ", online_channels=" << onlineCount
@@ -906,7 +906,7 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
         }
         const auto recordCount = records.size();
         deviceRegistry_.updateRecords(deviceId, std::move(records));
-        LOG_INFO << "[GB28181][Record] Updated, device=" << deviceId
+        LOG_DEBUG << "[GB28181][Record] Updated, device=" << deviceId
                  << ", reported_device=" << originalDeviceId
                  << ", sn=" << snText
                  << ", records=" << recordCount
@@ -921,7 +921,7 @@ void SipServer::handleMessage(const SipMessage& message, const SipPeer& remote) 
 }
 
 bool SipServer::queryCatalog(const std::string& deviceId) {
-    LOG_INFO << "[GB28181][Catalog] Query requested, device=" << deviceId;
+    LOG_DEBUG << "[GB28181][Catalog] Query requested, device=" << deviceId;
 
     const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
     const auto unavailableReason = routeUnavailableReason(route);
@@ -976,7 +976,7 @@ bool SipServer::queryCatalog(const std::string& deviceId) {
             << bodyText;
 
     sendRequest(request.str(), *remote);
-    LOG_INFO << "[GB28181][Catalog] Query sent, device=" << deviceId
+    LOG_DEBUG << "[GB28181][Catalog] Query sent, device=" << deviceId
              << ", sn=" << sn
              << ", call_id=" << callId
              << ", branch=" << branch
@@ -986,7 +986,7 @@ bool SipServer::queryCatalog(const std::string& deviceId) {
 }
 
 bool SipServer::queryRecords(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
-    LOG_INFO << "[GB28181][Record] Query requested, device=" << deviceId
+    LOG_DEBUG << "[GB28181][Record] Query requested, device=" << deviceId
              << ", channel=" << channelId
              << ", start_time=" << startTime
              << ", end_time=" << endTime;
@@ -1055,7 +1055,7 @@ bool SipServer::queryRecords(const std::string& deviceId, const std::string& cha
             << bodyText;
 
     sendRequest(request.str(), *remote);
-    LOG_INFO << "[GB28181][Record] Query sent, device=" << deviceId
+    LOG_DEBUG << "[GB28181][Record] Query sent, device=" << deviceId
              << ", channel=" << channelId
              << ", sn=" << sn
              << ", call_id=" << callId
@@ -1066,7 +1066,7 @@ bool SipServer::queryRecords(const std::string& deviceId, const std::string& cha
 }
 
 bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& channelId, const std::string& action, uint8_t speed) {
-    LOG_INFO << "[GB28181][PTZ] Control requested, device=" << deviceId
+    LOG_DEBUG << "[GB28181][PTZ] Control requested, device=" << deviceId
              << ", channel=" << channelId
              << ", action=" << action
              << ", speed=" << static_cast<unsigned int>(speed);
@@ -1135,7 +1135,7 @@ bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& c
             << bodyText;
 
     sendRequest(request.str(), *remote);
-    LOG_INFO << "[GB28181][PTZ] Control sent, device=" << deviceId
+    LOG_DEBUG << "[GB28181][PTZ] Control sent, device=" << deviceId
              << ", channel=" << channelId
              << ", action=" << action
              << ", speed=" << static_cast<unsigned int>(speed)
@@ -1149,7 +1149,7 @@ bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& c
 }
 
 drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPreviewCoro(const std::string& deviceId, const std::string& channelId) {
-    LOG_INFO << "[GB28181][Preview] Start requested, device=" << deviceId
+    LOG_DEBUG << "[GB28181][Preview] Start requested, device=" << deviceId
              << ", channel=" << channelId;
 
     const auto route = deviceRegistry_.findRouteSnapshot(deviceId, channelId);
@@ -1197,7 +1197,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
                 const auto viewerId = makeToken("viewer");
                 ++session.viewerCount;
                 previewViewers_[viewerId] = session.sessionId;
-                LOG_INFO << "[GB28181][Preview] Stream reused, device=" << deviceId
+                LOG_DEBUG << "[GB28181][Preview] Stream reused, device=" << deviceId
                          << ", channel=" << channelId
                          << ", viewer_session=" << viewerId
                          << ", stream_session=" << session.sessionId
@@ -1219,7 +1219,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
     for (const auto& staleSessionId : staleSessionIds) {
         const auto result = co_await stopPreviewCoro(staleSessionId);
         if (result.has_value()) {
-            LOG_INFO << "[GB28181][Preview] Closed stale session before restart, session=" << staleSessionId
+            LOG_DEBUG << "[GB28181][Preview] Closed stale session before restart, session=" << staleSessionId
                      << ", stream_id=" << result->streamId
                      << ", bye_sent=" << result->byeSent
                      << ", rtp_server_closed=" << result->rtpServerClosed;
@@ -1236,7 +1236,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
     const auto nowMs = static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     const auto ssrcNumber = 1000000000ULL + ((nowMs + cseq) % 899999999ULL);
     const auto ssrc = std::to_string(ssrcNumber);
-    LOG_INFO << "[GB28181][Preview] Opening ZLM RTP server, device=" << deviceId
+    LOG_DEBUG << "[GB28181][Preview] Opening ZLM RTP server, device=" << deviceId
              << ", channel=" << channelId
              << ", ssrc=" << ssrc;
     const auto rtpServer = co_await zlmClient_.openRtpServerCoro(deviceId, channelId, ssrc);
@@ -1247,7 +1247,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
                  << ", ssrc=" << ssrc;
         co_return std::nullopt;
     }
-    LOG_INFO << "[GB28181][Preview] ZLM RTP server opened, stream_id=" << rtpServer->streamId
+    LOG_DEBUG << "[GB28181][Preview] ZLM RTP server opened, stream_id=" << rtpServer->streamId
              << ", rtp_port=" << rtpServer->port
              << ", ssrc=" << ssrc;
 
@@ -1302,14 +1302,14 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPrevi
         previewSessions_.emplace(sessionId, session);
         previewViewers_.emplace(viewerId, sessionId);
     }
-    LOG_INFO << "[GB28181][Preview] Session stored, viewer_session=" << viewerId
+    LOG_DEBUG << "[GB28181][Preview] Session stored, viewer_session=" << viewerId
              << ", stream_session=" << sessionId
              << ", stream_id=" << session.streamId
              << ", call_id=" << callId
              << ", cseq=" << cseq;
 
     sendRequest(request.str(), *remote);
-    LOG_INFO << "[GB28181][Preview] INVITE sent, device=" << deviceId
+    LOG_DEBUG << "[GB28181][Preview] INVITE sent, device=" << deviceId
              << ", channel=" << channelId
              << ", viewer_session=" << viewerId
              << ", stream_session=" << sessionId
@@ -1339,7 +1339,7 @@ void SipServer::markStreamOnline(const std::string& streamId, bool online) {
         if (session.streamId == streamId) {
             found = true;
             session.mediaOnline = online;
-            LOG_INFO << "[GB28181][Media] Session media state changed, session=" << session.sessionId
+            LOG_DEBUG << "[GB28181][Media] Session media state changed, session=" << session.sessionId
                      << ", mode=" << session.mode
                      << ", device=" << session.deviceId
                      << ", channel=" << session.channelId
@@ -1355,7 +1355,7 @@ void SipServer::markStreamOnline(const std::string& streamId, bool online) {
 }
 
 drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlaybackCoro(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime) {
-    LOG_INFO << "[GB28181][Playback] Start requested, device=" << deviceId
+    LOG_DEBUG << "[GB28181][Playback] Start requested, device=" << deviceId
              << ", channel=" << channelId
              << ", start_time=" << startTime
              << ", end_time=" << endTime;
@@ -1397,7 +1397,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
     const auto nowMs = static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     const auto ssrcNumber = 2000000000ULL + ((nowMs + cseq) % 899999999ULL);
     const auto ssrc = std::to_string(ssrcNumber);
-    LOG_INFO << "[GB28181][Playback] Opening ZLM RTP server, device=" << deviceId
+    LOG_DEBUG << "[GB28181][Playback] Opening ZLM RTP server, device=" << deviceId
              << ", channel=" << channelId
              << ", ssrc=" << ssrc;
     const auto rtpServer = co_await zlmClient_.openRtpServerCoro(deviceId, channelId, ssrc, "playback");
@@ -1408,7 +1408,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
                  << ", ssrc=" << ssrc;
         co_return std::nullopt;
     }
-    LOG_INFO << "[GB28181][Playback] ZLM RTP server opened, stream_id=" << rtpServer->streamId
+    LOG_DEBUG << "[GB28181][Playback] ZLM RTP server opened, stream_id=" << rtpServer->streamId
              << ", rtp_port=" << rtpServer->port
              << ", ssrc=" << ssrc;
 
@@ -1474,7 +1474,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
     }
 
     sendRequest(request.str(), *remote);
-    LOG_INFO << "[GB28181][Playback] INVITE sent, device=" << deviceId
+    LOG_DEBUG << "[GB28181][Playback] INVITE sent, device=" << deviceId
              << ", channel=" << channelId
              << ", session=" << sessionId
              << ", stream_id=" << rtpServer->streamId
@@ -1496,7 +1496,7 @@ drogon::Task<std::optional<SipServer::PreviewStartResult>> SipServer::startPlayb
     };
 }
 drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreviewCoro(const std::string& sessionId) {
-    LOG_INFO << "[GB28181][Preview] Stop requested, session=" << sessionId;
+    LOG_DEBUG << "[GB28181][Preview] Stop requested, session=" << sessionId;
 
     PreviewSession session;
     std::string streamSessionId = sessionId;
@@ -1518,7 +1518,7 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
 
         if (iter->second.mode == "preview" && iter->second.viewerCount > 1 && streamSessionId != sessionId) {
             --iter->second.viewerCount;
-            LOG_INFO << "[GB28181][Preview] Viewer released, viewer_session=" << sessionId
+            LOG_DEBUG << "[GB28181][Preview] Viewer released, viewer_session=" << sessionId
                      << ", stream_session=" << streamSessionId
                      << ", stream_id=" << iter->second.streamId
                      << ", viewers=" << iter->second.viewerCount;
@@ -1541,7 +1541,7 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
         previewSessions_.erase(iter);
     }
 
-    LOG_INFO << "[GB28181][Preview] Stream session removed, requested_session=" << sessionId
+    LOG_DEBUG << "[GB28181][Preview] Stream session removed, requested_session=" << sessionId
              << ", stream_session=" << streamSessionId
              << ", mode=" << session.mode
              << ", device=" << session.deviceId
@@ -1573,21 +1573,21 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
 
         sendRequest(bye.str(), session.remote);
         byeSent = true;
-        LOG_INFO << "[GB28181][Preview] BYE sent, session=" << streamSessionId
+        LOG_DEBUG << "[GB28181][Preview] BYE sent, session=" << streamSessionId
                  << ", mode=" << session.mode
                  << ", stream_id=" << session.streamId
                  << ", call_id=" << session.callId
                  << ", cseq=" << cseq
                  << ", remote=" << transportName(session.remote.transport) << " " << peerToString(session.remote);
     } else {
-        LOG_INFO << "[GB28181][Preview] BYE skipped because session was not established, session="
+        LOG_DEBUG << "[GB28181][Preview] BYE skipped because session was not established, session="
                  << streamSessionId
                  << ", stream_id=" << session.streamId
                  << ", call_id=" << session.callId;
     }
 
     const bool rtpServerClosed = co_await zlmClient_.closeRtpServerCoro(session.streamId);
-    LOG_INFO << "[GB28181][Preview] RTP server close finished, session=" << streamSessionId
+    LOG_DEBUG << "[GB28181][Preview] RTP server close finished, session=" << streamSessionId
              << ", stream_id=" << session.streamId
              << ", closed=" << rtpServerClosed
              << ", bye_sent=" << byeSent;
@@ -1601,7 +1601,7 @@ drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreview
 }
 
 drogon::Task<std::optional<SipServer::PreviewStopResult>> SipServer::stopPreviewByStreamCoro(const std::string& streamId) {
-    LOG_INFO << "[GB28181][Preview] Stop by stream requested, stream_id=" << streamId;
+    LOG_DEBUG << "[GB28181][Preview] Stop by stream requested, stream_id=" << streamId;
 
     std::string sessionId;
     {
@@ -1743,16 +1743,16 @@ void SipServer::scheduleCatalogQuery(const std::string& deviceId) {
                  << ", reason=io_loop_unavailable";
         return;
     }
-    LOG_INFO << "[GB28181][Catalog] Query scheduled, device=" << deviceId
+    LOG_DEBUG << "[GB28181][Catalog] Query scheduled, device=" << deviceId
              << ", delay_seconds=0.5";
     ioLoop_->runAfter(0.5, [this, deviceId]() {
         if (!running_) {
-            LOG_INFO << "[GB28181][Catalog] Scheduled query skipped, device=" << deviceId
+            LOG_DEBUG << "[GB28181][Catalog] Scheduled query skipped, device=" << deviceId
                      << ", reason=server_stopped";
             return;
         }
         if (queryCatalog(deviceId)) {
-            LOG_INFO << "[GB28181][Catalog] Scheduled query sent, device=" << deviceId;
+            LOG_DEBUG << "[GB28181][Catalog] Scheduled query sent, device=" << deviceId;
         } else {
             LOG_WARN << "[GB28181][Catalog] Scheduled query failed, device=" << deviceId;
         }
