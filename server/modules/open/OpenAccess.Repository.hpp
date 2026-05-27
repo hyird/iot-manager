@@ -8,12 +8,7 @@
 #include "common/utils/FieldHelper.hpp"
 #include "common/utils/ValidatorHelper.hpp"
 
-#include <algorithm>
 #include <chrono>
-#include <iomanip>
-#include <optional>
-#include <sstream>
-#include <string_view>
 
 class OpenAccessRepository {
 public:
@@ -815,28 +810,6 @@ public:
         const Json::Value& responsePayload = Json::Value(Json::objectValue)
     ) {
         DatabaseService dbService;
-        const std::string requestJson = JsonHelper::serialize(requestPayload);
-        const std::string responseJson = JsonHelper::serialize(responsePayload);
-        logUtf8Diagnostics(
-            "open_access_log.request_payload($14)",
-            requestPayload,
-            requestJson,
-            accessKeyId,
-            webhookId,
-            eventType,
-            status,
-            deviceId,
-            deviceCode);
-        logUtf8Diagnostics(
-            "open_access_log.response_payload($15)",
-            responsePayload,
-            responseJson,
-            accessKeyId,
-            webhookId,
-            eventType,
-            status,
-            deviceId,
-            deviceCode);
         co_await dbService.execSqlCoro(R"(
             INSERT INTO open_access_log (
                 access_key_id,
@@ -886,8 +859,8 @@ public:
             deviceId > 0 ? std::to_string(deviceId) : "",
             deviceCode,
             OpenAccess::sanitizeError(message, 1000),
-            requestJson,
-            responseJson
+            JsonHelper::serialize(requestPayload),
+            JsonHelper::serialize(responsePayload)
         });
     }
 
@@ -1106,162 +1079,6 @@ public:
 
 private:
     DatabaseService dbService_;
-
-    struct Utf8Issue {
-        std::size_t offset = 0;
-        std::string reason;
-    };
-
-    static std::string bytesToHex(std::string_view value, std::size_t maxBytes = 0) {
-        const std::size_t limit = maxBytes > 0 ? std::min(maxBytes, value.size()) : value.size();
-        std::ostringstream oss;
-        oss << std::uppercase << std::hex << std::setfill('0');
-        for (std::size_t i = 0; i < limit; ++i) {
-            if (i > 0) oss << ' ';
-            oss << std::setw(2)
-                << static_cast<unsigned int>(static_cast<unsigned char>(value[i]));
-        }
-        if (limit < value.size()) {
-            oss << " ...";
-        }
-        return oss.str();
-    }
-
-    static std::string printablePreview(std::string_view value, std::size_t maxBytes = 512) {
-        std::string out;
-        const std::size_t limit = std::min(maxBytes, value.size());
-        out.reserve(limit + 3);
-        for (std::size_t i = 0; i < limit; ++i) {
-            const unsigned char c = static_cast<unsigned char>(value[i]);
-            out.push_back(c >= 0x20 && c < 0x7F ? static_cast<char>(c) : '.');
-        }
-        if (limit < value.size()) {
-            out += "...";
-        }
-        return out;
-    }
-
-    static std::optional<Utf8Issue> findInvalidUtf8(std::string_view input) {
-        for (std::size_t i = 0; i < input.size();) {
-            const auto c = static_cast<unsigned char>(input[i]);
-            if (c < 0x80) {
-                ++i;
-                continue;
-            }
-
-            std::size_t length = 0;
-            uint32_t codepoint = 0;
-            if ((c & 0xE0) == 0xC0) {
-                length = 2;
-                codepoint = c & 0x1F;
-            } else if ((c & 0xF0) == 0xE0) {
-                length = 3;
-                codepoint = c & 0x0F;
-            } else if ((c & 0xF8) == 0xF0) {
-                length = 4;
-                codepoint = c & 0x07;
-            } else {
-                return Utf8Issue{i, "invalid leading byte"};
-            }
-
-            if (i + length > input.size()) {
-                return Utf8Issue{i, "truncated sequence"};
-            }
-
-            for (std::size_t j = 1; j < length; ++j) {
-                const auto cc = static_cast<unsigned char>(input[i + j]);
-                if ((cc & 0xC0) != 0x80) {
-                    return Utf8Issue{i, "invalid continuation byte"};
-                }
-                codepoint = (codepoint << 6) | (cc & 0x3F);
-            }
-
-            const bool overlong = (length == 2 && codepoint < 0x80)
-                || (length == 3 && codepoint < 0x800)
-                || (length == 4 && codepoint < 0x10000);
-            const bool invalidCodepoint = codepoint > 0x10FFFF
-                || (codepoint >= 0xD800 && codepoint <= 0xDFFF);
-            if (overlong || invalidCodepoint) {
-                return Utf8Issue{i, overlong ? "overlong sequence" : "invalid codepoint"};
-            }
-
-            i += length;
-        }
-        return std::nullopt;
-    }
-
-    static bool logJsonStringIssue(const std::string& label,
-                                   const std::string& path,
-                                   std::string_view value) {
-        const auto issue = findInvalidUtf8(value);
-        if (!issue) {
-            return false;
-        }
-
-        const std::size_t begin = issue->offset > 16 ? issue->offset - 16 : 0;
-        const std::size_t end = std::min(value.size(), issue->offset + 32);
-        LOG_ERROR << "[OpenAccess][UTF8-DIAG] invalid UTF-8 in " << label
-                  << ", jsonPath=" << path
-                  << ", offset=" << issue->offset
-                  << ", reason=" << issue->reason
-                  << ", valueBytes=" << value.size()
-                  << ", aroundHex=" << bytesToHex(value.substr(begin, end - begin))
-                  << ", valuePreview=\"" << printablePreview(value) << "\"";
-        return true;
-    }
-
-    static bool logJsonIssues(const std::string& label,
-                              const Json::Value& value,
-                              const std::string& path) {
-        bool found = false;
-        if (value.isString()) {
-            return logJsonStringIssue(label, path, value.asString());
-        }
-        if (value.isArray()) {
-            for (Json::ArrayIndex i = 0; i < value.size(); ++i) {
-                found = logJsonIssues(
-                    label,
-                    value[i],
-                    path + "[" + std::to_string(i) + "]") || found;
-            }
-            return found;
-        }
-        if (value.isObject()) {
-            for (const auto& key : value.getMemberNames()) {
-                found = logJsonStringIssue(label, path + ".<key>", key) || found;
-                found = logJsonIssues(label, value[key], path + "." + key) || found;
-            }
-        }
-        return found;
-    }
-
-    static void logUtf8Diagnostics(const std::string& label,
-                                   const Json::Value& payload,
-                                   const std::string& serialized,
-                                   int accessKeyId,
-                                   int webhookId,
-                                   const std::string& eventType,
-                                   const std::string& status,
-                                   int deviceId,
-                                   const std::string& deviceCode) {
-        const bool jsonIssue = logJsonIssues(label, payload, "$");
-        const auto serializedIssue = findInvalidUtf8(serialized);
-        if (!jsonIssue && !serializedIssue) {
-            return;
-        }
-
-        LOG_ERROR << "[OpenAccess][UTF8-DIAG] " << label
-                  << " contains invalid UTF-8 before INSERT"
-                  << ", accessKeyId=" << accessKeyId
-                  << ", webhookId=" << webhookId
-                  << ", eventType=" << eventType
-                  << ", status=" << status
-                  << ", deviceId=" << deviceId
-                  << ", deviceCode=" << deviceCode
-                  << ", jsonBytes=" << serialized.size()
-                  << ", jsonPreview=\"" << printablePreview(serialized, 2048) << "\""
-                  << ", jsonHex=" << bytesToHex(serialized, 4096);
-    }
 
     static bool shouldUseArchive(const std::string& startTime) {
         if (startTime.empty()) return false;
