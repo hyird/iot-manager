@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+endif()
+
 if(NOT CMAKE_TOOLCHAIN_FILE)
     foreach(VCPKG_ROOT_CANDIDATE IN ITEMS
         "$ENV{VCPKG_ROOT}"
@@ -94,6 +98,7 @@ if(WIN32)
 endif()
 
 add_subdirectory(edgenode)
+set_property(TARGET iot-edgenode APPEND PROPERTY COMPILE_DEFINITIONS S7_ENABLE_BLOCKING_CLIENT=1)
 add_subdirectory(tests)
 if(BUILD_L2CONFIG)
     add_subdirectory(l2config)

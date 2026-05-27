@@ -14,6 +14,10 @@
 #include <string_view>
 #include <vector>
 
+#ifndef S7_ENABLE_BLOCKING_CLIENT
+#define S7_ENABLE_BLOCKING_CLIENT 0
+#endif
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -209,6 +213,7 @@ inline void appendBe16(std::vector<std::uint8_t>& buffer, std::uint16_t value) {
     buffer.push_back(static_cast<std::uint8_t>(value & 0xFF));
 }
 
+#if S7_ENABLE_BLOCKING_CLIENT
 inline int waitForSocket(SocketHandle socket, bool readReady, int timeoutMs) {
     fd_set readSet;
     fd_set writeSet;
@@ -241,6 +246,7 @@ inline int waitForSocket(SocketHandle socket, bool readReady, int timeoutMs) {
     }
     return kS7ErrSocketIo;
 }
+#endif
 
 inline std::uint8_t encodeTpduSize(std::uint16_t size) {
     switch (size) {
@@ -459,6 +465,12 @@ public:
     }
 
     int connectTo(const char* address, int rack, int slot) {
+#if !S7_ENABLE_BLOCKING_CLIENT
+        (void)address;
+        (void)rack;
+        (void)slot;
+        return setError(ErrorDomain::Client, kS7ErrUnsupported, "connectTo.blocking-disabled");
+#else
         if (rack < 0 || slot < 0) {
             return kS7ErrInvalidParams;
         }
@@ -468,9 +480,13 @@ public:
             return rc;
         }
         return connect();
+#endif
     }
 
     int connect() {
+#if !S7_ENABLE_BLOCKING_CLIENT
+        return setError(ErrorDomain::Client, kS7ErrUnsupported, "connect.blocking-disabled");
+#else
         std::lock_guard ioLock(ioMutex_);
         if (remoteAddress_.empty()) {
             return kS7ErrInvalidParams;
@@ -500,11 +516,15 @@ public:
 
         connected_ = true;
         return kS7Ok;
+#endif
     }
 
     int disconnect() {
         std::lock_guard ioLock(ioMutex_);
         connected_ = false;
+#if !S7_ENABLE_BLOCKING_CLIENT
+        return closeSocketOnly();
+#else
         if (transportHooks_.close) {
             return closeSocketOnly();
         }
@@ -514,6 +534,7 @@ public:
             return rc;
         }
         return closeSocketOnly();
+#endif
     }
 
     bool connected() const {
@@ -810,6 +831,9 @@ inline int Client::openSocket() {
             localPort_);
     }
 
+#if !S7_ENABLE_BLOCKING_CLIENT
+    return setError(ErrorDomain::Client, kS7ErrUnsupported, "openSocket.blocking-disabled");
+#else
     lastError_ = ensureSocketSubsystem();
     if (lastError_ != 0) {
         return kS7ErrSocketInit;
@@ -890,6 +914,7 @@ inline int Client::openSocket() {
     }
 
     return lastError_ == kS7Ok ? (lastError_ = kS7ErrConnectFailed) : lastError_;
+#endif
 }
 
 inline int Client::sendAll(const std::uint8_t* data, std::size_t size) {
@@ -902,6 +927,11 @@ inline int Client::sendAll(const std::uint8_t* data, std::size_t size) {
         return lastError_ = kS7Ok;
     }
 
+#if !S7_ENABLE_BLOCKING_CLIENT
+    (void)data;
+    (void)size;
+    return setError(ErrorDomain::Client, kS7ErrUnsupported, "send.blocking-disabled");
+#else
     std::size_t sent = 0;
     while (sent < size) {
         const int waitRc = waitForSocket(socket_, false, sendTimeoutMs_);
@@ -921,6 +951,7 @@ inline int Client::sendAll(const std::uint8_t* data, std::size_t size) {
         sent += static_cast<std::size_t>(rc);
     }
     return lastError_ = kS7Ok;
+#endif
 }
 
 inline int Client::recvAll(std::uint8_t* data, std::size_t size, bool closeOnTimeout) {
@@ -936,6 +967,12 @@ inline int Client::recvAll(std::uint8_t* data, std::size_t size, bool closeOnTim
         return lastError_ = kS7Ok;
     }
 
+#if !S7_ENABLE_BLOCKING_CLIENT
+    (void)data;
+    (void)size;
+    (void)closeOnTimeout;
+    return setError(ErrorDomain::Client, kS7ErrUnsupported, "recv.blocking-disabled");
+#else
     std::size_t received = 0;
     while (received < size) {
         const int waitRc = waitForSocket(socket_, true, recvTimeoutMs_);
@@ -958,6 +995,7 @@ inline int Client::recvAll(std::uint8_t* data, std::size_t size, bool closeOnTim
         received += static_cast<std::size_t>(rc);
     }
     return lastError_ = kS7Ok;
+#endif
 }
 
 inline int Client::recvTpktFrame(std::vector<std::uint8_t>& frame, bool closeOnTimeout) {
@@ -1451,6 +1489,13 @@ inline int Client::parseWriteResponse(const std::vector<std::uint8_t>& response,
 }
 
 inline int Client::readMultiVars(std::vector<DataItem>& items) {
+#if !S7_ENABLE_BLOCKING_CLIENT
+    for (auto& item : items) {
+        item.result = kS7ErrUnsupported;
+        item.transferred = 0;
+    }
+    return setError(ErrorDomain::Client, kS7ErrUnsupported, "readMultiVars.blocking-disabled");
+#else
     std::lock_guard ioLock(ioMutex_);
     if (!connected()) {
         return setError(ErrorDomain::Client, kS7ErrNotConnected, "readMultiVars");
@@ -1509,9 +1554,17 @@ inline int Client::readMultiVars(std::vector<DataItem>& items) {
     }
 
     return firstError == kS7Ok ? kS7Ok : setError(ErrorDomain::S7Item, firstError, "readMultiVars");
+#endif
 }
 
 inline int Client::writeMultiVars(std::vector<DataItem>& items) {
+#if !S7_ENABLE_BLOCKING_CLIENT
+    for (auto& item : items) {
+        item.result = kS7ErrUnsupported;
+        item.transferred = 0;
+    }
+    return setError(ErrorDomain::Client, kS7ErrUnsupported, "writeMultiVars.blocking-disabled");
+#else
     std::lock_guard ioLock(ioMutex_);
     if (!connected()) {
         return setError(ErrorDomain::Client, kS7ErrNotConnected, "writeMultiVars");
@@ -1570,11 +1623,22 @@ inline int Client::writeMultiVars(std::vector<DataItem>& items) {
     }
 
     return firstError == kS7Ok ? kS7Ok : setError(ErrorDomain::S7Item, firstError, "writeMultiVars");
+#endif
 }
 
 inline int Client::readArea(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
+#if !S7_ENABLE_BLOCKING_CLIENT
+    (void)area;
+    (void)dbNumber;
+    (void)start;
+    (void)amount;
+    (void)wordLen;
+    (void)data;
+    return setError(ErrorDomain::Client, kS7ErrUnsupported, "readArea.blocking-disabled");
+#else
     std::lock_guard ioLock(ioMutex_);
     return readAreaUnlocked(area, dbNumber, start, amount, wordLen, data);
+#endif
 }
 
 inline int Client::readAreaUnlocked(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
@@ -1622,8 +1686,18 @@ inline int Client::readAreaUnlocked(int area, int dbNumber, int start, int amoun
 }
 
 inline int Client::writeArea(int area, int dbNumber, int start, int amount, int wordLen, void* data) {
+#if !S7_ENABLE_BLOCKING_CLIENT
+    (void)area;
+    (void)dbNumber;
+    (void)start;
+    (void)amount;
+    (void)wordLen;
+    (void)data;
+    return setError(ErrorDomain::Client, kS7ErrUnsupported, "writeArea.blocking-disabled");
+#else
     std::lock_guard ioLock(ioMutex_);
     return writeAreaUnlocked(area, dbNumber, start, amount, wordLen, data);
+#endif
 }
 
 inline int Client::writeAreaUnlocked(int area, int dbNumber, int start, int amount, int wordLen, void* data) {

@@ -11,6 +11,8 @@ target_include_directories(iot_s7_test PRIVATE
     ${PROJECT_SOURCE_DIR}/server
 )
 
+target_compile_definitions(iot_s7_test PRIVATE S7_ENABLE_BLOCKING_CLIENT=1)
+
 if(WIN32)
     target_link_libraries(iot_s7_test PRIVATE ws2_32)
 endif()
