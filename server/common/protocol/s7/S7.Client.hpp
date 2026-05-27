@@ -78,7 +78,7 @@ inline constexpr int kS7ErrResponseTooShort = -19;
 
 inline constexpr std::uint16_t kDefaultRemotePort = 102;
 inline constexpr std::uint16_t kDefaultIsoPduSize = 1024;
-inline constexpr std::uint16_t kDefaultS7PduRequest = 480;
+inline constexpr std::uint16_t kDefaultS7PduRequest = 960;
 inline constexpr std::uint16_t kDefaultSourceRef = 0x0100;
 inline constexpr std::array<std::uint16_t, 3> kSourceRefCandidates{
     kDefaultSourceRef,
@@ -265,6 +265,16 @@ inline std::size_t decodeResponseDataSize(std::uint8_t transportSize, std::uint1
         return dataLength;
     }
     return static_cast<std::size_t>(dataLength / 8);
+}
+
+inline int maxElementsPerPdu(std::uint16_t pduLength, int protocolOverhead, int elementSize) {
+    if (elementSize <= 0) {
+        return 1;
+    }
+    if (pduLength <= static_cast<std::uint16_t>(protocolOverhead)) {
+        return 1;
+    }
+    return std::max(1, static_cast<int>((pduLength - protocolOverhead) / elementSize));
 }
 
 class Client {
@@ -524,9 +534,9 @@ inline int Client::sendDisconnectRequest() {
     }
 
     if (disconnectFrame_.size() >= 11) {
-        auto frame = disconnectFrame_;
-        frame[5] = kCotpDr;
-        frame[10] = 0x00;
+        const auto clientRef = readBe16(disconnectFrame_.data() + 6);
+        const auto serverRef = readBe16(disconnectFrame_.data() + 8);
+        auto frame = buildDisconnectFrame(serverRef, clientRef, 0x00);
         traceFrame("iso.dr", true, frame);
         return sendAll(frame.data(), frame.size());
     }
@@ -1038,7 +1048,7 @@ inline int Client::readArea(int area, int dbNumber, int start, int amount, int w
     int currentStart = start;
     std::size_t offset = 0;
 
-    const int maxElements = std::max(1, static_cast<int>((pduLength_ - 18) / elementSize));
+    const int maxElements = maxElementsPerPdu(pduLength_, 18, elementSize);
 
     while (remaining > 0) {
         const int sliceElements = std::min(remaining, maxElements);
@@ -1082,7 +1092,7 @@ inline int Client::writeArea(int area, int dbNumber, int start, int amount, int 
     int currentStart = start;
     std::size_t offset = 0;
 
-    const int maxElements = std::max(1, static_cast<int>((pduLength_ - 28) / elementSize));
+    const int maxElements = maxElementsPerPdu(pduLength_, 28, elementSize);
 
     while (remaining > 0) {
         const int sliceElements = std::min(remaining, maxElements);
