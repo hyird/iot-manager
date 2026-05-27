@@ -2582,6 +2582,7 @@ private:
 
         std::function<void(bool)> complete;
         int deviceId = 0;
+        std::string label;
         {
             std::lock_guard lock(runtime->mutex);
             if (connect->done || runtime->asyncConnect != connect) {
@@ -2598,11 +2599,14 @@ private:
                 runtime->sessionDiscoveryStartedAt = {};
             }
             deviceId = runtime->deviceId;
+            label = deviceLabel(*runtime);
         }
 
         if (!success && sessionManager_ && deviceId > 0) {
             sessionManager_->releaseProbingSession(deviceId, true);
         }
+        LOG_INFO << "[S7][Adapter] Async connect " << (success ? "ready" : "failed")
+                 << ": " << label << "(id=" << deviceId << ")";
         if (complete) {
             complete(success);
         }
@@ -3568,11 +3572,15 @@ private:
 
         bool tcpServerMode = false;
         bool sessionReady = false;
+        bool sessionBound = false;
         int linkId = 0;
         {
             std::lock_guard runtimeLock(runtime->mutex);
             tcpServerMode = runtime->tcpServerMode;
             sessionReady = isSessionReadyLocked(*runtime);
+            sessionBound = runtime->sessionBound
+                && runtime->sessionLinkId > 0
+                && !runtime->sessionClientAddr.empty();
             linkId = runtime->linkId;
         }
 
@@ -3644,7 +3652,7 @@ private:
             co_return;
         }
 
-        if (sessionReady) {
+        if (sessionReady || sessionBound) {
             enqueuePollOnDeviceQueue();
             co_return;
         }
