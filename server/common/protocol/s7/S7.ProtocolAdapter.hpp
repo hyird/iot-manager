@@ -2287,6 +2287,7 @@ private:
         }
 
         if (shouldLog && pollScheduler_) {
+            pollScheduler_->resetInProgress(deviceId);
             pollScheduler_->triggerNow(deviceId);
         }
     }

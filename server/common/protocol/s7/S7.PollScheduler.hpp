@@ -63,6 +63,10 @@ public:
         scheduler_.triggerNow(deviceId);
     }
 
+    void resetInProgress(int deviceId) {
+        scheduler_.resetInProgress(deviceId);
+    }
+
     void activateFastRead(int deviceId, int durationSec = 60, int intervalSec = 1) {
         scheduler_.activateFastRead(deviceId, durationSec, intervalSec);
     }
