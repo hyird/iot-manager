@@ -218,6 +218,8 @@ private:
     std::optional<FrameMode> getSessionFrameMode(const DtuSession& session) const;
     bool reserveLinkDiscovery(int linkId);
     void releaseLinkDiscovery(int linkId);
+    bool hasPendingLinkDiscovery(int linkId) const;
+    void releaseLinkDiscoveryIfIdle(int linkId);
     std::vector<ModbusResponse> appendAndParseSessionFrames(
         DtuSession& session,
         FrameMode mode,
@@ -288,6 +290,37 @@ inline void ModbusSessionEngine::releaseLinkDiscovery(int linkId) {
 
     std::lock_guard<std::mutex> lock(discoveryMutex_);
     linkDiscoveryInFlight_[linkId] = false;
+}
+
+inline bool ModbusSessionEngine::hasPendingLinkDiscovery(int linkId) const {
+    if (linkId <= 0) {
+        return false;
+    }
+
+    auto sessions = sessions_.listSessions();
+    for (const auto& session : sessions) {
+        if (session.linkId != linkId) continue;
+        if (session.bindState == SessionBindState::Probing) {
+            return true;
+        }
+        if (session.discoveryRequested) {
+            return true;
+        }
+        if (session.inflight && session.inflight->job.kind == ModbusJobKind::DiscoveryRead) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline void ModbusSessionEngine::releaseLinkDiscoveryIfIdle(int linkId) {
+    if (linkId <= 0) {
+        return;
+    }
+    if (hasPendingLinkDiscovery(linkId)) {
+        return;
+    }
+    releaseLinkDiscovery(linkId);
 }
 
 inline std::optional<FrameMode> ModbusSessionEngine::getSessionFrameMode(const DtuSession& session) const {
@@ -425,13 +458,16 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
         ModbusJob job;
     };
 
-    auto markDiscoveryFailure = [this](DtuSession& session) {
+    bool discoveryStateChanged = false;
+    int discoveryLinkId = 0;
+    auto markDiscoveryFailure = [&](DtuSession& session) {
         session.discoveryRequested = false;
         if (session.bindState != SessionBindState::Bound) {
             session.bindState = SessionBindState::Unknown;
         }
         session.nextDiscoveryTime = std::chrono::steady_clock::now() + DISCOVERY_RETRY_DELAY;
-        releaseLinkDiscovery(session.linkId);
+        discoveryStateChanged = true;
+        discoveryLinkId = session.linkId;
     };
 
     auto sameInflightJob = [](const InflightRequest& inflight, const ModbusJob& job) {
@@ -513,6 +549,10 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
                 markDiscoveryFailure(session);
             }
         });
+    }
+
+    if (discoveryStateChanged) {
+        releaseLinkDiscoveryIfIdle(discoveryLinkId);
     }
 
     if (failedReadJob) {
@@ -767,7 +807,7 @@ inline void ModbusSessionEngine::clearDiscoveryLocks() {
 }
 
 inline void ModbusSessionEngine::releaseDiscoveryLock(int linkId) {
-    releaseLinkDiscovery(linkId);
+    releaseLinkDiscoveryIfIdle(linkId);
 }
 
 inline void ModbusSessionEngine::onConnected(int linkId, const std::string& clientAddr) {
@@ -776,16 +816,21 @@ inline void ModbusSessionEngine::onConnected(int linkId, const std::string& clie
 
 inline void ModbusSessionEngine::onDisconnected(int linkId, const std::string& clientAddr) {
     auto sessionOpt = sessions_.getSession(linkId, clientAddr);
+    bool hadDiscovery = false;
     if (sessionOpt) {
         for (const auto& [slaveId, deviceId] : sessionOpt->deviceIdsBySlave) {
             (void)slaveId;
             clearPollCycle(deviceId);
         }
-        if (sessionOpt->bindState == SessionBindState::Probing || sessionOpt->discoveryRequested) {
-            releaseLinkDiscovery(linkId);
-        }
+        hadDiscovery = sessionOpt->bindState == SessionBindState::Probing
+            || sessionOpt->discoveryRequested
+            || (sessionOpt->inflight
+                && sessionOpt->inflight->job.kind == ModbusJobKind::DiscoveryRead);
     }
     sessions_.onDisconnected(linkId, clientAddr);
+    if (hadDiscovery) {
+        releaseLinkDiscoveryIfIdle(linkId);
+    }
 }
 
 inline std::optional<ModbusJob> ModbusSessionEngine::buildDiscoveryJob(
@@ -874,7 +919,7 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onPayload(
                 session.discoveryRequested = false;
                 session.nextDiscoveryTime = std::chrono::steady_clock::time_point{};
             });
-            releaseLinkDiscovery(linkId);
+            releaseLinkDiscoveryIfIdle(linkId);
         }
 
         auto deviceOpt = registry_.findDevice(inflightOpt->job.deviceId);
@@ -1176,6 +1221,9 @@ inline void ModbusSessionEngine::cancelDiscovery(int linkId, const std::string& 
     sessions_.mutateSession(linkId, clientAddr, [&](DtuSession& session) {
         session.discoveryRequested = false;
         session.nextDiscoveryTime = std::chrono::steady_clock::time_point{};
+        if (session.bindState == SessionBindState::Probing) {
+            session.bindState = SessionBindState::Unknown;
+        }
 
         if (session.inflight && session.inflight->job.kind == ModbusJobKind::DiscoveryRead) {
             session.inflight.reset();
@@ -1190,7 +1238,7 @@ inline void ModbusSessionEngine::cancelDiscovery(int linkId, const std::string& 
     if (shouldDispatch) {
         tryDispatchNext(linkId, clientAddr);
     }
-    releaseLinkDiscovery(linkId);
+    releaseLinkDiscoveryIfIdle(linkId);
 }
 
 inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::processTimeouts() {
@@ -1219,7 +1267,6 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::processTimeouts()
                         session.bindState = SessionBindState::Unknown;
                     }
                     session.nextDiscoveryTime = now + DISCOVERY_RETRY_DELAY;
-                    releaseLinkDiscovery(session.linkId);
                 }
             });
 
@@ -1249,6 +1296,9 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::processTimeouts()
         }
 
         tryDispatchNext(sessionSnapshot.linkId, sessionSnapshot.clientAddr);
+        if (timedOut->job.kind == ModbusJobKind::DiscoveryRead) {
+            releaseLinkDiscoveryIfIdle(sessionSnapshot.linkId);
+        }
     }
 
     return output;

@@ -214,7 +214,7 @@ public:
                 && normalized.kind == RegistrationMatchKind::PrefixedPayload
                 && sessionEngine_
                 && !engineResult.handledInflight) {
-                sessionEngine_->releaseDiscoveryLock(linkId);
+                sessionEngine_->cancelDiscovery(linkId, clientAddr);
             }
             if (!engineResult.parsedResults.empty() && runtimeContext_.submitParsedResults) {
                 runtimeContext_.submitParsedResults(std::move(engineResult.parsedResults));
