@@ -1,12 +1,14 @@
 #pragma once
 
+#include <limits>
+
 namespace fs = std::filesystem;
 
 /**
  * @brief 日志管理器 - 使用 trantor::AsyncFileLogger 异步写盘 + 按日期轮转
  *
  * 文件命名: logs/iot-manager_YYYY-MM-DD_HHMMSS.log
- * 轮转策略: 每天自动创建新文件 + 单文件超 100MB 时轮转
+ * 轮转策略: 每天自动创建新文件，禁用按文件大小分段
  */
 class LoggerManager {
 private:
@@ -14,7 +16,7 @@ private:
     static std::shared_mutex loggerMutex_;
     static std::string logDir_;
     static std::atomic<int> currentDay_;
-    static constexpr uint64_t FILE_SIZE_LIMIT = 100 * 1024 * 1024;  // 100MB
+    static constexpr uint64_t NO_FILE_SIZE_LIMIT = std::numeric_limits<uint64_t>::max();
 
     /** 获取当天日期整数 YYYYMMDD，用于快速比较 */
     static int todayInt() {
@@ -38,7 +40,7 @@ private:
     static std::unique_ptr<trantor::AsyncFileLogger> createLogger(int day) {
         auto logger = std::make_unique<trantor::AsyncFileLogger>();
         logger->setFileName(logDir_ + "/iot-manager_" + dayToStr(day));
-        logger->setFileSizeLimit(FILE_SIZE_LIMIT);
+        logger->setFileSizeLimit(NO_FILE_SIZE_LIMIT);
         logger->startLogging();
         return logger;
     }

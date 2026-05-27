@@ -330,7 +330,7 @@ int main() {
     // 1. 平台特定初始化
     PlatformUtils::initialize();
 
-    // 2. 初始化日志系统（AsyncFileLogger 异步写盘 + 按日期轮转）
+    // 2. 初始化日志系统（AsyncFileLogger 异步写盘，仅按日期轮转，禁用大小分段）
     LoggerManager::initialize("./logs");
 
     // 3. 加载并验证配置文件（失败时 ConfigManager 已输出详细错误）
