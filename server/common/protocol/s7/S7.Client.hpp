@@ -427,6 +427,10 @@ public:
         traceCallback_ = std::move(callback);
     }
 
+    void setConnectionSourceRef(std::uint16_t sourceRef) {
+        connectionSourceRef_ = sourceRef;
+    }
+
     void setTransportHooks(TransportHooks hooks) {
         transportHooks_ = std::move(hooks);
     }
@@ -464,6 +468,9 @@ private:
                             std::uint16_t srcRef, std::uint8_t reason);
     std::uint16_t nextSequence() { return sequence_++; }
     std::uint16_t nextSourceRef() {
+        if (connectionSourceRef_) {
+            return *connectionSourceRef_;
+        }
         const auto sourceRef = kSourceRefCandidates[sourceRefIndex_ % kSourceRefCandidates.size()];
         sourceRefIndex_ = (sourceRefIndex_ + 1) % kSourceRefCandidates.size();
         return sourceRef;
@@ -488,6 +495,7 @@ private:
     std::uint16_t pduLength_ = kDefaultS7PduRequest;
     std::uint16_t sequence_ = 0;
     std::size_t sourceRefIndex_ = 0;
+    std::optional<std::uint16_t> connectionSourceRef_;
     bool connected_ = false;
     int lastError_ = kS7Ok;
     std::vector<std::uint8_t> disconnectFrame_;

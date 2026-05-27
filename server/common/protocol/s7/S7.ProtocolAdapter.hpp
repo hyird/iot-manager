@@ -112,6 +112,7 @@ struct S7DeviceRuntime {
     bool sessionDiscoveryInFlight = false;
     bool connectInProgress = false;
     std::uint64_t connectGeneration = 0;
+    std::size_t sourceRefIndex = 0;
     std::chrono::steady_clock::time_point sessionDiscoveryStartedAt{};
     std::chrono::steady_clock::time_point lastConnectAttempt{};
 
@@ -144,6 +145,7 @@ struct S7DeviceRuntime {
         , sessionDiscoveryInFlight(other.sessionDiscoveryInFlight)
         , connectInProgress(other.connectInProgress)
         , connectGeneration(other.connectGeneration)
+        , sourceRefIndex(other.sourceRefIndex)
         , sessionDiscoveryStartedAt(other.sessionDiscoveryStartedAt)
         , lastConnectAttempt(other.lastConnectAttempt) {
         other.connected = false;
@@ -175,6 +177,7 @@ struct S7DeviceRuntime {
         sessionDiscoveryInFlight = other.sessionDiscoveryInFlight;
         connectInProgress = other.connectInProgress;
         connectGeneration = other.connectGeneration;
+        sourceRefIndex = other.sourceRefIndex;
         sessionDiscoveryStartedAt = other.sessionDiscoveryStartedAt;
         lastConnectAttempt = other.lastConnectAttempt;
         other.connected = false;
@@ -2018,6 +2021,16 @@ private:
         }
 
         applyConnectionTimeouts(*client, connection);
+        const auto assignConnectionSourceRef = [&]() {
+            std::lock_guard runtimeLock(runtime->mutex);
+            if (runtime->connectGeneration != attemptId) {
+                return false;
+            }
+            const auto sourceRef = kSourceRefCandidates[runtime->sourceRefIndex % kSourceRefCandidates.size()];
+            runtime->sourceRefIndex = (runtime->sourceRefIndex + 1) % kSourceRefCandidates.size();
+            client->setConnectionSourceRef(sourceRef);
+            return true;
+        };
         const std::string deviceName = runtime->deviceName;
         client->setTraceCallback(
             [deviceId, deviceName](std::string_view stage, bool outbound, const std::vector<std::uint8_t>& frame) {
@@ -2072,6 +2085,10 @@ private:
                 }
                 return false;
             }
+            if (!assignConnectionSourceRef()) {
+                destroyClient(client);
+                return false;
+            }
             rc = client->connect();
         } else {
             if (client->setConnectionType(connectionTypeToCode(connection.connectionType)) != 0) {
@@ -2088,6 +2105,10 @@ private:
                     runtime->connected = false;
                     runtime->lastConnectAttempt = std::chrono::steady_clock::now();
                 }
+                return false;
+            }
+            if (!assignConnectionSourceRef()) {
+                destroyClient(client);
                 return false;
             }
             rc = client->connectTo(connection.host.c_str(), connection.rack, connection.slot);
