@@ -415,17 +415,11 @@ public:
     }
 
     ProtocolLifecycleImpact onDeviceLifecycleEvent(const DeviceLifecycleEvent& event) override {
-        if (!event.protocol.empty() && event.protocol != Constants::PROTOCOL_S7) {
-            return ProtocolLifecycleImpact::None;
-        }
-        return ProtocolLifecycleImpact::Reload;
+        return reloadOnAcceptedLifecycleEvent(event.protocol);
     }
 
     ProtocolLifecycleImpact onProtocolConfigLifecycleEvent(const ProtocolConfigLifecycleEvent& event) override {
-        if (!event.protocol.empty() && event.protocol != Constants::PROTOCOL_S7) {
-            return ProtocolLifecycleImpact::None;
-        }
-        return ProtocolLifecycleImpact::Reload;
+        return reloadOnAcceptedLifecycleEvent(event.protocol);
     }
 
     bool isDeviceConnected(int deviceId) const override {
@@ -2073,6 +2067,9 @@ private:
 
         for (const auto& device : devices) {
             if (device.protocolType != Constants::PROTOCOL_S7) {
+                continue;
+            }
+            if (device.status != Constants::USER_STATUS_ENABLED) {
                 continue;
             }
 

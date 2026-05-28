@@ -10,9 +10,9 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <coroutine>
 #include <cctype>
 #include <cstring>
-#include <future>
 #include <random>
 #include <sstream>
 #include <iomanip>
@@ -176,7 +176,13 @@ std::string routeUnavailableReason(const std::optional<DeviceRouteSnapshot>& rou
     return {};
 }
 
-void logSipPacket(const char* direction, const SipMessage& message, const SipServer::SipPeer& remote, std::size_t bytes) {
+void logSipPacket(
+    const char* direction,
+    const SipMessage& message,
+    const SipServer::SipPeer& remote,
+    std::size_t bytes,
+    bool includeBody
+) {
     LOG_DEBUG << "[GB28181][SIP][" << direction << "] " << transportName(remote.transport)
               << " " << peerToString(remote)
               << ", start_line=\"" << message.startLine << "\""
@@ -185,7 +191,7 @@ void logSipPacket(const char* direction, const SipMessage& message, const SipSer
               << ", bytes=" << bytes
               << ", body_bytes=" << message.body.size();
 
-    if (!message.body.empty()) {
+    if (includeBody && !message.body.empty()) {
         LOG_TRACE << "[GB28181][SIP][" << direction << "_BODY] " << transportName(remote.transport)
                   << " " << peerToString(remote)
                   << ", call_id=" << message.header("Call-ID")
@@ -193,7 +199,7 @@ void logSipPacket(const char* direction, const SipMessage& message, const SipSer
     }
 }
 
-void logSipSend(const std::string& packet, const SipServer::SipPeer& remote) {
+void logSipSend(const std::string& packet, const SipServer::SipPeer& remote, bool includeBody) {
     const auto message = SipMessage::parse(packet);
     if (!message.has_value()) {
         LOG_DEBUG << "[GB28181][SIP][TX] " << transportName(remote.transport)
@@ -202,7 +208,7 @@ void logSipSend(const std::string& packet, const SipServer::SipPeer& remote) {
                   << ", first_bytes=\"" << compactForLog(packet, 160) << "\"";
         return;
     }
-    logSipPacket("TX", *message, remote, packet.size());
+    logSipPacket("TX", *message, remote, packet.size(), includeBody);
 }
 
 std::string xmlText(const pugi::xml_node& node, const char* name) {
@@ -360,6 +366,52 @@ std::string socketAddressToIp(const sockaddr_in& address) {
     return buffer;
 }
 
+class LoopDispatchAwaiter {
+public:
+    using Work = std::function<void()>;
+
+    LoopDispatchAwaiter(trantor::EventLoop* loop, Work work)
+        : loop_(loop), work_(std::move(work)) {}
+
+    bool await_ready() const noexcept {
+        return loop_ == nullptr || loop_->isInLoopThread();
+    }
+
+    void await_suspend(std::coroutine_handle<> handle) {
+        loop_->queueInLoop([this, handle]() mutable {
+            runWork();
+            handle.resume();
+        });
+    }
+
+    void await_resume() {
+        if (await_ready()) {
+            runWork();
+        }
+        if (exception_) {
+            std::rethrow_exception(exception_);
+        }
+    }
+
+private:
+    void runWork() {
+        if (ran_) {
+            return;
+        }
+        ran_ = true;
+        try {
+            work_();
+        } catch (...) {
+            exception_ = std::current_exception();
+        }
+    }
+
+    trantor::EventLoop* loop_{nullptr};
+    Work work_;
+    bool ran_{false};
+    std::exception_ptr exception_;
+};
+
 } // namespace
 
 SipServer::SipServer(SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistry& deviceRegistry, ZlmClient& zlmClient)
@@ -369,13 +421,27 @@ SipServer::SipServer(SipConfig sipConfig, MediaConfig mediaConfig, DeviceRegistr
       zlmClient_(zlmClient) {}
 
 SipServer::~SipServer() {
-    stop();
+    if (!running_.load()) {
+        return;
+    }
+    if (ioLoop_ != nullptr && ioLoop_->isInLoopThread()) {
+        running_.store(false);
+        stopInLoop();
+    } else {
+        LOG_WARN << "[GB28181][SIP] SipServer destroyed while running; call stopCoro() before destruction";
+    }
 }
 
 void SipServer::start() {
+    drogon::async_run([this]() -> drogon::Task<> {
+        co_await startCoro();
+    });
+}
+
+drogon::Task<> SipServer::startCoro() {
     if (running_.exchange(true)) {
         LOG_DEBUG << "[GB28181][SIP] Start skipped: server already running";
-        return;
+        co_return;
     }
 
     LOG_DEBUG << "[GB28181][SIP] Starting, listen=" << sipConfig_.host << ":" << sipConfig_.port
@@ -387,52 +453,37 @@ void SipServer::start() {
              << ", zlm_base_url=" << mediaConfig_.zlmBaseUrl;
 
     ioLoop_ = TcpLinkManager::instance().getNextIoLoop();
-    if (ioLoop_->isInLoopThread()) {
+    auto startWork = [this]() {
         try {
             startInLoop();
         } catch (...) {
             running_.store(false);
             throw;
         }
-        return;
-    }
-
-    auto promise = std::make_shared<std::promise<void>>();
-    auto future = promise->get_future();
-    ioLoop_->queueInLoop([this, promise]() {
-        try {
-            startInLoop();
-            promise->set_value();
-        } catch (...) {
-            running_.store(false);
-            promise->set_exception(std::current_exception());
-        }
-    });
-    future.get();
+    };
+    co_await LoopDispatchAwaiter(ioLoop_, std::move(startWork));
 }
 
 void SipServer::stop() {
+    drogon::async_run([this]() -> drogon::Task<> {
+        co_await stopCoro();
+    });
+}
+
+drogon::Task<> SipServer::stopCoro() {
     if (!running_.exchange(false)) {
         LOG_DEBUG << "[GB28181][SIP] Stop skipped: server is not running";
-        return;
+        co_return;
     }
 
     if (ioLoop_ == nullptr) {
         LOG_DEBUG << "[GB28181][SIP] Stop skipped: IO loop is not available";
-        return;
+        co_return;
     }
     LOG_DEBUG << "[GB28181][SIP] Stopping";
-    if (ioLoop_->isInLoopThread()) {
+    co_await LoopDispatchAwaiter(ioLoop_, [this]() {
         stopInLoop();
-    } else {
-        auto promise = std::make_shared<std::promise<void>>();
-        auto future = promise->get_future();
-        ioLoop_->queueInLoop([this, promise]() {
-            stopInLoop();
-            promise->set_value();
-        });
-        future.get();
-    }
+    });
 }
 
 void SipServer::startInLoop() {
@@ -541,8 +592,10 @@ void SipServer::handleUdpReadable() {
         peer.udp = remoteAddress;
         peer.address = socketAddressToIp(remoteAddress);
         peer.port = ntohs(remoteAddress.sin_port);
-        LOG_DEBUG << "[GB28181][SIP][UDP_RX] remote=" << peerToString(peer)
-                  << ", bytes=" << size;
+        if (sipConfig_.logging) {
+            LOG_DEBUG << "[GB28181][SIP][UDP_RX] remote=" << peerToString(peer)
+                      << ", bytes=" << size;
+        }
         handlePacket(std::string(buffer.data(), static_cast<size_t>(size)), peer);
     }
 }
@@ -589,8 +642,10 @@ void SipServer::handleTcpMessage(const trantor::TcpConnectionPtr& connection, tr
     buffer->retrieveAll();
 
     const auto key = connection->peerAddr().toIpPort();
-    LOG_DEBUG << "[GB28181][SIP][TCP_RX] remote=" << key
-              << ", pending_bytes=" << context->pending.size();
+    if (sipConfig_.logging) {
+        LOG_DEBUG << "[GB28181][SIP][TCP_RX] remote=" << key
+                  << ", pending_bytes=" << context->pending.size();
+    }
     while (true) {
         const auto headerEnd = context->pending.find("\r\n\r\n");
         if (headerEnd == std::string::npos) {
@@ -623,7 +678,9 @@ void SipServer::handlePacket(const std::string& packet, const SipPeer& remote) {
         return;
     }
 
-    logSipPacket("RX", *message, remote, packet.size());
+    if (sipConfig_.logging) {
+        logSipPacket("RX", *message, remote, packet.size(), true);
+    }
 
     if (message->statusCode > 0) {
         handleResponse(*message, remote);
@@ -640,10 +697,12 @@ void SipServer::handlePacket(const std::string& packet, const SipPeer& remote) {
         return;
     }
 
-    LOG_WARN << "[GB28181][SIP] Unsupported method, method=" << message->method
-             << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
-             << ", call_id=" << message->header("Call-ID")
-             << ", cseq=\"" << message->header("CSeq") << "\"";
+    if (sipConfig_.logging) {
+        LOG_WARN << "[GB28181][SIP] Unsupported method, method=" << message->method
+                 << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+                 << ", call_id=" << message->header("Call-ID")
+                 << ", cseq=\"" << message->header("CSeq") << "\"";
+    }
     sendResponse(*message, remote, 405, "Method Not Allowed");
 }
 
@@ -1666,15 +1725,19 @@ void SipServer::sendResponse(const SipMessage& request, const SipPeer& remote, i
 
     const auto data = response.str();
     sendRequest(data, remote);
-    LOG_DEBUG << "[GB28181][SIP] Response sent, status=" << statusCode
-              << ", reason=\"" << reason << "\""
-              << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
-              << ", call_id=" << callId
-              << ", cseq=\"" << cseq << "\"";
+    if (sipConfig_.logging) {
+        LOG_DEBUG << "[GB28181][SIP] Response sent, status=" << statusCode
+                  << ", reason=\"" << reason << "\""
+                  << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+                  << ", call_id=" << callId
+                  << ", cseq=\"" << cseq << "\"";
+    }
 }
 
 void SipServer::sendRequest(const std::string& request, const SipPeer& remote) {
-    logSipSend(request, remote);
+    if (sipConfig_.logging) {
+        logSipSend(request, remote, true);
+    }
 
     std::lock_guard lock(sendMutex_);
     if (remote.transport == SipTransport::Tcp) {
@@ -1684,8 +1747,10 @@ void SipServer::sendRequest(const std::string& request, const SipPeer& remote) {
             return;
         }
         remote.tcp->send(request);
-        LOG_DEBUG << "[GB28181][SIP][TCP_TX] remote=" << peerToString(remote)
-                  << ", bytes=" << request.size();
+        if (sipConfig_.logging) {
+            LOG_DEBUG << "[GB28181][SIP][TCP_TX] remote=" << peerToString(remote)
+                      << ", bytes=" << request.size();
+        }
         return;
     }
 
@@ -1708,7 +1773,7 @@ void SipServer::sendRequest(const std::string& request, const SipPeer& remote) {
             sizeof(remoteAddress));
         if (sent < 0) {
             LOG_WARN << "[GB28181][SIP] UDP send failed: " << socketErrorMessage();
-        } else {
+        } else if (sipConfig_.logging) {
             LOG_DEBUG << "[GB28181][SIP][UDP_TX] bytes=" << sent;
         }
     });

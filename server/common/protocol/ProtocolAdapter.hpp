@@ -225,6 +225,24 @@ public:
 
 protected:
     /**
+     * @brief 判断生命周期事件是否应由当前协议适配器处理
+     *
+     * eventProtocol 为空表示广播给所有协议；否则只命中协议名一致的适配器。
+     */
+    bool acceptsLifecycleEvent(std::string_view eventProtocol) const {
+        return eventProtocol.empty() || eventProtocol == protocol();
+    }
+
+    /**
+     * @brief 常见生命周期策略：命中当前协议时触发 reload
+     */
+    ProtocolLifecycleImpact reloadOnAcceptedLifecycleEvent(std::string_view eventProtocol) const {
+        return acceptsLifecycleEvent(eventProtocol)
+            ? ProtocolLifecycleImpact::Reload
+            : ProtocolLifecycleImpact::None;
+    }
+
+    /**
      * @brief 遍历会话快照并对满足条件的会话执行回调
      *
      * 只负责“重放运行态会话”，不关心具体协议里的 Bound / Activated 语义，

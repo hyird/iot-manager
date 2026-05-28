@@ -313,17 +313,11 @@ public:
     }
 
     ProtocolLifecycleImpact onDeviceLifecycleEvent(const DeviceLifecycleEvent& event) override {
-        if (!event.protocol.empty() && event.protocol != Constants::PROTOCOL_MODBUS) {
-            return ProtocolLifecycleImpact::None;
-        }
-        return ProtocolLifecycleImpact::Reload;
+        return reloadOnAcceptedLifecycleEvent(event.protocol);
     }
 
     ProtocolLifecycleImpact onProtocolConfigLifecycleEvent(const ProtocolConfigLifecycleEvent& event) override {
-        if (!event.protocol.empty() && event.protocol != Constants::PROTOCOL_MODBUS) {
-            return ProtocolLifecycleImpact::None;
-        }
-        return ProtocolLifecycleImpact::Reload;
+        return reloadOnAcceptedLifecycleEvent(event.protocol);
     }
 
     Task<CommandResult> sendCommand(const CommandRequest& req) override {

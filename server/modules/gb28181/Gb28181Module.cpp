@@ -56,11 +56,17 @@ struct Gb28181Module::Impl {
     }
 
     void start() {
+        drogon::async_run([this]() -> drogon::Task<> {
+            co_await startCoro();
+        });
+    }
+
+    drogon::Task<> startCoro() {
         if (!initialized) {
             initialize();
         }
         if (!config.enabled || running) {
-            return;
+            co_return;
         }
         if (!sipServer) {
             throw std::runtime_error("GB28181 SIP server is not initialized");
@@ -70,7 +76,7 @@ struct Gb28181Module::Impl {
             ensureWindowsFirewallRules(config);
         }
 
-        sipServer->start();
+        co_await sipServer->startCoro();
         running = true;
         LOG_INFO << "[GB28181] Module started, SIP id=" << config.sip.id
                                 << ", domain=" << config.sip.domain
@@ -78,11 +84,17 @@ struct Gb28181Module::Impl {
     }
 
     void stop() {
+        drogon::async_run([this]() -> drogon::Task<> {
+            co_await stopCoro();
+        });
+    }
+
+    drogon::Task<> stopCoro() {
         if (!running) {
-            return;
+            co_return;
         }
         if (sipServer) {
-            sipServer->stop();
+            co_await sipServer->stopCoro();
         }
         running = false;
         LOG_INFO << "[GB28181] Module stopped";
@@ -110,8 +122,19 @@ void Gb28181Module::initialize() {
 }
 
 void Gb28181Module::start() {
+    drogon::async_run([this]() -> drogon::Task<> {
+        try {
+            co_await startCoro();
+        } catch (const std::exception& e) {
+            impl_->lastErrorMessage = e.what();
+            LOG_ERROR << "[GB28181] Async start failed: " << e.what();
+        }
+    });
+}
+
+drogon::Task<> Gb28181Module::startCoro() {
     try {
-        impl_->start();
+        co_await impl_->startCoro();
         impl_->lastErrorMessage.clear();
     } catch (const std::exception& e) {
         impl_->lastErrorMessage = e.what();
@@ -120,7 +143,18 @@ void Gb28181Module::start() {
 }
 
 void Gb28181Module::stop() {
-    impl_->stop();
+    drogon::async_run([this]() -> drogon::Task<> {
+        try {
+            co_await stopCoro();
+        } catch (const std::exception& e) {
+            impl_->lastErrorMessage = e.what();
+            LOG_ERROR << "[GB28181] Async stop failed: " << e.what();
+        }
+    });
+}
+
+drogon::Task<> Gb28181Module::stopCoro() {
+    co_await impl_->stopCoro();
 }
 
 bool Gb28181Module::enabled() const {

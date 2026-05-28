@@ -150,6 +150,13 @@ AppConfig AppConfig::loadFromFile(const std::string& path) {
     config.sip.port = getUInt16(sip, "port", config.sip.port);
     config.sip.password = getString(sip, "password");
     config.sip.transport = getString(sip, "transport", config.sip.transport);
+    if (const auto* loggingValue = root.if_contains("logging");
+        loggingValue != nullptr && !loggingValue->is_null()) {
+        if (!loggingValue->is_bool()) {
+            throw std::runtime_error("Expected bool for JSON key: logging");
+        }
+        config.sip.logging = loggingValue->as_bool();
+    }
 
     config.media.zlmBaseUrl = getString(media, "zlm_base_url");
     config.media.zlmPublicBaseUrl = getString(media, "zlm_public_base_url", config.media.zlmBaseUrl);
@@ -186,6 +193,13 @@ AppConfig AppConfig::fromJson(const Json::Value& root) {
     config.sip.port = getJsonUInt16(sip, "port", config.sip.port);
     config.sip.password = getJsonString(sip, "password");
     config.sip.transport = getJsonString(sip, "transport", config.sip.transport);
+
+    if (root.isMember("logging") && !root["logging"].isNull()) {
+        if (!root["logging"].isBool()) {
+            throw std::runtime_error("Expected bool for JSON key: logging");
+        }
+        config.sip.logging = root["logging"].asBool();
+    }
 
     const auto media = requireJsonObject(root, "media");
     config.media.zlmBaseUrl = getJsonString(media, "zlm_base_url");

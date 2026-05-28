@@ -1,9 +1,13 @@
 #pragma once
 
 #include "LinkState.hpp"
+#include "common/protocol/ProtocolLog.hpp"
 
+#include <cctype>
 #include <cstddef>
-#include <latch>
+#include <coroutine>
+#include <iomanip>
+#include <sstream>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -244,6 +248,8 @@ public:
             // 无锁更新活动时间（高频消息路径避免锁竞争）
             rt->recordActivity();
 
+            logReceivedFrame(linkId, clientAddr, data);
+
             if (dataCallbackWithClient_) {
                 dataCallbackWithClient_(linkId, clientAddr, data);
             } else if (dataCallback_) {
@@ -346,6 +352,8 @@ public:
                 // 无锁更新活动时间（高频消息路径避免锁竞争）
                 rt->recordActivity();
 
+                logReceivedFrame(linkId, serverAddr, data);
+
                 if (dataCallbackWithClient_) {
                     dataCallbackWithClient_(linkId, serverAddr, data);
                 } else if (dataCallback_) {
@@ -410,13 +418,65 @@ public:
      * @brief 停止所有链路
      */
     void stopAll() {
+        stopAllAsync(nullptr);
+    }
+
+    drogon::Task<> stopAllCoro() {
+        struct Awaiter {
+            TcpLinkManager& manager;
+            trantor::EventLoop* resumeLoop{nullptr};
+
+            bool await_ready() const noexcept {
+                return false;
+            }
+
+            void await_suspend(std::coroutine_handle<> handle) {
+                resumeLoop = trantor::EventLoop::getEventLoopOfCurrentThread();
+                manager.stopAllAsync([this, handle]() mutable {
+                    if (resumeLoop) {
+                        resumeLoop->queueInLoop([handle]() mutable {
+                            handle.resume();
+                        });
+                    } else {
+                        handle.resume();
+                    }
+                });
+            }
+
+            void await_resume() const noexcept {}
+        };
+
+        co_await Awaiter{*this};
+    }
+
+    void stopAllAsync(std::function<void()> onDone) {
         std::map<int, std::shared_ptr<LinkRuntime>> toStop;
         {
             std::unique_lock lock(mutex_);
             toStop.swap(runtimes_);
         }
 
-        auto done = std::make_shared<std::latch>(static_cast<std::ptrdiff_t>(toStop.size()));
+        if (toStop.empty()) {
+            if (onDone) {
+                if (auto* currentLoop = trantor::EventLoop::getEventLoopOfCurrentThread()) {
+                    currentLoop->queueInLoop(std::move(onDone));
+                } else if (auto* appLoop = drogon::app().getLoop()) {
+                    appLoop->queueInLoop(std::move(onDone));
+                } else {
+                    onDone();
+                }
+            }
+            return;
+        }
+
+        auto remaining = std::make_shared<std::atomic_size_t>(toStop.size());
+        auto finish = std::make_shared<std::function<void()>>(std::move(onDone));
+        auto markDone = [remaining, finish]() {
+            if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1 && *finish) {
+                (*finish)();
+            }
+        };
+
         for (auto& [id, runtime] : toStop) {
             {
                 std::lock_guard<std::mutex> lock(runtime->connMutex);
@@ -424,7 +484,7 @@ public:
             }
 
             if (runtime->loop) {
-                runtime->loop->runInLoop([runtime, id, done]() {
+                runtime->loop->runInLoop([runtime, id, markDone]() {
                     try {
                         if (runtime->server) {
                             runtime->server->stop();
@@ -439,14 +499,12 @@ public:
                     } catch (...) {
                         LOG_ERROR << "[Link " << id << "] stopAll callback failed with unknown exception";
                     }
-                    done->count_down();
+                    markDone();
                 });
             } else {
-                done->count_down();
+                markDone();
             }
         }
-
-        done->wait();
     }
 
     bool isRunning(int linkId) {
@@ -548,6 +606,7 @@ public:
             runtime->clientConn->send(data);
             totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
             totalPacketsTx_.fetch_add(1, std::memory_order_relaxed);
+            logSentFrame(linkId, runtime->clientConn->peerAddr().toIpPort(), data, "client");
             return true;
         }
 
@@ -556,6 +615,7 @@ public:
             for (const auto& conn : runtime->serverConns) {
                 if (conn->connected()) {
                     conn->send(data);
+                    logSentFrame(linkId, conn->peerAddr().toIpPort(), data, "broadcast");
                     ++sentCount;
                 }
             }
@@ -589,6 +649,7 @@ public:
             for (const auto& conn : runtime->serverConns) {
                 if (conn->connected() && excludeAddrs.find(conn->peerAddr().toIpPort()) == excludeAddrs.end()) {
                     conn->send(data);
+                    logSentFrame(linkId, conn->peerAddr().toIpPort(), data, "broadcast_excluding");
                     ++sentCount;
                 }
             }
@@ -617,6 +678,7 @@ public:
                 conn->send(data);
                 totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
                 totalPacketsTx_.fetch_add(1, std::memory_order_relaxed);
+                logSentFrame(linkId, clientAddr, data, "target");
                 return true;
             }
         }
@@ -763,6 +825,57 @@ private:
 
     TcpLinkManager(const TcpLinkManager&) = delete;
     TcpLinkManager& operator=(const TcpLinkManager&) = delete;
+
+    static std::string bytesToHex(const std::string& data, std::size_t limit = 512) {
+        std::ostringstream oss;
+        const auto count = std::min(data.size(), limit);
+        for (std::size_t i = 0; i < count; ++i) {
+            if (i > 0) oss << ' ';
+            const auto byte = static_cast<unsigned char>(data[i]);
+            oss << std::uppercase << std::hex << std::setw(2) << std::setfill('0')
+                << static_cast<int>(byte);
+        }
+        if (data.size() > limit) {
+            oss << " ...";
+        }
+        return oss.str();
+    }
+
+    static std::string bytesToPrintableAscii(const std::string& data, std::size_t limit = 256) {
+        std::string out;
+        const auto count = std::min(data.size(), limit);
+        out.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto byte = static_cast<unsigned char>(data[i]);
+            switch (byte) {
+                case '\r': out += "\\r"; break;
+                case '\n': out += "\\n"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    out.push_back(std::isprint(byte) ? static_cast<char>(byte) : '.');
+                    break;
+            }
+        }
+        if (data.size() > limit) {
+            out += "...";
+        }
+        return out;
+    }
+
+    static void logReceivedFrame(int linkId, const std::string& peer, const std::string& data) {
+        LOG_DEBUG << protocol_log::prefix("Link", "Tcp", "rx")
+                  << " linkId=" << linkId
+                  << ", peer=" << peer
+                  << ", " << protocol_log::bytesSummary(data);
+    }
+
+    static void logSentFrame(int linkId, const std::string& peer, const std::string& data, std::string_view mode) {
+        LOG_DEBUG << protocol_log::prefix("Link", "Tcp", "tx")
+                  << " linkId=" << linkId
+                  << ", peer=" << peer
+                  << ", mode=" << mode
+                  << ", " << protocol_log::bytesSummary(data);
+    }
 
     EventLoop* getNextLoop() {
         if (initialized_ && ioLoopPool_) {

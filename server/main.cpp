@@ -146,10 +146,10 @@ void broadcastShutdownSnapshot(const std::string& reason) {
     }
 }
 
-void performShutdownCleanup(const std::string& reason) {
+Task<> performShutdownCleanupCoro(const std::string& reason) {
     bool expected = false;
     if (!gShutdownCleanupDone.compare_exchange_strong(expected, true)) {
-        return;
+        co_return;
     }
 
     LOG_INFO << "Server is stopping, cleaning up resources... reason=" << reason;
@@ -157,13 +157,13 @@ void performShutdownCleanup(const std::string& reason) {
     broadcastShutdownSnapshot(reason);
 
     // 0. Stop GB28181 SIP/media runtime first so no new camera traffic enters shutdown.
-    Gb28181Module::instance().stop();
+    co_await Gb28181Module::instance().stopCoro();
 
     // 1. 停止告警引擎离线检测定时器
     AlertEngine::instance().stopOfflineChecker();
 
     // 2. 停止所有 TCP 链路
-    TcpLinkManager::instance().stopAll();
+    co_await TcpLinkManager::instance().stopAllCoro();
 
     // 3. 注销所有事件处理器（防止内存泄漏）
     EventBus::instance().unsubscribeAll();
@@ -174,6 +174,12 @@ void performShutdownCleanup(const std::string& reason) {
     LOG_INFO << "All resources cleaned up";
 }
 
+void performShutdownCleanup(const std::string& reason) {
+    async_run([reason]() -> Task<> {
+        co_await performShutdownCleanupCoro(reason);
+    });
+}
+
 void requestShutdown(const char* reason) {
     bool expected = false;
     if (!gShutdownRequested.compare_exchange_strong(expected, true)) {
@@ -182,8 +188,10 @@ void requestShutdown(const char* reason) {
     }
 
     auto shutdown = [reason = std::string(reason ? reason : "signal")]() {
-        performShutdownCleanup(reason);
-        app().quit();
+        async_run([reason]() -> Task<> {
+            co_await performShutdownCleanupCoro(reason);
+            app().quit();
+        });
     };
 
     try {
@@ -241,13 +249,9 @@ void installShutdownSignalHandlers() {
  * @brief 输出启动阶段错误到控制台和日志
  */
 /**
- * @brief 致命错误退出（Windows 下暂停，避免控制台闪退）
+ * @brief 致命错误退出
  */
 [[noreturn]] void fatalExit(int code = 1) {
-#ifdef _WIN32
-    std::cerr << "Press Enter to exit..." << std::endl;
-    std::cin.get();
-#endif
     std::exit(code);
 }
 
@@ -332,20 +336,6 @@ void onServerStarted() {
     // Initialize the shared TCP IO pool before modules that bind network sockets.
     TcpLinkManager::instance().initialize(ConfigManager::getNumberOfThreads());
 
-    try {
-        Gb28181Module::instance().start();
-    } catch (const std::exception& e) {
-        printStartupError("GB28181 module startup failed", e.what(), {
-            "Check custom_config.gb28181.sip host/port",
-            "Check whether SIP port 5060 is already in use",
-            "Check ZLM media configuration",
-        });
-        app().getLoop()->queueInLoop([]() {
-            app().quit();
-        });
-        return;
-    }
-
     // 初始化协议分发器基础设施
     auto& dispatcher = ProtocolDispatcher::instance();
     dispatcher.initialize();
@@ -396,6 +386,10 @@ void onServerStarted() {
     async_run([]() -> Task<> {
         std::string stage = "startup:init";
         try {
+            stage = "gb28181:start";
+            LOG_INFO << "[Startup] " << stage;
+            co_await Gb28181Module::instance().startCoro();
+
             stage = "database:ping";
             LOG_INFO << "[Startup] " << stage;
             DatabaseService dbHealthCheck;

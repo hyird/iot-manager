@@ -23,6 +23,8 @@ public:
 
 #else
 
+#include "common/protocol/ProtocolLog.hpp"
+
 #include <atomic>
 #include <cstring>
 #include <fcntl.h>
@@ -74,8 +76,10 @@ public:
 
         int fd = ::open(channel.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
         if (fd < 0) {
-            std::cerr << "[EdgeNodeSerialLinkManager] failed to open " << channel
-                      << ": " << std::strerror(errno) << std::endl;
+            LOG_WARN << protocol_log::prefix("Link", "Serial", "open_failed")
+                     << " linkId=" << linkId
+                     << ", channel=" << channel
+                     << ", error=" << std::strerror(errno);
             return;
         }
 
@@ -84,7 +88,9 @@ public:
         ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
 
         if (!configurePort(fd, baudRate)) {
-            std::cerr << "[EdgeNodeSerialLinkManager] failed to configure " << channel << std::endl;
+            LOG_WARN << protocol_log::prefix("Link", "Serial", "configure_failed")
+                     << " linkId=" << linkId
+                     << ", channel=" << channel;
             ::close(fd);
             return;
         }
@@ -107,8 +113,10 @@ public:
             readLoop(port);
         });
 
-        std::cout << "[EdgeNodeSerialLinkManager] opened " << channel
-                  << " (baud=" << baudRate << ") as link " << linkId << std::endl;
+        LOG_INFO << protocol_log::prefix("Link", "Serial", "opened")
+                 << " linkId=" << linkId
+                 << ", channel=" << channel
+                 << ", baud=" << baudRate;
 
         if (connectionCallback_) {
             connectionCallback_(linkId, true);
@@ -134,8 +142,9 @@ public:
             port->readThread.join();
         }
 
-        std::cout << "[EdgeNodeSerialLinkManager] closed " << port->channel
-                  << " (link " << linkId << ")" << std::endl;
+        LOG_INFO << protocol_log::prefix("Link", "Serial", "closed")
+                 << " linkId=" << linkId
+                 << ", channel=" << port->channel;
 
         if (connectionCallback_) {
             connectionCallback_(linkId, false);
@@ -173,8 +182,10 @@ public:
             ssize_t n = ::write(port->fd, buf, remaining);
             if (n < 0) {
                 if (errno == EINTR) continue;
-                std::cerr << "[EdgeNodeSerialLinkManager] write error on link " << linkId
-                          << ": " << std::strerror(errno) << std::endl;
+                LOG_WARN << protocol_log::prefix("Link", "Serial", "tx_failed")
+                         << " linkId=" << linkId
+                         << ", channel=" << port->channel
+                         << ", error=" << std::strerror(errno);
                 return false;
             }
             buf += n;
@@ -183,6 +194,10 @@ public:
 
         // 等待数据发送完毕
         ::tcdrain(port->fd);
+        LOG_DEBUG << protocol_log::prefix("Link", "Serial", "tx")
+                  << " linkId=" << linkId
+                  << ", channel=" << port->channel
+                  << ", " << protocol_log::bytesSummary(data);
         return true;
     }
 
@@ -267,12 +282,18 @@ private:
             ssize_t n = ::read(port->fd, buf, BUF_SIZE);
             if (n > 0) {
                 std::string data(reinterpret_cast<const char*>(buf), static_cast<size_t>(n));
+                LOG_DEBUG << protocol_log::prefix("Link", "Serial", "rx")
+                          << " linkId=" << port->linkId
+                          << ", channel=" << port->channel
+                          << ", " << protocol_log::bytesSummary(data);
                 if (dataCallback_) {
                     dataCallback_(port->linkId, data);
                 }
             } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
-            std::cerr << "[EdgeNodeSerialLinkManager] read error on " << port->channel
-                          << ": " << std::strerror(errno) << std::endl;
+                LOG_WARN << protocol_log::prefix("Link", "Serial", "rx_failed")
+                         << " linkId=" << port->linkId
+                         << ", channel=" << port->channel
+                         << ", error=" << std::strerror(errno);
                 break;
             }
             // n == 0: VTIME 超时，继续循环

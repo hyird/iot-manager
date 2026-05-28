@@ -50,6 +50,8 @@ public:
 
     void start();
     void stop();
+    drogon::Task<> startCoro();
+    drogon::Task<> stopCoro();
     bool queryCatalog(const std::string& deviceId);
     bool queryRecords(const std::string& deviceId, const std::string& channelId, const std::string& startTime, const std::string& endTime);
     bool sendPtzControl(const std::string& deviceId, const std::string& channelId, const std::string& action, uint8_t speed);

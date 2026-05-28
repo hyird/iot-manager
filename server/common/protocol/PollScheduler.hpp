@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/network/TcpLinkManager.hpp"
+#include "common/protocol/ProtocolLog.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -239,9 +240,8 @@ public:
                     && entry.intervalSec < DEGRADE_INTERVAL_SEC) {
                     intervalSec = DEGRADE_INTERVAL_SEC;
                     if (entry.consecutiveFailures == DEGRADE_THRESHOLD) {
-                        LOG_WARN << "[" << logPrefix_ << "][PollScheduler] Device "
-                                 << deviceLabel(entry)
-                                 << "(id=" << deviceId << ")"
+                        LOG_WARN << protocol_log::prefix(logPrefix_, "PollScheduler", "degraded")
+                                 << ' ' << protocol_log::device(deviceId, deviceLabel(entry))
                                  << " degraded after " << DEGRADE_THRESHOLD
                                  << " consecutive failures, interval=" << intervalSec << "s";
                     }
@@ -251,9 +251,8 @@ public:
             }
 
             if (entry.consecutiveFailures >= DEGRADE_THRESHOLD) {
-                LOG_INFO << "[" << logPrefix_ << "][PollScheduler] Device "
-                         << deviceLabel(entry)
-                         << "(id=" << deviceId << ")"
+                LOG_INFO << protocol_log::prefix(logPrefix_, "PollScheduler", "recovered")
+                         << ' ' << protocol_log::device(deviceId, deviceLabel(entry))
                          << " recovered from degraded state";
             }
             entry.consecutiveFailures = 0;
@@ -310,9 +309,11 @@ private:
             try {
                 onTick();
             } catch (const std::exception& e) {
-                LOG_ERROR << "[" << logPrefix_ << "][PollScheduler] Tick exception: " << e.what();
+                LOG_ERROR << protocol_log::prefix(logPrefix_, "PollScheduler", "tick_error")
+                          << " error=" << e.what();
             } catch (...) {
-                LOG_ERROR << "[" << logPrefix_ << "][PollScheduler] Tick unknown exception";
+                LOG_ERROR << protocol_log::prefix(logPrefix_, "PollScheduler", "tick_error")
+                          << " error=<unknown>";
             }
         });
         tickActive_ = true;

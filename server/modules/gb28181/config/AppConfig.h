@@ -18,6 +18,7 @@ struct SipConfig {
     uint16_t port{5060};
     std::string password;
     std::string transport{"udp"};
+    bool logging{true};
 };
 
 struct MediaConfig {

@@ -102,7 +102,7 @@ public:
     }
 
     ProtocolLifecycleImpact onDeviceLifecycleEvent(const DeviceLifecycleEvent& event) override {
-        if (!event.protocol.empty() && event.protocol != Constants::PROTOCOL_SL651) {
+        if (!acceptsLifecycleEvent(event.protocol)) {
             return ProtocolLifecycleImpact::None;
         }
         if (event.action == DeviceLifecycleAction::Deleted && !event.deviceCode.empty()) {
@@ -113,7 +113,7 @@ public:
 
     ProtocolLifecycleImpact onProtocolConfigLifecycleEvent(
         const ProtocolConfigLifecycleEvent& event) override {
-        if (!event.protocol.empty() && event.protocol != Constants::PROTOCOL_SL651) {
+        if (!acceptsLifecycleEvent(event.protocol)) {
             return ProtocolLifecycleImpact::None;
         }
 

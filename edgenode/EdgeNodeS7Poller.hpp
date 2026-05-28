@@ -2,6 +2,7 @@
 
 #include "common/edgenode/AgentProtocol.hpp"
 #include "common/protocol/FrameResult.hpp"
+#include "common/protocol/ProtocolLog.hpp"
 #include "common/protocol/s7/S7.Client.hpp"
 #include "common/utils/Constants.hpp"
 #include "common/utils/CoroutineExecutor.hpp"
@@ -57,21 +58,25 @@ public:
                 runtime.nextPollAt = std::chrono::steady_clock::now();
 
                 if (runtime.deviceId <= 0 || runtime.areas.empty()) {
+                    LOG_WARN << protocol_log::prefix("S7", "EdgePoller", "config_skip")
+                             << ' ' << protocol_log::device(runtime.deviceId, runtime.deviceName)
+                             << ", reason=" << (runtime.deviceId <= 0 ? "invalid_device_id" : "no_valid_areas");
                     continue;
                 }
 
-                std::cout << "[EdgeNodeS7Poller] device: id=" << runtime.deviceId
-                          << ", name=" << runtime.deviceName
-                          << ", host=" << runtime.host << ":" << runtime.port
-                          << ", mode=" << runtime.connection.mode
-                          << ", areas=" << runtime.areas.size()
-                          << ", interval=" << runtime.connection.pollIntervalSec << "s" << std::endl;
+                LOG_INFO << protocol_log::prefix("S7", "EdgePoller", "config_device")
+                         << ' ' << protocol_log::device(runtime.deviceId, runtime.deviceName)
+                         << ", host=" << runtime.host << ":" << runtime.port
+                         << ", mode=" << runtime.connection.mode
+                         << ", areas=" << runtime.areas.size()
+                         << ", interval=" << runtime.connection.pollIntervalSec << "s";
 
                 devices_[runtime.deviceId] = std::move(runtime);
             }
         }
 
-        std::cout << "[EdgeNodeS7Poller] Loaded " << devices_.size() << " S7 device(s)" << std::endl;
+        LOG_INFO << protocol_log::prefix("S7", "EdgePoller", "config_loaded")
+                 << " devices=" << devices_.size();
     }
 
     drogon::Task<> tickCoro() {
@@ -90,9 +95,11 @@ public:
                 return tickBlocking();
             });
         } catch (const std::exception& e) {
-            std::cout << "[WARN] [EdgeNodeS7Poller] async tick failed: " << e.what() << std::endl;
+            LOG_WARN << protocol_log::prefix("S7", "EdgePoller", "tick_error")
+                     << " error=" << e.what();
         } catch (...) {
-            std::cout << "[WARN] [EdgeNodeS7Poller] async tick failed: <unknown>" << std::endl;
+            LOG_WARN << protocol_log::prefix("S7", "EdgePoller", "tick_error")
+                     << " error=<unknown>";
         }
 
         if (!batch.empty() && dataCallback_) {
@@ -518,13 +525,15 @@ private:
 
         runtime.connected = (rc == s7::kS7Ok) && runtime.client->connected();
         if (!runtime.connected) {
-            std::cout << "[WARN] [EdgeNodeS7Poller] connect failed: device=" << runtime.deviceId
-                      << ", host=" << runtime.host << ":" << runtime.port
-                      << ", rc=" << rc << std::endl;
+            LOG_WARN << protocol_log::prefix("S7", "EdgePoller", "connect_failed")
+                     << ' ' << protocol_log::device(runtime.deviceId, runtime.deviceName)
+                     << ", host=" << runtime.host << ":" << runtime.port
+                     << ", rc=" << rc;
             disconnect(runtime);
         } else {
-            std::cout << "[EdgeNodeS7Poller] connected: device=" << runtime.deviceId
-                      << ", host=" << runtime.host << ":" << runtime.port << std::endl;
+            LOG_INFO << protocol_log::prefix("S7", "EdgePoller", "connected")
+                     << ' ' << protocol_log::device(runtime.deviceId, runtime.deviceName)
+                     << ", host=" << runtime.host << ":" << runtime.port;
         }
         return runtime.connected;
     }
@@ -545,6 +554,10 @@ private:
 
         Json::Value aggregatedData(Json::objectValue);
         bool anyAreaSucceeded = false;
+        LOG_DEBUG << protocol_log::prefix("S7", "EdgePoller", "poll_tx")
+                  << ' ' << protocol_log::device(runtime.deviceId, runtime.deviceName)
+                  << ", areas=" << runtime.areas.size();
+
         for (const auto& area : runtime.areas) {
             std::vector<std::uint8_t> buffer(static_cast<std::size_t>(std::max(1, area.size)), 0);
             const int rc = runtime.client->readArea(
@@ -556,10 +569,12 @@ private:
                 buffer.data());
 
             if (rc != s7::kS7Ok) {
-                std::cout << "[WARN] [EdgeNodeS7Poller] read failed, skip area and continue: device="
-                          << runtime.deviceId << ", area=" << area.area
-                          << ", start=" << area.start << ", size=" << area.size
-                          << ", rc=" << rc << std::endl;
+                LOG_WARN << protocol_log::prefix("S7", "EdgePoller", "poll_area_failed")
+                         << ' ' << protocol_log::device(runtime.deviceId, runtime.deviceName)
+                         << ", area=" << area.area
+                         << ", start=" << area.start
+                         << ", size=" << area.size
+                         << ", rc=" << rc;
                 continue;
             }
 
@@ -575,6 +590,9 @@ private:
         if (aggregatedData.empty()) {
             return std::nullopt;
         }
+        LOG_INFO << protocol_log::prefix("S7", "EdgePoller", "poll_complete")
+                 << ' ' << protocol_log::device(runtime.deviceId, runtime.deviceName)
+                 << ", values=" << aggregatedData.size();
         return buildPollReadResult(runtime.deviceId, std::move(aggregatedData));
     }
 

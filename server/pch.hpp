@@ -62,7 +62,6 @@
 #include <stdexcept>
 #include <random>
 #include <regex>
-#include <future>
 
 // ==================== Drogon / Trantor 框架 ====================
 

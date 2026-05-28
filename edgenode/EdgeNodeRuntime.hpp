@@ -11,6 +11,7 @@
 #include "EdgeNodeL2ConfigBridge.hpp"
 #include "EdgeNodeSerialLinkManager.hpp"
 #include "common/edgenode/AgentProtocol.hpp"
+#include "common/protocol/ProtocolLog.hpp"
 #include "common/network/TcpLinkManager.hpp"
 
 #include <drogon/WebSocketClient.h>
@@ -847,9 +848,10 @@ private:
         const auto payload = drogon::utils::base64Decode(payloadBase64);
         const auto clientAddr = data.get("clientAddr", "").asString();
 
-        std::cout << "[Agent] device:send deviceId=" << deviceId
-                  << ", bytes=" << payload.size()
-                  << ", clientAddr=" << (clientAddr.empty() ? "(broadcast)" : clientAddr) << std::endl;
+        LOG_DEBUG << protocol_log::prefix("Link", "AgentEndpoint", "tx_request")
+                  << " deviceId=" << deviceId
+                  << ", peer=" << (clientAddr.empty() ? "(broadcast)" : clientAddr)
+                  << ", " << protocol_log::bytesSummary(payload);
 
         // 查找该设备所在的端点
         for (const auto& [epId, runtime] : endpointsByEpId_) {
@@ -866,7 +868,9 @@ private:
             }
         }
 
-        std::cout << "[WARN] " << "[Agent] device:send target device not found, deviceId=" << deviceId << std::endl;
+        LOG_WARN << protocol_log::prefix("Link", "AgentEndpoint", "tx_drop")
+                 << " deviceId=" << deviceId
+                 << ", reason=target_device_not_found";
     }
 
     /**
@@ -885,9 +889,11 @@ private:
 
         const auto& endpointId = ep.id;
 
-        std::cout << "[Agent] data received: endpoint=" << endpointId
-                  << ", client=" << clientAddr
-                  << ", bytes=" << data.size() << std::endl;
+        LOG_DEBUG << protocol_log::prefix("Link", "AgentEndpoint", "rx")
+                  << " endpointId=" << endpointId
+                  << ", peer=" << clientAddr
+                  << ", protocol=" << protocolEngine_.getProtocol(endpointId)
+                  << ", " << protocol_log::bytesSummary(data);
 
         const auto protocol = protocolEngine_.getProtocol(endpointId);
 
@@ -905,12 +911,17 @@ private:
         auto results = protocolEngine_.parseData(endpointId, clientAddr, data);
 
         if (!results.empty()) {
-            std::cout << "[Agent] parsed " << results.size() << " frame(s) from endpoint=" << endpointId
-                      << ", protocol=" << protocol << ", client=" << clientAddr << std::endl;
+            LOG_INFO << protocol_log::prefix("Link", "AgentEndpoint", "parsed")
+                     << " endpointId=" << endpointId
+                     << ", protocol=" << protocol
+                     << ", peer=" << clientAddr
+                     << ", frames=" << results.size();
             for (const auto& r : results) {
-                std::cout << "[Agent]   deviceId=" << r.deviceId
+                LOG_DEBUG << protocol_log::prefix("Link", "AgentEndpoint", "parsed_frame")
+                          << " endpointId=" << endpointId
+                          << ", deviceId=" << r.deviceId
                           << ", funcCode=" << r.funcCode
-                          << ", reportTime=" << r.reportTime << std::endl;
+                          << ", reportTime=" << r.reportTime;
             }
 
             // 解析成功 → 存入 SQLite 缓存
@@ -924,11 +935,14 @@ private:
             }
         } else if (protocolEngine_.hasConfig(endpointId)) {
             // 有配置但解析失败（可能数据不完整，等待更多数据）
-            std::cout << "[Agent] incomplete frame buffered: endpoint=" << endpointId
-                      << ", bytes=" << data.size() << std::endl;
+            LOG_DEBUG << protocol_log::prefix("Link", "AgentEndpoint", "rx_buffered")
+                      << " endpointId=" << endpointId
+                      << ", bytes=" << data.size();
         } else {
             // 无协议配置 → fallback 到原始透传
-            std::cout << "[Agent] no protocol config, fallback raw: endpoint=" << endpointId << std::endl;
+            LOG_INFO << protocol_log::prefix("Link", "AgentEndpoint", "raw_fallback")
+                     << " endpointId=" << endpointId
+                     << ", bytes=" << data.size();
             sendRawDeviceData(epKey, clientAddr, data);
         }
     }

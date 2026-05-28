@@ -6,6 +6,7 @@
 #include "common/cache/ResourceVersion.hpp"
 #include "common/database/DatabaseService.hpp"
 #include "common/protocol/FrameResult.hpp"
+#include "common/protocol/ProtocolLog.hpp"
 #include "common/utils/FieldHelper.hpp"
 #include "common/utils/JsonHelper.hpp"
 #include "common/utils/TimestampHelper.hpp"
@@ -439,6 +440,11 @@ public:
 
         try {
             auto payload = drogon::utils::base64Decode(payloadBase64);
+            LOG_DEBUG << protocol_log::prefix("Link", "AgentBridge", "rx")
+                      << " agentId=" << agentId
+                      << ", deviceId=" << deviceId
+                      << ", peer=" << clientAddr
+                      << ", " << protocol_log::bytesSummary(payload);
             DeviceDataHandler handler;
             {
                 std::shared_lock lock(mutex_);
@@ -584,6 +590,11 @@ public:
         Json::Value payload(Json::objectValue);
         payload["deviceId"] = deviceId;
         payload["payload"] = drogon::utils::base64Encode(data);
+        LOG_DEBUG << protocol_log::prefix("Link", "AgentBridge", "tx")
+                  << " agentId=" << agentId
+                  << ", deviceId=" << deviceId
+                  << ", peer=(broadcast)"
+                  << ", " << protocol_log::bytesSummary(data);
         return sendToAgent(agentId, agent::MESSAGE_DEVICE_SEND, payload);
     }
 
@@ -595,6 +606,11 @@ public:
         payload["deviceId"] = deviceId;
         payload["clientAddr"] = clientAddr;
         payload["payload"] = drogon::utils::base64Encode(data);
+        LOG_DEBUG << protocol_log::prefix("Link", "AgentBridge", "tx")
+                  << " agentId=" << agentId
+                  << ", deviceId=" << deviceId
+                  << ", peer=" << clientAddr
+                  << ", " << protocol_log::bytesSummary(data);
         return sendToAgent(agentId, agent::MESSAGE_DEVICE_SEND, payload);
     }
 

@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <drogon/drogon.h>
 
 class Gb28181Module {
 public:
@@ -13,6 +14,8 @@ public:
     void initialize();
     void start();
     void stop();
+    drogon::Task<> startCoro();
+    drogon::Task<> stopCoro();
 
     bool enabled() const;
     bool started() const;

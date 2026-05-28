@@ -3,6 +3,7 @@
 #include "EdgeNodeDataStore.hpp"
 #include "common/edgenode/AgentProtocol.hpp"
 #include "common/protocol/FrameResult.hpp"
+#include "common/protocol/ProtocolLog.hpp"
 #include "common/protocol/modbus/Modbus.SessionTypes.hpp"
 #include "common/protocol/modbus/Modbus.Types.hpp"
 #include "common/protocol/modbus/Modbus.Utils.hpp"
@@ -113,23 +114,25 @@ public:
                 buildReadGroups(ctx);
 
                 if (!ctx.readGroups.empty()) {
-                    std::cout << "[EdgeNodeModbusPoller] device: id=" << ctx.deviceId
-                              << ", name=" << ctx.deviceName
-                              << ", slaveId=" << static_cast<int>(ctx.slaveId)
-                              << ", registers=" << ctx.registers.size()
-                              << ", readGroups=" << ctx.readGroups.size()
-                              << ", mergeGap=" << ctx.mergeGap
-                              << ", maxQuantity=" << ctx.maxRegsPerRead
-                              << ", interval=" << ctx.readIntervalSec << "s" << std::endl;
+                    LOG_INFO << protocol_log::prefix("Modbus", "EdgePoller", "config_device")
+                             << ' ' << protocol_log::device(ctx.deviceId, ctx.deviceName)
+                             << ", slaveId=" << static_cast<int>(ctx.slaveId)
+                             << ", registers=" << ctx.registers.size()
+                             << ", readGroups=" << ctx.readGroups.size()
+                             << ", mergeGap=" << ctx.mergeGap
+                             << ", maxQuantity=" << ctx.maxRegsPerRead
+                             << ", interval=" << ctx.readIntervalSec << "s";
                     devices_[dev.id] = std::move(ctx);
                 } else {
-                    std::cout << "[WARN] " << "[EdgeNodeModbusPoller] device " << dev.id
-                              << " (" << dev.name << ") has no valid read groups, skipping" << std::endl;
+                    LOG_WARN << protocol_log::prefix("Modbus", "EdgePoller", "config_skip")
+                             << ' ' << protocol_log::device(dev.id, dev.name)
+                             << ", reason=no_valid_read_groups";
                 }
             }
         }
 
-        std::cout << "[EdgeNodeModbusPoller] Loaded " << devices_.size() << " Modbus device(s)" << std::endl;
+        LOG_INFO << protocol_log::prefix("Modbus", "EdgePoller", "config_loaded")
+                 << " devices=" << devices_.size();
     }
 
     /**
@@ -143,10 +146,11 @@ public:
         if (writeState_ && writeState_->waitingWriteResponse) {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - writeState_->sentAt);
             if (elapsed > REQUEST_TIMEOUT) {
-                std::cout << "[WARN] " << "[AgentModbusPoller] Write response timeout for device " << writeState_->deviceId
-                          << ", frame " << (writeState_->currentFrameIndex + 1)
-                          << "/" << writeState_->writeFrames.size()
-                          << " — proceeding (device may not echo response)" << std::endl;
+                LOG_WARN << protocol_log::prefix("Modbus", "EdgePoller", "write_timeout")
+                         << " deviceId=" << writeState_->deviceId
+                         << ", frame=" << (writeState_->currentFrameIndex + 1)
+                         << "/" << writeState_->writeFrames.size()
+                         << ", action=continue_to_readback";
                 writeState_->responseBuffer.clear();
                 writeState_->waitingWriteResponse = false;
                 // 继续下一帧或进入回读，由回读确认写入结果
@@ -168,8 +172,10 @@ public:
             if (ctx.waitingResponse) {
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx.requestSentAt);
                 if (elapsed > REQUEST_TIMEOUT) {
-                    std::cout << "[WARN] " << "[AgentModbusPoller] Timeout for device " << deviceId
-                              << " readGroup=" << ctx.currentReadGroupIndex << std::endl;
+                    LOG_WARN << protocol_log::prefix("Modbus", "EdgePoller", "poll_timeout")
+                             << " deviceId=" << deviceId
+                             << ", readGroup=" << (ctx.currentReadGroupIndex + 1)
+                             << "/" << ctx.readGroups.size();
                     ctx.waitingResponse = false;
                     advanceReadGroup(ctx);
                 }
@@ -204,6 +210,8 @@ public:
 
                 if (consumed == 0) return;  // 等待更多数据
                 if (consumed == modbus::ModbusUtils::FRAME_CORRUPT) {
+                    LOG_WARN << protocol_log::prefix("Modbus", "EdgePoller", "write_response_corrupt")
+                             << " deviceId=" << writeState_->deviceId;
                     completeWriteCommand(false, "写响应帧格式错误");
                     return;
                 }
@@ -216,8 +224,9 @@ public:
                     return;
                 }
 
-                std::cout << "[AgentModbusPoller] Write response OK for device " << writeState_->deviceId
-                          << ", frame " << (writeState_->currentFrameIndex + 1) << std::endl;
+                LOG_INFO << protocol_log::prefix("Modbus", "EdgePoller", "write_response")
+                         << " deviceId=" << writeState_->deviceId
+                         << ", frame=" << (writeState_->currentFrameIndex + 1);
 
                 // 下一个写帧
                 writeState_->currentFrameIndex++;
@@ -238,6 +247,9 @@ public:
 
             if (consumed == 0) continue;  // 数据不完整，等待更多
             if (consumed == modbus::ModbusUtils::FRAME_CORRUPT) {
+                LOG_WARN << protocol_log::prefix("Modbus", "EdgePoller", "poll_response_corrupt")
+                         << ' ' << protocol_log::device(ctx.deviceId, ctx.deviceName)
+                         << ", group=" << (ctx.currentReadGroupIndex + 1) << "/" << ctx.readGroups.size();
                 ctx.responseBuffer.clear();
                 ctx.waitingResponse = false;
                 advanceReadGroup(ctx);
@@ -250,8 +262,9 @@ public:
             ctx.waitingResponse = false;
 
             if (resp.isException) {
-                std::cout << "[WARN] " << "[AgentModbusPoller] Device " << deviceId
-                          << " exception code=" << static_cast<int>(resp.exceptionCode) << std::endl;
+                LOG_WARN << protocol_log::prefix("Modbus", "EdgePoller", "poll_exception")
+                         << " deviceId=" << deviceId
+                         << ", exceptionCode=" << static_cast<int>(resp.exceptionCode);
                 advanceReadGroup(ctx);
                 continue;
             }
@@ -425,9 +438,10 @@ private:
         writeState_->sentAt = std::chrono::steady_clock::now();
         writeState_->responseBuffer.clear();
 
-        std::cout << "[AgentModbusPoller] Write frame " << (writeState_->currentFrameIndex + 1)
-                  << "/" << writeState_->writeFrames.size()
-                  << " sent to device " << writeState_->deviceId << std::endl;
+        LOG_INFO << protocol_log::prefix("Modbus", "EdgePoller", "write_tx")
+                 << " deviceId=" << writeState_->deviceId
+                 << ", frame=" << (writeState_->currentFrameIndex + 1)
+                 << "/" << writeState_->writeFrames.size();
     }
 
     void startWriteReadback(DevicePollContext& ctx) {
@@ -449,10 +463,10 @@ private:
         }
 
         auto delay = immediate ? std::chrono::seconds(0) : std::chrono::seconds(writeState_->readbackIntervalSec);
-        std::cout << "[AgentModbusPoller] Write readback: device=" << ctx.deviceId
-                  << ", remaining=" << writeState_->readbackRemaining
-                  << (immediate ? ", immediate" : ", next in " + std::to_string(writeState_->readbackIntervalSec) + "s")
-                  << std::endl;
+        LOG_INFO << protocol_log::prefix("Modbus", "EdgePoller", "write_readback")
+                 << ' ' << protocol_log::device(ctx.deviceId, ctx.deviceName)
+                 << ", remaining=" << writeState_->readbackRemaining
+                 << (immediate ? ", schedule=immediate" : ", nextInSec=" + std::to_string(writeState_->readbackIntervalSec));
 
         ctx.lastPollAt = std::chrono::steady_clock::now()
             - std::chrono::seconds(ctx.readIntervalSec)
@@ -497,12 +511,13 @@ private:
 
         const auto& group = ctx.readGroups[ctx.currentReadGroupIndex];
 
-        std::cout << "[AgentModbusPoller] poll: device=" << ctx.deviceId
-                  << ", slave=" << static_cast<int>(ctx.slaveId)
+        LOG_DEBUG << protocol_log::prefix("Modbus", "EdgePoller", "poll_tx")
+                  << ' ' << protocol_log::device(ctx.deviceId, ctx.deviceName)
+                  << ", slaveId=" << static_cast<int>(ctx.slaveId)
                   << ", fc=" << static_cast<int>(group.functionCode)
-                  << ", addr=" << group.startAddress
-                  << ", qty=" << group.totalQuantity
-                  << ", group=" << (ctx.currentReadGroupIndex + 1) << "/" << ctx.readGroups.size() << std::endl;
+                  << ", address=" << group.startAddress
+                  << ", quantity=" << group.totalQuantity
+                  << ", group=" << (ctx.currentReadGroupIndex + 1) << "/" << ctx.readGroups.size();
 
         modbus::ModbusRequest req;
         req.slaveId = ctx.slaveId;
@@ -596,9 +611,9 @@ private:
     }
 
     void flushPollCycle(DevicePollContext& ctx) {
-        std::cout << "[EdgeNodeModbusPoller] poll cycle complete: device=" << ctx.deviceId
-                  << " (" << ctx.deviceName << ")"
-                  << ", values=" << ctx.pollCycleData.size() << std::endl;
+        LOG_INFO << protocol_log::prefix("Modbus", "EdgePoller", "poll_complete")
+                 << ' ' << protocol_log::device(ctx.deviceId, ctx.deviceName)
+                 << ", values=" << ctx.pollCycleData.size();
 
         ParsedFrameResult result;
         result.deviceId = ctx.deviceId;
