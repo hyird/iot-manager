@@ -9,14 +9,14 @@
 #include <windows.h>
 #endif
 
+#include "app/ServerBootstrapper.hpp"
+
 // Utils
 #include "common/utils/PlatformUtils.hpp"
 #include "common/utils/LoggerManager.hpp"
 #include "common/utils/ConfigManager.hpp"
 #include "common/utils/ExceptionHandler.hpp"
-#include "common/cache/ResourceVersion.hpp"
 #include "common/cache/DeviceCache.hpp"
-#include "common/edgenode/AgentBridgeManager.hpp"
 #include "common/network/WebSocketManager.hpp"
 
 // Filters
@@ -25,7 +25,6 @@
 #include "common/filters/RequestAdvices.hpp"
 
 // Database
-#include "common/database/DatabaseInitializer.hpp"
 #include "common/database/DatabaseService.hpp"
 
 // Controllers - System Module
@@ -40,8 +39,6 @@
 
 // Controllers - Link Module
 #include "modules/link/Link.Controller.hpp"
-#include "modules/link/Link.Service.hpp"
-#include "modules/link/domain/LinkEventHandlers.hpp"
 #include "modules/edgenode/EdgeNodeController.hpp"
 
 // Network
@@ -54,26 +51,13 @@
 #include "modules/device/Device.Controller.hpp"
 #include "modules/device-group/DeviceGroup.Controller.hpp"
 #include "modules/open/OpenAccess.Controller.hpp"
-#include "modules/open/OpenWebhookEventHandlers.hpp"
 
 // Controllers - Alert Module
 #include "modules/alert/Alert.Controller.hpp"
-#include "modules/alert/AlertEngine.hpp"
 
 // WebSocket Module
 #include "modules/websocket/EdgeNodeWebSocket.Controller.hpp"
 #include "modules/websocket/WebSocket.Controller.hpp"
-#include "modules/websocket/WsEventHandlers.hpp"
-
-// GB28181 Module
-#include "modules/gb28181/Gb28181Module.hpp"
-
-// Protocol
-#include "common/protocol/ProtocolDispatcher.hpp"
-#include "common/protocol/sl651/SL651.DeviceConfigProvider.hpp"
-#include "common/protocol/sl651/SL651.ProtocolAdapter.hpp"
-#include "common/protocol/modbus/Modbus.ProtocolAdapter.hpp"
-#include "common/protocol/s7/S7.ProtocolAdapter.hpp"
 
 using namespace drogon;
 
@@ -156,20 +140,7 @@ Task<> performShutdownCleanupCoro(const std::string& reason) {
 
     broadcastShutdownSnapshot(reason);
 
-    // 0. Stop GB28181 SIP/media runtime first so no new camera traffic enters shutdown.
-    co_await Gb28181Module::instance().stopCoro();
-
-    // 1. 停止告警引擎离线检测定时器
-    AlertEngine::instance().stopOfflineChecker();
-
-    // 2. 停止所有 TCP 链路
-    co_await TcpLinkManager::instance().stopAllCoro();
-
-    // 3. 注销所有事件处理器（防止内存泄漏）
-    EventBus::instance().unsubscribeAll();
-
-    // 4. 清理缓存
-    DeviceCache::instance().invalidate();
+    co_await ServerBootstrapper::instance().stop();
 
     LOG_INFO << "All resources cleaned up";
 }
@@ -293,7 +264,7 @@ std::vector<std::string> getStageHints(const std::string& stage) {
             "相关数据表是否已正确创建",
         };
     }
-    if (stage == "protocol:modbus-initialize") {
+    if (stage == "protocol:initialize" || stage == "protocol:modbus-initialize") {
         return {
             "数据库连接是否稳定",
             "device 和 protocol_config 表是否已正确创建",
@@ -333,123 +304,25 @@ void onServerStarted() {
     }
     std::cout << "Logs: ./logs/iot-manager_*.log" << std::endl;
 
-    // Initialize the shared TCP IO pool before modules that bind network sockets.
-    TcpLinkManager::instance().initialize(ConfigManager::getNumberOfThreads());
-
-    // 初始化协议分发器基础设施
-    auto& dispatcher = ProtocolDispatcher::instance();
-    dispatcher.initialize();
-
-    // 注册协议适配器
-    {
-        static sl651::SL651DeviceConfigProvider sl651ConfigProvider;
-        auto runtimeCtx = dispatcher.buildRuntimeContext();
-        dispatcher.registerAdapter(
-            std::make_unique<sl651::SL651ProtocolAdapter>(runtimeCtx, sl651ConfigProvider));
-        dispatcher.registerAdapter(
-            std::make_unique<modbus::ModbusProtocolAdapter>(runtimeCtx));
-        dispatcher.registerAdapter(
-            std::make_unique<s7::S7ProtocolAdapter>(runtimeCtx));
-    }
-
-    // 启动后台维护任务（物化视图刷新等）
-    dispatcher.startBackgroundTasks();
-
-    AgentBridgeManager::instance().setIngressHandlers(
-        [](int deviceId, const std::string& clientAddr, const std::string& data) {
-            ProtocolDispatcher::instance().handleDeviceData(deviceId, clientAddr, data);
-        },
-        [](int agentId, const std::string& endpointId, const std::string& clientAddr, bool connected) {
-            ProtocolDispatcher::instance().handleEndpointConnection(agentId, endpointId, clientAddr, connected);
-        }
-    );
-    AgentBridgeManager::instance().setParsedDataHandler(
-        [](std::vector<ParsedFrameResult>&& results) {
-            ProtocolDispatcher::instance().submitParsedResults(std::move(results));
-        }
-    );
-    AgentBridgeManager::instance().setCommandResultCallback(
-        [](const std::string& commandKey, const std::string& responseCode, bool success, int64_t responseRecordId) {
-            ProtocolDispatcher::instance().notifyCommandCompletion(commandKey, responseCode, success, responseRecordId);
-        }
-    );
-
-    // 启动 Agent 心跳超时检测和事件清理
-    AgentBridgeManager::instance().startHealthCheck(app().getLoop());
-
-    // 注册事件处理器（在启动链路之前）
-    LinkEventHandlers::registerAll();
-    WsEventHandlers::registerAll();
-    OpenWebhookEventHandlers::registerAll();
+    ServerBootstrapper::instance().registerModuleHandlers();
 
     // 异步初始化任务（顺序执行）
     async_run([]() -> Task<> {
-        std::string stage = "startup:init";
         try {
-            stage = "gb28181:start";
-            LOG_INFO << "[Startup] " << stage;
-            co_await Gb28181Module::instance().startCoro();
-
-            stage = "database:ping";
-            LOG_INFO << "[Startup] " << stage;
-            DatabaseService dbHealthCheck;
-            co_await dbHealthCheck.ping();
-
-            stage = "database:initialize";
-            LOG_INFO << "[Startup] " << stage;
-            // 1. 初始化数据库（必须先完成）
-            co_await DatabaseInitializer::initialize();
-
-            stage = "cache:invalidate";
-            LOG_INFO << "[Startup] " << stage;
-            // 2. 清理缓存（数据库初始化可能变更 schema，确保缓存与新结构一致）
-            DeviceCache::instance().markStale();
-
-            stage = "cache:preload-device";
-            LOG_INFO << "[Startup] " << stage;
-            // 3. 预加载 DeviceCache（确保 TcpIoPool 同步访问时有数据）
-            co_await DeviceCache::instance().getDevices();
-
-            stage = "protocol:modbus-initialize";
-            LOG_INFO << "[Startup] " << stage;
-            // 4. 初始化协议运行时（当前需预热 Modbus，依赖数据库表和 DeviceCache）
-            co_await ProtocolDispatcher::instance().initializeProtocolAsync(Constants::PROTOCOL_MODBUS);
-
-            stage = "protocol:s7-initialize";
-            LOG_INFO << "[Startup] " << stage;
-            co_await ProtocolDispatcher::instance().initializeProtocolAsync(Constants::PROTOCOL_S7);
-
-            stage = "resource-version:reset";
-            LOG_INFO << "[Startup] " << stage;
-            ResourceVersion::instance().resetAll({
-                "device", "user", "role", "menu", "department", "link", "protocol", "alert", "deviceGroup", "agent"
-            });
-
-            stage = "alert-engine:initialize";
-            LOG_INFO << "[Startup] " << stage;
-            // 5. 初始化告警引擎（加载启用的规则到内存）
-            co_await AlertEngine::instance().initialize();
-            AlertEngine::instance().startOfflineChecker(app().getLoop());
-
-            stage = "agent:reset-online-status";
-            LOG_INFO << "[Startup] " << stage;
-            // 6. 重置 Agent 在线状态（服务器重启后清理残留）
-            co_await AgentBridgeManager::instance().resetOnStartup();
-
-            stage = "links:start-enabled";
-            LOG_INFO << "[Startup] " << stage;
-            // 7. 启动所有已启用的链路
-            LinkService linkService;
-            co_await linkService.startAllEnabled();
-
+            co_await ServerBootstrapper::instance().start();
             LOG_INFO << "[Startup] bootstrap completed";
+        } catch (const StartupStageError& e) {
+            printStartupError("启动阶段失败: " + e.stage(), e.what(), getStageHints(e.stage()));
+            app().getLoop()->queueInLoop([]() {
+                app().quit();
+            });
         } catch (const std::exception& e) {
-            printStartupError("启动阶段失败: " + stage, e.what(), getStageHints(stage));
+            printStartupError("启动阶段失败: startup:init", e.what(), getStageHints("startup:init"));
             app().getLoop()->queueInLoop([]() {
                 app().quit();
             });
         } catch (...) {
-            printStartupError("启动阶段失败: " + stage, "未知异常", getStageHints(stage));
+            printStartupError("启动阶段失败: startup:init", "未知异常", getStageHints("startup:init"));
             app().getLoop()->queueInLoop([]() {
                 app().quit();
             });
@@ -494,7 +367,7 @@ int main() {
     RequestAdvices::setup();
 
     try {
-        Gb28181Module::instance().initialize();
+        ServerBootstrapper::instance().configureModules();
     } catch (const std::exception& e) {
         printStartupError("GB28181 module configuration failed", e.what(), {
             "Check custom_config.gb28181 in config/config.json",
