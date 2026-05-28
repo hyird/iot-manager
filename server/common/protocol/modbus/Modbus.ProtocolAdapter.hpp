@@ -156,10 +156,6 @@ public:
     }
 
     void onDataReceived(int linkId, const std::string& clientAddr, std::vector<uint8_t> bytes) override {
-        if (handleHeartbeat(linkId, clientAddr, bytes)) {
-            return;
-        }
-
         if (registrationNormalizer_) {
             auto normalized = registrationNormalizer_->normalize(linkId, clientAddr, bytes);
             if (normalized.kind == RegistrationMatchKind::Conflict) {
@@ -191,6 +187,11 @@ public:
                 }
             }
 
+            const bool heartbeatMatched = handleHeartbeat(linkId, clientAddr, bytes);
+            if (normalized.kind == RegistrationMatchKind::None && heartbeatMatched) {
+                return;
+            }
+
             bool bound = false;
             if (sessionManager_) {
                 auto sessionOpt = sessionManager_->getSession(linkId, clientAddr);
@@ -219,6 +220,10 @@ public:
             if (!engineResult.parsedResults.empty() && runtimeContext_.submitParsedResults) {
                 runtimeContext_.submitParsedResults(std::move(engineResult.parsedResults));
             }
+            return;
+        }
+
+        if (handleHeartbeat(linkId, clientAddr, bytes)) {
             return;
         }
 
