@@ -202,7 +202,8 @@ public:
                 if (!normalized.payload.empty()) {
                     LOG_DEBUG << "[Modbus][Adapter] Drop payload from unbound DTU: linkId="
                               << linkId << ", client=" << clientAddr
-                              << ", bytes=" << normalized.payload.size();
+                              << ", bytes=" << normalized.payload.size()
+                              << ", hex=" << ModbusUtils::toHexString(normalized.payload);
                 }
                 return;
             }

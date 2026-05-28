@@ -4,6 +4,7 @@
 #include "common/protocol/ProtocolAdapter.hpp"
 #include "common/protocol/ProtocolCommandCoordinator.hpp"
 #include "common/protocol/ProtocolCommandStore.hpp"
+#include "common/protocol/ProtocolLog.hpp"
 #include "common/protocol/ProtocolResultWriter.hpp"
 #include "common/network/TcpLinkManager.hpp"
 #include "common/network/WebSocketManager.hpp"
@@ -473,6 +474,12 @@ private:
 
     void onDataReceived(int linkId, const std::string& clientAddr, const std::string& data) {
         try {
+            LOG_DEBUG << protocol_log::prefix("ProtocolDispatcher", "rx")
+                      << " linkId=" << linkId
+                      << ", client=" << clientAddr
+                      << ", bytes=" << data.size()
+                      << ", hex=" << protocol_log::bytesToHex(data);
+
             std::vector<uint8_t> bytes(data.begin(), data.end());
 
             if (!DeviceCache::instance().isLoaded()) {

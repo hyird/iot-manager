@@ -3,11 +3,8 @@
 #include "LinkState.hpp"
 #include "common/protocol/ProtocolLog.hpp"
 
-#include <cctype>
 #include <cstddef>
 #include <coroutine>
-#include <iomanip>
-#include <sstream>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -248,8 +245,6 @@ public:
             // 无锁更新活动时间（高频消息路径避免锁竞争）
             rt->recordActivity();
 
-            logReceivedFrame(linkId, clientAddr, data);
-
             if (dataCallbackWithClient_) {
                 dataCallbackWithClient_(linkId, clientAddr, data);
             } else if (dataCallback_) {
@@ -351,8 +346,6 @@ public:
 
                 // 无锁更新活动时间（高频消息路径避免锁竞争）
                 rt->recordActivity();
-
-                logReceivedFrame(linkId, serverAddr, data);
 
                 if (dataCallbackWithClient_) {
                     dataCallbackWithClient_(linkId, serverAddr, data);
@@ -825,49 +818,6 @@ private:
 
     TcpLinkManager(const TcpLinkManager&) = delete;
     TcpLinkManager& operator=(const TcpLinkManager&) = delete;
-
-    static std::string bytesToHex(const std::string& data, std::size_t limit = 512) {
-        std::ostringstream oss;
-        const auto count = std::min(data.size(), limit);
-        for (std::size_t i = 0; i < count; ++i) {
-            if (i > 0) oss << ' ';
-            const auto byte = static_cast<unsigned char>(data[i]);
-            oss << std::uppercase << std::hex << std::setw(2) << std::setfill('0')
-                << static_cast<int>(byte);
-        }
-        if (data.size() > limit) {
-            oss << " ...";
-        }
-        return oss.str();
-    }
-
-    static std::string bytesToPrintableAscii(const std::string& data, std::size_t limit = 256) {
-        std::string out;
-        const auto count = std::min(data.size(), limit);
-        out.reserve(count);
-        for (std::size_t i = 0; i < count; ++i) {
-            const auto byte = static_cast<unsigned char>(data[i]);
-            switch (byte) {
-                case '\r': out += "\\r"; break;
-                case '\n': out += "\\n"; break;
-                case '\t': out += "\\t"; break;
-                default:
-                    out.push_back(std::isprint(byte) ? static_cast<char>(byte) : '.');
-                    break;
-            }
-        }
-        if (data.size() > limit) {
-            out += "...";
-        }
-        return out;
-    }
-
-    static void logReceivedFrame(int linkId, const std::string& peer, const std::string& data) {
-        LOG_DEBUG << protocol_log::prefix("Link", "Tcp", "rx")
-                  << " linkId=" << linkId
-                  << ", peer=" << peer
-                  << ", " << protocol_log::bytesSummary(data);
-    }
 
     static void logSentFrame(int linkId, const std::string& peer, const std::string& data, std::string_view mode) {
         LOG_DEBUG << protocol_log::prefix("Link", "Tcp", "tx")
