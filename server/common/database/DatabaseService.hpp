@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdexcept>
+
 /**
  * @brief 将 SQL 中的 ? 占位符转换为 PostgreSQL 原生 $1, $2, ... 格式
  *
@@ -51,17 +53,26 @@ public:
             : drogon::app().getDbClient("default");
     }
 
+    DbClientPtr requireClient() const {
+        auto client = getClient();
+        if (!client) {
+            throw std::runtime_error("Drogon DB client 'default' is not available; database work must run on a Drogon EventLoop");
+        }
+        return client;
+    }
+
     Task<void> ping() {
-        co_await getClient()->execSqlCoro("SELECT 1");
+        co_await requireClient()->execSqlCoro("SELECT 1");
     }
 
     Task<Result> execSqlCoro(const std::string& sql,
                               const std::vector<std::string>& params = {}) {
+        auto client = requireClient();
         if (params.empty()) {
-            co_return co_await getClient()->execSqlCoro(sql);
+            co_return co_await client->execSqlCoro(sql);
         }
         // 使用 PostgreSQL 原生参数绑定（$1, $2, ...），由 libpq 服务端处理
-        auto binder = *getClient() << toParameterized(sql, params.size());
+        auto binder = *client << toParameterized(sql, params.size());
         for (const auto& p : params) {
             binder << p;
         }
@@ -69,6 +80,6 @@ public:
     }
 
     Task<std::shared_ptr<Transaction>> newTransactionCoro() {
-        co_return co_await getClient()->newTransactionCoro();
+        co_return co_await requireClient()->newTransactionCoro();
     }
 };

@@ -378,8 +378,18 @@ public:
     }
 
     void await_suspend(std::coroutine_handle<> handle) {
+        resumeLoop_ = trantor::EventLoop::getEventLoopOfCurrentThread();
         loop_->queueInLoop([this, handle]() mutable {
             runWork();
+            // Network socket work runs on TcpIoPool, but the awaiting startup
+            // coroutine must continue on its original loop so later DB/HTTP
+            // work stays in the Drogon domain.
+            if (resumeLoop_ != nullptr && resumeLoop_ != loop_) {
+                resumeLoop_->queueInLoop([handle]() mutable {
+                    handle.resume();
+                });
+                return;
+            }
             handle.resume();
         });
     }
@@ -407,6 +417,7 @@ private:
     }
 
     trantor::EventLoop* loop_{nullptr};
+    trantor::EventLoop* resumeLoop_{nullptr};
     Work work_;
     bool ran_{false};
     std::exception_ptr exception_;
