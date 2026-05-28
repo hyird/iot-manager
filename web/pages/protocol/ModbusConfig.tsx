@@ -82,6 +82,18 @@ const ByteOrderOptions: { value: Modbus.ByteOrder; label: string }[] = [
 const DEFAULT_PACKET_MERGE_GAP = 100;
 const DEFAULT_PACKET_MAX_QUANTITY = 125;
 
+const inputNumberAddonClassName = "inline-block min-w-12 whitespace-nowrap text-center";
+
+const formatScaleValue = (value: number | string | undefined | null) => {
+  if (value === null || value === undefined || value === "") return "";
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return String(value);
+  return numericValue
+    .toFixed(6)
+    .replace(/(\.\d*?)0+$/, "$1")
+    .replace(/\.$/, "");
+};
+
 const normalizePacketConfig = (
   packet?: Modbus.PacketConfig
 ): Required<Modbus.PacketConfig> => {
@@ -410,7 +422,7 @@ const ModbusConfigPage = () => {
           )}
           {register.unit ? <Tag>{register.unit}</Tag> : null}
           {typeof register.scale === "number" && register.scale !== 1 ? (
-            <Tag color="geekblue">x{register.scale}</Tag>
+            <Tag color="geekblue">x{formatScaleValue(register.scale)}</Tag>
           ) : null}
           {typeof register.decimals === "number" ? <Tag>小数 {register.decimals}</Tag> : null}
         </Space>
@@ -757,14 +769,24 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
             name="readInterval"
             extra="数值越小采集越频繁，建议按设备负载设置间隔"
           >
-            <InputNumber min={1} max={3600} className="!w-full" addonAfter="秒" />
+            <InputNumber
+              min={1}
+              max={3600}
+              className="!w-full"
+              addonAfter={<span className={inputNumberAddonClassName}>秒</span>}
+            />
           </Form.Item>
           <Form.Item
             label="存储间隔（秒）"
             name="storageInterval"
             extra="历史数据入库的最小间隔，1 表示每次读取都存储"
           >
-            <InputNumber min={1} max={86400} className="!w-full" addonAfter="秒" />
+            <InputNumber
+              min={1}
+              max={86400}
+              className="!w-full"
+              addonAfter={<span className={inputNumberAddonClassName}>秒</span>}
+            />
           </Form.Item>
           <Flex gap={16}>
             <Form.Item
@@ -773,7 +795,12 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
               className="flex-1"
               extra="下发成功后保持快读的时长，0 表示关闭"
             >
-              <InputNumber min={0} max={3600} className="!w-full" addonAfter="秒" />
+              <InputNumber
+                min={0}
+                max={3600}
+                className="!w-full"
+                addonAfter={<span className={inputNumberAddonClassName}>秒</span>}
+              />
             </Form.Item>
             <Form.Item
               label="快读间隔"
@@ -781,7 +808,12 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
               className="flex-1"
               extra="快读窗口内的读取间隔"
             >
-              <InputNumber min={1} max={60} className="!w-full" addonAfter="秒" />
+              <InputNumber
+                min={1}
+                max={60}
+                className="!w-full"
+                addonAfter={<span className={inputNumberAddonClassName}>秒</span>}
+              />
             </Form.Item>
           </Flex>
           <Flex gap={16}>
@@ -791,7 +823,12 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
               className="flex-1"
               extra="地址间隙 <= 该值时会合并成同一读包，0 表示只合并连续地址"
             >
-              <InputNumber min={0} max={2000} className="!w-full" addonAfter="寄存器" />
+              <InputNumber
+                min={0}
+                max={2000}
+                className="!w-full"
+                addonAfter={<span className={inputNumberAddonClassName}>寄存器</span>}
+              />
             </Form.Item>
             <Form.Item
               label="单包最大寄存器数"
@@ -799,7 +836,12 @@ const DeviceTypeModal = forwardRef<DeviceTypeModalRef, DeviceTypeModalProps>(
               className="flex-1"
               extra="每个读包最多读取的字寄存器数量"
             >
-              <InputNumber min={1} max={125} className="!w-full" addonAfter="个" />
+              <InputNumber
+                min={1}
+                max={125}
+                className="!w-full"
+                addonAfter={<span className={inputNumberAddonClassName}>个</span>}
+              />
             </Form.Item>
           </Flex>
           <Form.Item label="备注" name="remark">
@@ -1113,10 +1155,12 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
               ]}
             >
               <InputNumber
-                min={0.000001}
-                max={1000000}
+                min={0.000001 as number}
+                max={1000000 as number}
                 step={0.1}
                 precision={6}
+                formatter={(value) => formatScaleValue(value)}
+                parser={(value) => Number(value || 1)}
                 className="!w-full"
                 disabled={isBitRegister}
               />

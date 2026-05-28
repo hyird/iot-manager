@@ -277,7 +277,7 @@ const buildDeviceCardItems = (elements?: Device.Element[]): DeviceCardDisplayIte
         }
       }
 
-      const displayValue = formatElementValue(el.value, el.decimals);
+      const displayValue = formatElementValue(el.value, el.decimals, el.scale);
       const children =
         displayValue === "--" || !el.unit ? displayValue : `${displayValue} ${el.unit}`;
       return { key: idx, label: el.name, children, group };

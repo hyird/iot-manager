@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <functional>
 #include <optional>
 
@@ -319,6 +320,16 @@ public:
 
             std::string unit = reg.get("unit", "").asString();
             if (!unit.empty()) element["unit"] = unit;
+
+            const double scale = reg.get("scale", 1.0).asDouble();
+            if (std::isfinite(scale) && std::fabs(scale - 1.0) > 1e-12) {
+                element["scale"] = scale;
+            }
+
+            const int decimals = std::clamp(reg.get("decimals", -1).asInt(), -1, 8);
+            if (decimals >= 0) {
+                element["decimals"] = decimals;
+            }
 
             // Modbus dictConfig 没有 mapType，补上 "VALUE" 以兼容前端
             if (reg.isMember("dictConfig") && reg["dictConfig"].isObject()

@@ -77,14 +77,31 @@ export const formatReportTime = (reportTime?: string) => {
 
 const NUMERIC_TEXT_RE = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 
+const trimTrailingZeros = (value: string) =>
+  value.includes(".") ? value.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "") : value;
+
+const inferDecimalsFromScale = (scale?: number) => {
+  if (typeof scale !== "number" || !Number.isFinite(scale) || scale <= 0 || scale === 1) {
+    return undefined;
+  }
+
+  const normalized = trimTrailingZeros(scale.toFixed(8));
+  const dotIndex = normalized.indexOf(".");
+  return dotIndex >= 0 ? Math.min(normalized.length - dotIndex - 1, 8) : undefined;
+};
+
 /** 按小数位格式化要素值 */
 export const formatElementValue = (
   value: string | number | null | undefined,
-  decimals?: number
+  decimals?: number,
+  scale?: number
 ) => {
   if (value === null || value === undefined || value === "") return "--";
 
-  if (typeof decimals === "number" && decimals >= 0) {
+  const displayDecimals =
+    typeof decimals === "number" && decimals >= 0 ? decimals : inferDecimalsFromScale(scale);
+
+  if (typeof displayDecimals === "number" && displayDecimals >= 0) {
     const numericValue =
       typeof value === "number"
         ? value
@@ -93,7 +110,7 @@ export const formatElementValue = (
           : Number.NaN;
 
     if (Number.isFinite(numericValue)) {
-      return numericValue.toFixed(decimals);
+      return numericValue.toFixed(displayDecimals);
     }
   }
 
@@ -180,7 +197,7 @@ export const resolveElementDisplay = (
         (item) => item && typeof item === "object" && item.key === rawValue
       );
       if (matchedItem) return { type: "text", value: matchedItem.label };
-      const displayValue = formatElementValue(el.value, decimals ?? el.decimals);
+      const displayValue = formatElementValue(el.value, decimals ?? el.decimals, el.scale);
       return {
         type: "text",
         value:
@@ -193,7 +210,7 @@ export const resolveElementDisplay = (
     } else if (el.dictConfig.mapType === "BIT") {
       const matchedLabels = parseBitMapping(el.value, el.dictConfig);
       if (matchedLabels.length > 0) return { type: "bits", labels: matchedLabels };
-      const displayValue = formatElementValue(el.value, decimals ?? el.decimals);
+      const displayValue = formatElementValue(el.value, decimals ?? el.decimals, el.scale);
       return {
         type: "text",
         value:
@@ -206,7 +223,7 @@ export const resolveElementDisplay = (
     }
   }
 
-  const displayValue = formatElementValue(el.value, decimals ?? el.decimals);
+  const displayValue = formatElementValue(el.value, decimals ?? el.decimals, el.scale);
   return {
     type: "text",
     value:
