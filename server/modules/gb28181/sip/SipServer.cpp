@@ -829,11 +829,13 @@ void SipServer::handleRegister(const SipMessage& message, const SipPeer& remote)
              << "\", nonce=\"" << nonce
              << "\", algorithm=MD5, qop=\"auth\"\r\n";
         sendResponse(message, remote, 401, "Unauthorized", auth.str());
-        LOG_DEBUG << "[GB28181][Register] Auth challenge sent, device_hint="
-                 << extractUserFromSipUri(message.header("From"))
-                 << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
-                 << ", call_id=" << message.header("Call-ID")
-                 << ", cseq=\"" << message.header("CSeq") << "\"";
+        if (sipConfig_.logging) {
+            LOG_DEBUG << "[GB28181][Register] Auth challenge sent, device_hint="
+                     << extractUserFromSipUri(message.header("From"))
+                     << ", remote=" << transportName(remote.transport) << " " << peerToString(remote)
+                     << ", call_id=" << message.header("Call-ID")
+                     << ", cseq=\"" << message.header("CSeq") << "\"";
+        }
         return;
     }
 

@@ -122,25 +122,25 @@ const renderRows = (
 ) => {
   const processed = buildProcessedItems(items, column, compact ? Math.max(length - 3, 14) : length);
   const gridCols = { gridTemplateColumns: `repeat(${column}, minmax(0, 1fr))` };
-  const itemTextClass = compact ? "text-[12px] leading-5" : "text-[13px] leading-6";
+  const itemTextClass = compact ? "text-[12px] leading-5" : "text-[13px] leading-5";
 
   const renderItem = (it: ProcessedDeviceCardItem) => (
     <div
       key={it.key}
-      className={`min-w-0 flex items-baseline ${itemTextClass}`}
+      className={`min-w-0 rounded-md bg-white/80 px-2 py-1.5 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.12)] ${itemTextClass}`}
       style={{ gridColumn: `span ${it.span}` }}
     >
       <Tooltip title={it.label}>
-        <span className="min-w-0 truncate font-medium text-slate-700">{it.label}：</span>
+        <div className="min-w-0 truncate text-[11px] font-medium text-slate-500">{it.label}</div>
       </Tooltip>
       {typeof it.children === "string" || typeof it.children === "number" ? (
         <Tooltip title={it.children}>
-          <span className="ml-1 shrink-0 whitespace-nowrap font-medium tabular-nums text-slate-950">
+          <div className="mt-0.5 min-w-0 truncate whitespace-nowrap font-semibold tabular-nums text-slate-950">
             {String(it.children)}
-          </span>
+          </div>
         </Tooltip>
       ) : (
-        <span className="ml-1 min-w-0 flex-1">{it.children}</span>
+        <div className="mt-0.5 min-w-0 font-semibold text-slate-950">{it.children}</div>
       )}
     </div>
   );
@@ -148,11 +148,11 @@ const renderRows = (
   if (fillVertical) {
     const rows = buildItemRows(processed, column);
     return (
-      <div className="flex min-h-0 flex-1 flex-col justify-around gap-1">
+      <div className="flex min-h-0 flex-1 flex-col gap-2">
         {rows.map((row, index) => (
           <div
             key={row.map((item) => item.key).join("-") || index}
-            className="grid gap-x-3 gap-y-0.5"
+            className="grid gap-2"
             style={gridCols}
           >
             {row.map(renderItem)}
@@ -163,7 +163,7 @@ const renderRows = (
   }
 
   return (
-    <div className="grid gap-x-3 gap-y-0.5" style={gridCols}>
+    <div className="grid gap-2" style={gridCols}>
       {processed.map(renderItem)}
     </div>
   );
@@ -184,15 +184,15 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
   );
 
   return (
-    <div className="bg-white rounded-lg px-3.5 py-2 border border-gray-200 shadow-[0_2px_8px_rgba(0,0,0,0.08)] flex flex-col gap-1.5 h-full">
+    <div className="flex h-full flex-col gap-2 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition-shadow hover:shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
       {/* 主标题 */}
-      <div className="min-w-0 text-sm font-bold flex items-center gap-1.5 leading-4.5">{title}</div>
+      <div className="min-w-0 text-[15px] font-semibold leading-5 text-slate-950">{title}</div>
 
       {/* 副标题（可选） */}
-      {subtitle && <div className="text-[10px] text-gray-400 -mt-1 leading-4">{subtitle}</div>}
+      {subtitle && <div className="text-xs leading-5 text-slate-500">{subtitle}</div>}
 
       {/* 分割线 */}
-      <div className="h-px bg-gray-100" />
+      <div className="h-px bg-slate-100" />
 
       {/* 内容区 */}
       <div
@@ -208,10 +208,10 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
               return (
                 <section
                   key={section.key}
-                  className="flex min-h-0 flex-1 flex-col rounded-md border border-slate-100 bg-slate-50/60 px-2 py-1"
+                  className="flex min-h-0 flex-1 flex-col rounded-md border border-slate-100 bg-slate-50/70 px-2.5 py-2"
                 >
-                  <div className="mb-1 flex shrink-0 items-center gap-1.5">
-                    <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 shadow-sm">
+                  <div className="mb-2 flex shrink-0 items-center gap-2">
+                    <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-600 shadow-sm">
                       {section.label}
                     </span>
                     <span className="h-px flex-1 bg-slate-100" />
@@ -225,7 +225,7 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
 
       {/* bottom extra */}
       {extra && (
-        <div className="mt-0.5 pt-0.5 border-t border-gray-100 text-[11px] leading-4 text-gray-500">
+        <div className="mt-0.5 border-t border-slate-100 pt-2 text-[11px] leading-4 text-slate-500">
           {extra}
         </div>
       )}

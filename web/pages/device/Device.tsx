@@ -66,7 +66,6 @@ import {
   getDeviceConnectionState,
   getDeviceStatusBadge,
   parseBitMapping,
-  separatorClass,
 } from "./utils";
 
 const { Search } = Input;
@@ -76,6 +75,10 @@ const EMPTY_IMAGE_OPS: Device.ImageOperation[] = [];
 const DEVICE_CARD_GRID_STYLE: CSSProperties = {
   gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
 };
+const DEVICE_CARD_ACTION_BUTTON_CLASS =
+  "!flex !h-8 !w-8 items-center justify-center !rounded-md text-slate-500 hover:!bg-slate-100 hover:!text-slate-900";
+const DEVICE_CARD_DANGER_BUTTON_CLASS =
+  "!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50";
 const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
 const DEVICE_STATUS_TICK_INTERVAL = 1000;
 
@@ -361,58 +364,57 @@ const DeviceGridItem = memo(
       <div className={`flex flex-col ${isWideCard ? "md:col-span-2" : ""}`}>
         <DeviceCard
           title={
-            <Flex justify="space-between" align="center" gap={8} className="w-full min-w-0">
-              <span className="min-w-0 truncate">
+            <Flex justify="space-between" align="start" gap={10} className="w-full min-w-0">
+              <span className="min-w-0 truncate pr-1">
                 {device.name}
                 {device.device_code ? `:${device.device_code}` : ""}
               </span>
-              <Tag color={statusTag.color} className="!mr-0 shrink-0">
+              <Tag color={statusTag.color} className="!mr-0 shrink-0 !rounded-md !px-2">
                 {statusTag.label}
               </Tag>
             </Flex>
           }
           subtitle={
-            <Flex justify="space-between" align="center" gap={8} className="w-full min-w-0">
-              <span className="min-w-0 flex shrink-0 items-center">
-                <Tag color={device.link_id === 0 ? "orange" : "blue"} className="!mr-1">
+            <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="flex min-w-0 shrink-0 items-center">
+                <Tag color={device.link_id === 0 ? "orange" : "blue"} className="!mr-0 !rounded-md">
                   {device.link_id === 0 ? "Agent" : device.link_name || "未绑定链路"}
                 </Tag>
-                <Tag color="purple">{device.protocol_name}</Tag>
+                <Tag color="purple" className="!mr-0 !rounded-md">
+                  {device.protocol_name}
+                </Tag>
               </span>
-              <span className="min-w-0 truncate text-gray-400 text-xs">
+              <span className="min-w-0 truncate text-xs text-slate-400">
                 上报：{formatReportTime(device.reportTime)}
               </span>
-            </Flex>
+            </div>
           }
           items={items}
           column={isWideCard ? 4 : 2}
           length={20}
           extra={
-            <Flex align="center" justify="space-around" className="w-full">
+            <Flex align="center" justify="center" gap={10} wrap className="w-full">
               {imageOps.length > 0 && (
-                <>
-                  <Dropdown
-                    disabled={!hasImageData}
-                    menu={{
-                      items: imageMenuItems,
-                      onClick: ({ key }) => {
-                        const op = imageOps[Number(key)];
-                        if (op) onImageClick(op);
-                      },
-                    }}
-                  >
-                    <Tooltip title={hasImageData ? "查看图片" : "暂无图片数据"}>
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={<PictureOutlined />}
-                        disabled={!hasImageData}
-                      />
-                    </Tooltip>
-                  </Dropdown>
-
-                  <span className={separatorClass} />
-                </>
+                <Dropdown
+                  disabled={!hasImageData}
+                  menu={{
+                    items: imageMenuItems,
+                    onClick: ({ key }) => {
+                      const op = imageOps[Number(key)];
+                      if (op) onImageClick(op);
+                    },
+                  }}
+                >
+                  <Tooltip title={hasImageData ? "查看图片" : "暂无图片数据"}>
+                    <Button
+                      type="text"
+                      size="small"
+                      className={DEVICE_CARD_ACTION_BUTTON_CLASS}
+                      icon={<PictureOutlined />}
+                      disabled={!hasImageData}
+                    />
+                  </Tooltip>
+                </Dropdown>
               )}
 
               <Popover
@@ -456,6 +458,7 @@ const DeviceGridItem = memo(
                     <Button
                       type="text"
                       size="small"
+                      className={DEVICE_CARD_ACTION_BUTTON_CLASS}
                       icon={<SendOutlined />}
                       disabled={!canCommand || !commandOps.length || !canRemoteControl}
                     />
@@ -463,37 +466,34 @@ const DeviceGridItem = memo(
                 </Dropdown>
               </Popover>
 
-              <span className={separatorClass} />
-
               <Tooltip title="历史数据">
                 <Button
                   type="text"
                   size="small"
+                  className={DEVICE_CARD_ACTION_BUTTON_CLASS}
                   icon={<HistoryOutlined />}
                   onClick={() => onOpenHistoryModal(device)}
                 />
               </Tooltip>
-
-              {(canShare || canEdit) && <span className={separatorClass} />}
 
               {canShare && (
                 <Tooltip title="分享设备">
                   <Button
                     type="text"
                     size="small"
+                    className={DEVICE_CARD_ACTION_BUTTON_CLASS}
                     icon={<ShareAltOutlined />}
                     onClick={() => onOpenShareModal(device)}
                   />
                 </Tooltip>
               )}
 
-              {canShare && canEdit && <span className={separatorClass} />}
-
               {canEdit && (
                 <Tooltip title="编辑设备">
                   <Button
                     type="text"
                     size="small"
+                    className={DEVICE_CARD_ACTION_BUTTON_CLASS}
                     icon={<EditOutlined />}
                     onClick={() => onOpenEditModal(device)}
                   />
@@ -501,18 +501,16 @@ const DeviceGridItem = memo(
               )}
 
               {canDelete && (
-                <>
-                  <span className={separatorClass} />
-                  <Tooltip title="删除设备">
-                    <Button
-                      type="text"
-                      size="small"
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={() => onDeleteDevice(device)}
-                    />
-                  </Tooltip>
-                </>
+                <Tooltip title="删除设备">
+                  <Button
+                    type="text"
+                    size="small"
+                    danger
+                    className={DEVICE_CARD_DANGER_BUTTON_CLASS}
+                    icon={<DeleteOutlined />}
+                    onClick={() => onDeleteDevice(device)}
+                  />
+                </Tooltip>
               )}
             </Flex>
           }

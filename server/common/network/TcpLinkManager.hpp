@@ -1,7 +1,6 @@
 #pragma once
 
 #include "LinkState.hpp"
-#include "common/protocol/ProtocolLog.hpp"
 
 #include <cstddef>
 #include <coroutine>
@@ -599,7 +598,6 @@ public:
             runtime->clientConn->send(data);
             totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
             totalPacketsTx_.fetch_add(1, std::memory_order_relaxed);
-            logSentFrame(linkId, runtime->clientConn->peerAddr().toIpPort(), data, "client");
             return true;
         }
 
@@ -608,7 +606,6 @@ public:
             for (const auto& conn : runtime->serverConns) {
                 if (conn->connected()) {
                     conn->send(data);
-                    logSentFrame(linkId, conn->peerAddr().toIpPort(), data, "broadcast");
                     ++sentCount;
                 }
             }
@@ -642,7 +639,6 @@ public:
             for (const auto& conn : runtime->serverConns) {
                 if (conn->connected() && excludeAddrs.find(conn->peerAddr().toIpPort()) == excludeAddrs.end()) {
                     conn->send(data);
-                    logSentFrame(linkId, conn->peerAddr().toIpPort(), data, "broadcast_excluding");
                     ++sentCount;
                 }
             }
@@ -671,7 +667,6 @@ public:
                 conn->send(data);
                 totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
                 totalPacketsTx_.fetch_add(1, std::memory_order_relaxed);
-                logSentFrame(linkId, clientAddr, data, "target");
                 return true;
             }
         }
@@ -818,14 +813,6 @@ private:
 
     TcpLinkManager(const TcpLinkManager&) = delete;
     TcpLinkManager& operator=(const TcpLinkManager&) = delete;
-
-    static void logSentFrame(int linkId, const std::string& peer, const std::string& data, std::string_view mode) {
-        LOG_DEBUG << protocol_log::prefix("Link", "Tcp", "tx")
-                  << " linkId=" << linkId
-                  << ", peer=" << peer
-                  << ", mode=" << mode
-                  << ", " << protocol_log::bytesSummary(data);
-    }
 
     EventLoop* getNextLoop() {
         if (initialized_ && ioLoopPool_) {
