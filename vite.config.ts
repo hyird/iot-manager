@@ -42,7 +42,7 @@ export default defineConfig({
         inlineDynamicImports: true,
         // Intentionally disabled code-splitting to reduce HTTP requests and simplify deployment.
         // Trade-off: larger single bundle, but better for internal SPA with infrequent deployments.
-        entryFileNames: "app.js",
+        entryFileNames: "app-[hash].js",
       },
     },
   },

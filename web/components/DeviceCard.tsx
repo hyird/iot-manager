@@ -12,6 +12,7 @@ interface DeviceCardItem {
   children: React.ReactNode;
   span?: number;
   group?: string;
+  tooltipLabel?: string;
 }
 
 interface DeviceCardSection {
@@ -36,6 +37,21 @@ const normalizeGroupName = (group?: string) => group?.trim() || "";
 const UNGROUPED_GROUP_KEY = "__ungrouped__";
 const DENSE_SECTION_ITEM_COUNT = 8;
 const LABEL_VALUE_VISUAL_EXTRA_LENGTH = 2.5;
+const AUTO_LAYOUT_COLUMNS = 12;
+const AUTO_ITEM_SPAN_LENGTH = 4;
+const WIDE_AUTO_ITEM_SPAN_LENGTH = 8;
+const AUTO_VALUE_EXTRA_LENGTH = 2;
+
+const compactGroupedItemLabel = (groupLabel: string, item: DeviceCardItem): DeviceCardItem => {
+  const groupPrefix = groupLabel.match(/^\d+#/)?.[0];
+  if (!groupPrefix || !item.label.startsWith(`${groupPrefix}闸`)) return item;
+
+  return {
+    ...item,
+    label: item.label.slice(`${groupPrefix}闸`.length),
+    tooltipLabel: item.label,
+  };
+};
 
 const buildSections = (items: DeviceCardItem[]): DeviceCardSection[] => {
   const sectionMap = new Map<string, DeviceCardSection>();
@@ -79,6 +95,7 @@ const buildProcessedItems = (items: DeviceCardItem[], column: number, length: nu
       calcWeightedLength(label) + calcWeightedLength(value) + LABEL_VALUE_VISUAL_EXTRA_LENGTH;
     let span = Math.ceil(total / length);
     if (span < 1) span = 1;
+    if (column >= 8 && span < 2) span = 2;
     if (span > column) span = column;
 
     return { ...item, span };
@@ -113,6 +130,34 @@ const buildItemRows = (items: ProcessedDeviceCardItem[], column: number) => {
   return rows;
 };
 
+const buildAutoProcessedItems = (
+  items: DeviceCardItem[],
+  spanLength: number
+): ProcessedDeviceCardItem[] =>
+  items.map((item) => {
+    if (item.span !== undefined) {
+      return { ...item, span: item.span };
+    }
+
+    const label = item.label || "";
+    const value =
+      typeof item.children === "string"
+        ? item.children
+        : typeof item.children === "number"
+          ? String(item.children)
+          : "";
+    const widthLength = Math.max(
+      calcWeightedLength(label),
+      calcWeightedLength(value) + AUTO_VALUE_EXTRA_LENGTH
+    );
+    let span = Math.ceil((widthLength + LABEL_VALUE_VISUAL_EXTRA_LENGTH) / spanLength);
+
+    if (span < 2) span = 2;
+    if (span > AUTO_LAYOUT_COLUMNS) span = AUTO_LAYOUT_COLUMNS;
+
+    return { ...item, span };
+  });
+
 const renderRows = (
   items: DeviceCardItem[],
   column: number,
@@ -120,54 +165,89 @@ const renderRows = (
   compact = false,
   fillVertical = false
 ) => {
-  const processed = buildProcessedItems(items, column, compact ? Math.max(length - 3, 14) : length);
+  const processed = buildProcessedItems(items, column, compact ? Math.max(length - 2, 7) : length);
   const gridCols = { gridTemplateColumns: `repeat(${column}, minmax(0, 1fr))` };
   const itemTextClass = compact ? "text-[12px] leading-[18px]" : "text-[13px] leading-[18px]";
-  const inlineScalarItem = column >= 3;
 
-  const renderItem = (it: ProcessedDeviceCardItem) => {
-    const isScalar = typeof it.children === "string" || typeof it.children === "number";
+  const renderItem = (it: ProcessedDeviceCardItem) => (
+    <div
+      key={it.key}
+      className={`min-w-0 rounded-md bg-white/80 px-1 py-1 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.12)] ${itemTextClass}`}
+      style={{ gridColumn: `span ${it.span}` }}
+    >
+      <Tooltip title={it.tooltipLabel ?? it.label}>
+        <div
+          className="min-w-0 truncate text-center text-[10px] font-medium text-slate-500"
+          style={{ textAlign: "center" }}
+        >
+          {it.label}
+        </div>
+      </Tooltip>
+      {typeof it.children === "string" || typeof it.children === "number" ? (
+        <Tooltip title={it.children}>
+          <div
+            className="min-w-0 truncate whitespace-nowrap text-center font-semibold tabular-nums text-slate-950"
+            style={{ textAlign: "center" }}
+          >
+            {String(it.children)}
+          </div>
+        </Tooltip>
+      ) : (
+        <div
+          className="min-w-0 text-center font-semibold text-slate-950"
+          style={{ textAlign: "center" }}
+        >
+          {it.children}
+        </div>
+      )}
+    </div>
+  );
 
+  const renderAutoItem = (it: ProcessedDeviceCardItem) => (
+    <div
+      key={it.key}
+      className={`min-w-0 max-w-full rounded-md bg-white/80 px-1 py-1 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.12)] ${itemTextClass}`}
+      style={{ gridColumn: `span ${it.span}` }}
+    >
+      <Tooltip title={it.tooltipLabel ?? it.label}>
+        <div
+          className="min-w-0 whitespace-nowrap text-center text-[10px] font-medium text-slate-500"
+          style={{ textAlign: "center" }}
+        >
+          {it.label}
+        </div>
+      </Tooltip>
+      {typeof it.children === "string" || typeof it.children === "number" ? (
+        <Tooltip title={it.children}>
+          <div
+            className="min-w-0 whitespace-nowrap text-center font-semibold tabular-nums text-slate-950"
+            style={{ textAlign: "center" }}
+          >
+            {String(it.children)}
+          </div>
+        </Tooltip>
+      ) : (
+        <div
+          className="min-w-0 text-center font-semibold text-slate-950"
+          style={{ textAlign: "center" }}
+        >
+          {it.children}
+        </div>
+      )}
+    </div>
+  );
+
+  if (column >= 4) {
+    const autoSpanLength = column >= 8 ? WIDE_AUTO_ITEM_SPAN_LENGTH : AUTO_ITEM_SPAN_LENGTH;
     return (
       <div
-        key={it.key}
-        className={`min-w-0 rounded-md bg-white/80 px-1.5 py-1 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.12)] ${itemTextClass}`}
-        style={{ gridColumn: `span ${it.span}` }}
+        className="grid gap-1.5"
+        style={{ gridTemplateColumns: `repeat(${AUTO_LAYOUT_COLUMNS}, minmax(0, 1fr))` }}
       >
-        {isScalar && inlineScalarItem ? (
-          <div className="flex min-w-0 items-baseline gap-1">
-            <Tooltip title={it.label}>
-              <div className="min-w-0 flex-1 truncate text-[11px] font-medium text-slate-500">
-                {it.label}
-              </div>
-            </Tooltip>
-            <Tooltip title={it.children}>
-              <div className="max-w-[48%] shrink-0 truncate whitespace-nowrap font-semibold tabular-nums text-slate-950">
-                {String(it.children)}
-              </div>
-            </Tooltip>
-          </div>
-        ) : (
-          <>
-            <Tooltip title={it.label}>
-              <div className="min-w-0 truncate text-[11px] font-medium text-slate-500">
-                {it.label}
-              </div>
-            </Tooltip>
-            {isScalar ? (
-              <Tooltip title={it.children}>
-                <div className="min-w-0 truncate whitespace-nowrap font-semibold tabular-nums text-slate-950">
-                  {String(it.children)}
-                </div>
-              </Tooltip>
-            ) : (
-              <div className="min-w-0 font-semibold text-slate-950">{it.children}</div>
-            )}
-          </>
-        )}
+        {buildAutoProcessedItems(items, autoSpanLength).map(renderAutoItem)}
       </div>
     );
-  };
+  }
 
   if (fillVertical) {
     const rows = buildItemRows(processed, column);
@@ -240,7 +320,12 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
                     </span>
                     <span className="h-px flex-1 bg-slate-100" />
                   </div>
-                  {renderRows(section.items, column, length, compact)}
+                  {renderRows(
+                    section.items.map((item) => compactGroupedItemLabel(section.label, item)),
+                    column,
+                    length,
+                    compact
+                  )}
                 </section>
               );
             })

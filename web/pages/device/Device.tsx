@@ -30,7 +30,6 @@ import {
   Tooltip,
 } from "antd";
 import {
-  type CSSProperties,
   memo,
   type ReactNode,
   startTransition,
@@ -72,17 +71,16 @@ const { Search } = Input;
 const EMPTY_DEVICE_LIST: Device.RealTimeData[] = [];
 const EMPTY_COMMAND_OPS: Device.CommandOperation[] = [];
 const EMPTY_IMAGE_OPS: Device.ImageOperation[] = [];
-const DEVICE_CARD_GRID_STYLE: CSSProperties = {
-  gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-};
+const DEVICE_CARD_GRID_CLASS = "grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-4";
 const DEVICE_CARD_ACTION_BUTTON_CLASS =
   "!flex !h-8 !w-8 items-center justify-center !rounded-md text-slate-500 hover:!bg-slate-100 hover:!text-slate-900";
 const DEVICE_CARD_DANGER_BUTTON_CLASS =
   "!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50";
 const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
-const DEVICE_CARD_COLUMNS = 3;
-const WIDE_DEVICE_CARD_COLUMNS = 6;
-const DEVICE_CARD_ITEM_LENGTH = 20;
+const DEVICE_CARD_COLUMNS = 4;
+const WIDE_DEVICE_CARD_COLUMNS = 8;
+const DEVICE_CARD_ITEM_LENGTH = 16;
+const WIDE_DEVICE_CARD_ITEM_LENGTH = 12;
 const DEVICE_STATUS_TICK_INTERVAL = 1000;
 
 interface DeviceProtocolStats {
@@ -364,7 +362,7 @@ const DeviceGridItem = memo(
     );
 
     return (
-      <div className={`flex flex-col ${isWideCard ? "md:col-span-2" : ""}`}>
+      <div className={`flex flex-col ${isWideCard ? "xl:col-span-2" : ""}`}>
         <DeviceCard
           title={
             <Flex justify="space-between" align="start" gap={10} className="w-full min-w-0">
@@ -394,7 +392,7 @@ const DeviceGridItem = memo(
           }
           items={items}
           column={isWideCard ? WIDE_DEVICE_CARD_COLUMNS : DEVICE_CARD_COLUMNS}
-          length={DEVICE_CARD_ITEM_LENGTH}
+          length={isWideCard ? WIDE_DEVICE_CARD_ITEM_LENGTH : DEVICE_CARD_ITEM_LENGTH}
           extra={
             <Flex align="center" justify="center" gap={10} wrap className="w-full">
               {imageOps.length > 0 && (
@@ -772,7 +770,7 @@ const DevicePage = () => {
   }, []);
 
   const renderDeviceCards = (devices: Device.RealTimeData[]) => (
-    <div className="mt-4 grid gap-3" style={DEVICE_CARD_GRID_STYLE}>
+    <div className={`mt-4 ${DEVICE_CARD_GRID_CLASS}`}>
       {devices.map((device) => (
         <DeviceGridItem
           key={device.id}
@@ -1024,9 +1022,7 @@ const DevicePage = () => {
 
       {/* 设备卡片分组展示 */}
       {isLoading && filteredDeviceList.length === 0 ? (
-        <div className="grid gap-3" style={DEVICE_CARD_GRID_STYLE}>
-          {renderSkeletons()}
-        </div>
+        <div className={DEVICE_CARD_GRID_CLASS}>{renderSkeletons()}</div>
       ) : filteredDeviceList.length === 0 ? (
         <div className="py-12">
           <Empty description={keyword ? "搜索无结果，请尝试调整关键词" : "暂无设备数据"} />
