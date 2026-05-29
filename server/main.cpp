@@ -360,10 +360,15 @@ int main() {
     // 4. 应用配置
     LoggerManager::setLogLevel(ConfigManager::getLogLevel());
 
-    // 5. 设置全局异常处理
+    // 5. 启用静态文件压缩与大文件发送优化
+    app().enableGzip(true)
+         .setGzipStatic(true)
+         .enableSendfile(true);
+
+    // 6. 设置全局异常处理
     AppExceptionHandler::setup();
 
-    // 6. 注册请求/响应拦截器
+    // 7. 注册请求/响应拦截器
     RequestAdvices::setup();
 
     try {
