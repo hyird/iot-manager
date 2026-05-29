@@ -80,6 +80,9 @@ const DEVICE_CARD_ACTION_BUTTON_CLASS =
 const DEVICE_CARD_DANGER_BUTTON_CLASS =
   "!flex !h-8 !w-8 items-center justify-center !rounded-md hover:!bg-red-50";
 const WIDE_DEVICE_CARD_ITEM_COUNT = 18;
+const DEVICE_CARD_COLUMNS = 3;
+const WIDE_DEVICE_CARD_COLUMNS = 6;
+const DEVICE_CARD_ITEM_LENGTH = 20;
 const DEVICE_STATUS_TICK_INTERVAL = 1000;
 
 interface DeviceProtocolStats {
@@ -390,8 +393,8 @@ const DeviceGridItem = memo(
             </div>
           }
           items={items}
-          column={isWideCard ? 4 : 2}
-          length={20}
+          column={isWideCard ? WIDE_DEVICE_CARD_COLUMNS : DEVICE_CARD_COLUMNS}
+          length={DEVICE_CARD_ITEM_LENGTH}
           extra={
             <Flex align="center" justify="center" gap={10} wrap className="w-full">
               {imageOps.length > 0 && (
