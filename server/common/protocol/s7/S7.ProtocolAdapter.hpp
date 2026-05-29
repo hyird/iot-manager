@@ -7,6 +7,7 @@
 #include "S7.PollScheduler.hpp"
 #include "common/cache/DeviceCache.hpp"
 #include "common/network/LinkTransportFacade.hpp"
+#include "common/network/TcpLinkManager.hpp"
 #include "common/protocol/ProtocolAdapter.hpp"
 #include "common/protocol/ProtocolJobQueue.hpp"
 #include "common/utils/Constants.hpp"
@@ -276,12 +277,19 @@ public:
         );
     }
 
+    ~S7ProtocolAdapter() override {
+        if (sessionStatusTimerStarted_ && sessionStatusTimerLoop_) {
+            sessionStatusTimerLoop_->invalidateTimer(sessionStatusTimerId_);
+        }
+    }
+
     std::string_view protocol() const override {
         return Constants::PROTOCOL_S7;
     }
 
     Task<> initializeAsync() override {
         co_await refreshDevices();
+        startSessionStatusLogger();
         co_return;
     }
 
@@ -2181,6 +2189,81 @@ private:
         return runtimes;
     }
 
+    static const char* bindStateLabel(SessionBindState state) {
+        switch (state) {
+            case SessionBindState::Bound:
+                return "bound";
+            case SessionBindState::Probing:
+                return "probing";
+            case SessionBindState::Unknown:
+            default:
+                return "unknown";
+        }
+    }
+
+    std::string runtimeNameForLog(int deviceId) {
+        if (deviceId <= 0) {
+            return "";
+        }
+
+        auto runtime = findRuntimeLocked(deviceId);
+        if (!runtime) {
+            return "";
+        }
+
+        std::lock_guard runtimeLock(runtime->mutex);
+        return deviceLabel(*runtime);
+    }
+
+    void startSessionStatusLogger() {
+        if (sessionStatusTimerStarted_) {
+            return;
+        }
+
+        auto* loop = TcpLinkManager::instance().getNextIoLoop();
+        if (!loop) {
+            LOG_WARN << "[S7][Adapter] TCP server session status logger not started: no event loop";
+            return;
+        }
+
+        sessionStatusTimerLoop_ = loop;
+        sessionStatusTimerId_ = loop->runEvery(kSessionStatusLogIntervalSec, [this]() {
+            try {
+                logSessionStatusSnapshot();
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[S7][Adapter] TCP server session status logger failed: " << e.what();
+            } catch (...) {
+                LOG_ERROR << "[S7][Adapter] TCP server session status logger failed: <unknown>";
+            }
+        });
+        sessionStatusTimerStarted_ = true;
+    }
+
+    void logSessionStatusSnapshot() {
+        if (!sessionManager_) {
+            return;
+        }
+
+        const auto sessions = sessionManager_->listSessions();
+        LOG_INFO << "[S7][Adapter] TCP server session status: clients=" << sessions.size();
+
+        for (const auto& session : sessions) {
+            int relatedDeviceId = session.deviceId;
+            if (relatedDeviceId <= 0 && session.probingDeviceId > 0) {
+                relatedDeviceId = session.probingDeviceId;
+            }
+
+            const std::string relatedDeviceName = runtimeNameForLog(relatedDeviceId);
+            LOG_INFO << "[S7][Adapter] TCP server client: linkId=" << session.linkId
+                     << ", client=" << session.clientAddr
+                     << ", state=" << bindStateLabel(session.bindState)
+                     << ", deviceId=" << (session.deviceId > 0 ? std::to_string(session.deviceId) : "-")
+                     << ", deviceName=" << (!relatedDeviceName.empty() ? relatedDeviceName : "-")
+                     << ", probingDeviceId=" << (session.probingDeviceId > 0 ? std::to_string(session.probingDeviceId) : "-")
+                     << ", dtuKey=" << (!session.dtuKey.empty() ? session.dtuKey : "-");
+        }
+    }
+
     static std::string bytesToString(const std::vector<uint8_t>& bytes) {
         return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     }
@@ -2526,6 +2609,11 @@ private:
 
         auto probingSessions = acquireLinkDiscoverySessions(requestLinkId, deviceId);
         if (probingSessions.empty()) {
+            LOG_INFO << "[S7][Adapter] Discovery probe skipped: " << deviceLabel(*runtime)
+                     << "(id=" << deviceId << ")"
+                     << ", linkId=" << requestLinkId
+                     << ", reason=no unknown TCP server session available"
+                     << ", async=yes";
             return false;
         }
 
@@ -2566,6 +2654,13 @@ private:
                      << ", async=yes";
             return true;
         }
+        LOG_INFO << "[S7][Adapter] Discovery probe skipped: " << deviceLabel(*runtime)
+                 << "(id=" << deviceId << ")"
+                 << ", linkId=" << requestLinkId
+                 << ", sessions=" << probingSessions.size()
+                 << ", failed=" << failedCount
+                 << ", reason=send failed for all probe sessions"
+                 << ", async=yes";
         return false;
     }
 
@@ -3693,6 +3788,10 @@ private:
     std::unordered_map<int, std::shared_ptr<S7DeviceRuntime>> devices_;
     mutable std::mutex linkOperationMutex_;
     std::unordered_map<int, LinkOperationRuntime> linkOperationQueues_;
+    static constexpr double kSessionStatusLogIntervalSec = 60.0;
+    trantor::EventLoop* sessionStatusTimerLoop_ = nullptr;
+    trantor::TimerId sessionStatusTimerId_{0};
+    bool sessionStatusTimerStarted_ = false;
     std::unique_ptr<DtuRegistry> sessionRegistry_;
     std::unique_ptr<DtuSessionManager> sessionManager_;
     std::unique_ptr<RegistrationNormalizer> sessionNormalizer_;
