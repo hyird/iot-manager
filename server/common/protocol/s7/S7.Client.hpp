@@ -579,6 +579,14 @@ public:
         disconnectFrame_.clear();
     }
 
+    void markAsyncSessionReady() {
+        std::lock_guard ioLock(ioMutex_);
+        connected_ = true;
+        if (pduLength_ == 0) {
+            pduLength_ = pduRequestLength_ == 0 ? kDefaultS7PduRequest : pduRequestLength_;
+        }
+    }
+
     std::vector<std::uint8_t> buildConnectionRequestFrame() {
         const auto sourceRef = nextSourceRef();
         std::vector<std::uint8_t> frame;

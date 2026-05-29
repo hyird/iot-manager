@@ -112,12 +112,15 @@ struct S7DeviceRuntime {
     struct AsyncConnect {
         enum class Stage {
             IsoConfirm,
-            SetupCommunication
+            SetupCommunication,
+            DirectReadProbe
         };
 
         Stage stage = Stage::IsoConfirm;
         std::uint64_t attemptId = 0;
         std::deque<uint8_t> rxBuffer;
+        std::vector<DataItem> directReadItems;
+        std::vector<std::vector<std::uint8_t>> directReadBuffers;
         std::function<void(bool)> complete;
         trantor::TimerId timerId{0};
         bool done = false;
@@ -2711,6 +2714,110 @@ private:
         }
     }
 
+    static const char* asyncConnectStageLabel(S7DeviceRuntime::AsyncConnect::Stage stage) {
+        switch (stage) {
+            case S7DeviceRuntime::AsyncConnect::Stage::IsoConfirm:
+                return "iso-confirm";
+            case S7DeviceRuntime::AsyncConnect::Stage::SetupCommunication:
+                return "setup-communication";
+            case S7DeviceRuntime::AsyncConnect::Stage::DirectReadProbe:
+                return "direct-read-probe";
+            default:
+                return "unknown";
+        }
+    }
+
+    bool startAsyncConnectDirectReadProbe(
+        const std::shared_ptr<S7DeviceRuntime>& runtime,
+        const std::shared_ptr<S7DeviceRuntime::AsyncConnect>& connect) {
+
+        if (!runtime || !connect) {
+            return false;
+        }
+
+        int deviceId = 0;
+        std::string label;
+        std::vector<S7AreaDefinition> areas;
+        {
+            std::lock_guard lock(runtime->mutex);
+            if (connect->done || runtime->asyncConnect != connect) {
+                return false;
+            }
+            deviceId = runtime->deviceId;
+            label = deviceLabel(*runtime);
+            areas = runtime->areas;
+        }
+
+        const auto plans = planReadBlocks(areas);
+        if (plans.empty()) {
+            return false;
+        }
+
+        const auto& plan = plans.front();
+        connect->directReadBuffers.clear();
+        connect->directReadItems.clear();
+        connect->directReadBuffers.emplace_back(plan.byteSize, 0);
+        connect->directReadItems.push_back(DataItem{
+            .area = plan.areaCode,
+            .dbNumber = plan.dbNumber,
+            .start = plan.start,
+            .amount = plan.amount,
+            .wordLen = plan.wordLen,
+            .data = connect->directReadBuffers.back().data(),
+            .capacity = connect->directReadBuffers.back().size()
+        });
+
+        std::vector<std::uint8_t> payload;
+        {
+            std::lock_guard clientLock(runtime->clientMutex);
+            if (!runtime->client) {
+                return false;
+            }
+            payload = runtime->client->buildReadRequestForItems(connect->directReadItems, 0, 1);
+        }
+        auto frame = wrapS7Payload(payload);
+
+        {
+            std::lock_guard lock(runtime->mutex);
+            if (connect->done || runtime->asyncConnect != connect) {
+                return false;
+            }
+            connect->stage = S7DeviceRuntime::AsyncConnect::Stage::DirectReadProbe;
+            connect->rxBuffer.clear();
+        }
+
+        LOG_INFO << "[S7][Adapter] TX direct read discovery probe: "
+                 << label << "(id=" << deviceId << ")"
+                 << ", area=" << plan.area
+                 << ", db=" << plan.dbNumber
+                 << ", start=" << plan.start
+                 << ", amount=" << plan.amount
+                 << ", bytes=" << frame.size()
+                 << ", async=yes";
+
+        if (!sendAsyncSessionFrame(runtime, frame, true)) {
+            return false;
+        }
+
+        auto loop = TcpLinkManager::instance().getNextIoLoop();
+        if (loop) {
+            int recvTimeoutMs = kDefaultS7RecvTimeoutMs;
+            {
+                std::lock_guard lock(runtime->mutex);
+                recvTimeoutMs = runtime->connection.recvTimeoutMs;
+            }
+            const double timeoutSec = static_cast<double>(std::max(1000, recvTimeoutMs)) / 1000.0;
+            auto alive = adapterAlive_;
+            connect->timerId = loop->runAfter(timeoutSec, [this, runtime, connect, alive]() {
+                if (!alive->load(std::memory_order_acquire)) {
+                    return;
+                }
+                completeAsyncConnect(runtime, connect, false);
+            });
+        }
+        return true;
+    }
+
     void processAsyncConnectBytes(const std::shared_ptr<S7DeviceRuntime>& runtime, std::vector<uint8_t> bytes) {
         if (!runtime || bytes.empty()) {
             return;
@@ -2755,6 +2862,37 @@ private:
         for (auto& [connect, frame] : frames) {
             if (frame.empty()) {
                 completeAsyncConnect(runtime, connect, false);
+                continue;
+            }
+
+            if (connect->stage == S7DeviceRuntime::AsyncConnect::Stage::DirectReadProbe) {
+                if (frame.size() < 7 || frame[4] != kCotpDtLength || frame[5] != kCotpDt) {
+                    completeAsyncConnect(runtime, connect, false);
+                    continue;
+                }
+
+                std::vector<uint8_t> payload(frame.begin() + 7, frame.end());
+                int rc = kS7ErrInvalidHandle;
+                {
+                    std::lock_guard clientLock(runtime->clientMutex);
+                    if (runtime->client) {
+                        rc = runtime->client->parseReadResponseForItems(
+                            payload,
+                            connect->directReadItems,
+                            0,
+                            connect->directReadItems.size());
+                        if (rc == kS7Ok) {
+                            runtime->client->markAsyncSessionReady();
+                        }
+                    }
+                }
+                LOG_INFO << "[S7][Adapter] Direct read discovery probe "
+                         << (rc == kS7Ok ? "ready" : "failed")
+                         << ": " << deviceLabel(*runtime)
+                         << "(id=" << runtime->deviceId << ")"
+                         << ", rc=" << rc
+                         << " (" << explainClientRc(rc) << ")";
+                completeAsyncConnect(runtime, connect, rc == kS7Ok);
                 continue;
             }
 
@@ -2930,6 +3068,25 @@ private:
             auto alive = adapterAlive_;
             connect->timerId = loop->runAfter(timeoutSec, [this, runtime, connect, alive]() {
                 if (!alive->load(std::memory_order_acquire)) {
+                    return;
+                }
+                S7DeviceRuntime::AsyncConnect::Stage stage = S7DeviceRuntime::AsyncConnect::Stage::IsoConfirm;
+                int deviceId = 0;
+                std::string label;
+                {
+                    std::lock_guard lock(runtime->mutex);
+                    if (connect->done || runtime->asyncConnect != connect) {
+                        return;
+                    }
+                    stage = connect->stage;
+                    deviceId = runtime->deviceId;
+                    label = deviceLabel(*runtime);
+                }
+                if (stage != S7DeviceRuntime::AsyncConnect::Stage::DirectReadProbe
+                    && startAsyncConnectDirectReadProbe(runtime, connect)) {
+                    LOG_INFO << "[S7][Adapter] Async connect fallback to direct read probe: "
+                             << label << "(id=" << deviceId << ")"
+                             << ", previousStage=" << asyncConnectStageLabel(stage);
                     return;
                 }
                 completeAsyncConnect(runtime, connect, false);
