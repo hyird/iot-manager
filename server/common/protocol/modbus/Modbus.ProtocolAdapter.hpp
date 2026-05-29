@@ -9,6 +9,7 @@
 #include "common/edgenode/AgentBridgeManager.hpp"
 #include "common/cache/DeviceCache.hpp"
 #include "common/cache/DeviceConnectionCache.hpp"
+#include "common/network/TcpLinkManager.hpp"
 #include "common/protocol/ProtocolAdapter.hpp"
 #include "common/utils/Constants.hpp"
 
@@ -85,6 +86,13 @@ public:
         );
     }
 
+    ~ModbusProtocolAdapter() override {
+        adapterAlive_->store(false, std::memory_order_release);
+        if (sessionStatusTimerStarted_ && sessionStatusTimerLoop_) {
+            sessionStatusTimerLoop_->invalidateTimer(sessionStatusTimerId_);
+        }
+    }
+
     std::string_view protocol() const override {
         return Constants::PROTOCOL_MODBUS;
     }
@@ -97,6 +105,7 @@ public:
         if (pollScheduler_ && dtuRegistry_) {
             pollScheduler_->reload(*dtuRegistry_);
         }
+        startSessionStatusLogger();
         co_return;
     }
 
@@ -585,6 +594,96 @@ private:
             sessionEngine_->triggerDiscovery(linkId, "");
         }
     }
+
+    static const char* bindStateLabel(SessionBindState state) {
+        switch (state) {
+            case SessionBindState::Bound:
+                return "bound";
+            case SessionBindState::Probing:
+                return "probing";
+            case SessionBindState::Unknown:
+            default:
+                return "unknown";
+        }
+    }
+
+    static const char* jobKindLabel(ModbusJobKind kind) {
+        switch (kind) {
+            case ModbusJobKind::DiscoveryRead:
+                return "discovery";
+            case ModbusJobKind::PollRead:
+                return "poll";
+            case ModbusJobKind::WriteRegisters:
+                return "write";
+            default:
+                return "unknown";
+        }
+    }
+
+    std::string dtuNameForLog(const std::string& dtuKey) const {
+        if (!dtuRegistry_ || dtuKey.empty()) {
+            return "";
+        }
+        auto dtuOpt = dtuRegistry_->findByDtuKey(dtuKey);
+        if (!dtuOpt) {
+            return "";
+        }
+        return dtuOpt->name;
+    }
+
+    void startSessionStatusLogger() {
+        if (sessionStatusTimerStarted_) {
+            return;
+        }
+
+        auto* loop = TcpLinkManager::instance().getNextIoLoop();
+        if (!loop) {
+            LOG_WARN << "[Modbus][Adapter] TCP server session status logger not started: no event loop";
+            return;
+        }
+
+        sessionStatusTimerLoop_ = loop;
+        auto alive = adapterAlive_;
+        sessionStatusTimerId_ = loop->runEvery(kSessionStatusLogIntervalSec, [this, alive]() {
+            if (!alive->load(std::memory_order_acquire)) {
+                return;
+            }
+            try {
+                logSessionStatusSnapshot();
+            } catch (const std::exception& e) {
+                LOG_ERROR << "[Modbus][Adapter] TCP server session status logger failed: " << e.what();
+            } catch (...) {
+                LOG_ERROR << "[Modbus][Adapter] TCP server session status logger failed: <unknown>";
+            }
+        });
+        sessionStatusTimerStarted_ = true;
+    }
+
+    void logSessionStatusSnapshot() {
+        if (!sessionManager_) {
+            return;
+        }
+
+        const auto sessions = sessionManager_->listSessions();
+        LOG_INFO << "[Modbus][Adapter] TCP server session status: clients=" << sessions.size();
+
+        for (const auto& session : sessions) {
+            const std::string dtuName = dtuNameForLog(session.dtuKey);
+            const std::string inflight = session.inflight
+                ? jobKindLabel(session.inflight->job.kind)
+                : "-";
+            LOG_INFO << "[Modbus][Adapter] TCP server client: linkId=" << session.linkId
+                     << ", client=" << session.clientAddr
+                     << ", state=" << bindStateLabel(session.bindState)
+                     << ", dtuKey=" << (!session.dtuKey.empty() ? session.dtuKey : "-")
+                     << ", dtuName=" << (!dtuName.empty() ? dtuName : "-")
+                     << ", discoveryRequested=" << (session.discoveryRequested ? "yes" : "no")
+                     << ", inflight=" << inflight
+                     << ", queuedJobs=" << session.jobQueue.size()
+                     << ", slaveRoutes=" << session.deviceIdsBySlave.size();
+        }
+    }
+
     static std::string registrationMatchKindToString(RegistrationMatchKind kind) {
         switch (kind) {
             case RegistrationMatchKind::StandaloneFrame:
@@ -662,6 +761,11 @@ private:
     std::unique_ptr<ModbusPollScheduler> pollScheduler_;
     std::atomic<int64_t> legacyMappingsCleanedLast_{0};
     std::atomic<int64_t> legacyMappingsCleanedTotal_{0};
+    static constexpr double kSessionStatusLogIntervalSec = 60.0;
+    trantor::EventLoop* sessionStatusTimerLoop_ = nullptr;
+    trantor::TimerId sessionStatusTimerId_{0};
+    bool sessionStatusTimerStarted_ = false;
+    std::shared_ptr<std::atomic_bool> adapterAlive_{std::make_shared<std::atomic_bool>(true)};
 };
 
 }  // namespace modbus

@@ -13,6 +13,7 @@
 #include "common/utils/Constants.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <coroutine>
@@ -278,6 +279,7 @@ public:
     }
 
     ~S7ProtocolAdapter() override {
+        adapterAlive_->store(false, std::memory_order_release);
         if (sessionStatusTimerStarted_ && sessionStatusTimerLoop_) {
             sessionStatusTimerLoop_->invalidateTimer(sessionStatusTimerId_);
         }
@@ -2227,7 +2229,11 @@ private:
         }
 
         sessionStatusTimerLoop_ = loop;
-        sessionStatusTimerId_ = loop->runEvery(kSessionStatusLogIntervalSec, [this]() {
+        auto alive = adapterAlive_;
+        sessionStatusTimerId_ = loop->runEvery(kSessionStatusLogIntervalSec, [this, alive]() {
+            if (!alive->load(std::memory_order_acquire)) {
+                return;
+            }
             try {
                 logSessionStatusSnapshot();
             } catch (const std::exception& e) {
@@ -2921,7 +2927,11 @@ private:
         auto loop = TcpLinkManager::instance().getNextIoLoop();
         if (loop) {
             const double timeoutSec = static_cast<double>(std::max(1000, connection.recvTimeoutMs)) / 1000.0;
-            connect->timerId = loop->runAfter(timeoutSec, [this, runtime, connect]() {
+            auto alive = adapterAlive_;
+            connect->timerId = loop->runAfter(timeoutSec, [this, runtime, connect, alive]() {
+                if (!alive->load(std::memory_order_acquire)) {
+                    return;
+                }
                 completeAsyncConnect(runtime, connect, false);
             });
         }
@@ -3060,7 +3070,11 @@ private:
         auto loop = TcpLinkManager::instance().getNextIoLoop();
         if (loop) {
             const double timeoutSec = static_cast<double>(std::max(1, timeoutMs)) / 1000.0;
-            exchange->timerId = loop->runAfter(timeoutSec, [this, runtime, exchange]() {
+            auto alive = adapterAlive_;
+            exchange->timerId = loop->runAfter(timeoutSec, [this, runtime, exchange, alive]() {
+                if (!alive->load(std::memory_order_acquire)) {
+                    return;
+                }
                 {
                     std::lock_guard lock(runtime->mutex);
                     if (exchange->done || runtime->asyncExchange != exchange) {
@@ -3796,6 +3810,7 @@ private:
     std::unique_ptr<DtuSessionManager> sessionManager_;
     std::unique_ptr<RegistrationNormalizer> sessionNormalizer_;
     std::unique_ptr<S7PollScheduler> pollScheduler_;
+    std::shared_ptr<std::atomic_bool> adapterAlive_{std::make_shared<std::atomic_bool>(true)};
 };
 
 }  // namespace s7
