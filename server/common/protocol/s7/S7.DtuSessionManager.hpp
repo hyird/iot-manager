@@ -7,6 +7,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,17 @@ namespace detail {
 
 inline std::string makeRouteKey(const std::string& sessionKey) {
     return sessionKey;
+}
+
+inline std::string joinClientAddrs(const std::vector<S7DtuSession>& sessions) {
+    std::ostringstream oss;
+    for (std::size_t index = 0; index < sessions.size(); ++index) {
+        if (index > 0) {
+            oss << ",";
+        }
+        oss << sessions[index].clientAddr;
+    }
+    return oss.str();
 }
 
 }  // namespace detail
@@ -289,6 +301,10 @@ inline std::vector<S7DtuSession> DtuSessionManager::acquireLinkProbeSessions(int
         }
     }
     if (!result.empty()) {
+        LOG_INFO << "[S7][DtuSessionManager] Reuse probing session(s): linkId=" << linkId
+                 << ", deviceId=" << deviceId
+                 << ", count=" << result.size()
+                 << ", clients=" << detail::joinClientAddrs(result);
         return result;
     }
 
@@ -298,6 +314,10 @@ inline std::vector<S7DtuSession> DtuSessionManager::acquireLinkProbeSessions(int
         if (session.bindState == SessionBindState::Probing
             && session.probingDeviceId > 0
             && session.probingDeviceId != deviceId) {
+            LOG_INFO << "[S7][DtuSessionManager] Probe acquisition blocked: linkId=" << linkId
+                     << ", requestedDeviceId=" << deviceId
+                     << ", probingDeviceId=" << session.probingDeviceId
+                     << ", probingClient=" << session.clientAddr;
             return result;
         }
     }
@@ -314,13 +334,23 @@ inline std::vector<S7DtuSession> DtuSessionManager::acquireLinkProbeSessions(int
         result.push_back(session);
     }
 
+    if (result.empty()) {
+        LOG_INFO << "[S7][DtuSessionManager] No unknown session available for probe: linkId="
+                 << linkId << ", deviceId=" << deviceId;
+    } else {
+        LOG_INFO << "[S7][DtuSessionManager] Assigned unknown probe session(s): linkId=" << linkId
+                 << ", deviceId=" << deviceId
+                 << ", count=" << result.size()
+                 << ", clients=" << detail::joinClientAddrs(result);
+    }
+
     return result;
 }
 
 inline bool DtuSessionManager::releaseProbingSession(int deviceId, bool advanceCursor) {
     if (deviceId <= 0) return false;
 
-    bool released = false;
+    std::vector<S7DtuSession> releasedSessions;
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& [sessionKey, session] : sessions_) {
         (void)sessionKey;
@@ -336,10 +366,17 @@ inline bool DtuSessionManager::releaseProbingSession(int deviceId, bool advanceC
         if (session.bindState != SessionBindState::Bound) {
             session.bindState = SessionBindState::Unknown;
         }
-        released = true;
+        releasedSessions.push_back(session);
     }
 
-    return released;
+    if (!releasedSessions.empty()) {
+        LOG_INFO << "[S7][DtuSessionManager] Released probing session(s): deviceId=" << deviceId
+                 << ", count=" << releasedSessions.size()
+                 << ", advanceCursor=" << (advanceCursor ? "yes" : "no")
+                 << ", clients=" << detail::joinClientAddrs(releasedSessions);
+    }
+
+    return !releasedSessions.empty();
 }
 
 inline std::vector<S7DtuSession> DtuSessionManager::reconcileDefinitions(
