@@ -431,7 +431,12 @@ private:
             );
             try {
                 auto parsedUrl = OpenAccess::parseWebhookUrl(target.url);
-                auto client = drogon::HttpClient::newHttpClient(parsedUrl.baseUrl, DrogonLoopSelector::getNext());
+                auto client = drogon::HttpClient::newHttpClient(
+                    parsedUrl.baseUrl,
+                    DrogonLoopSelector::getNext(),
+                    false,
+                    false
+                );
                 client->setUserAgent("iot-manager-webhook/1.0");
 
                 auto req = drogon::HttpRequest::newHttpRequest();
