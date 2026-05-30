@@ -214,13 +214,29 @@ inline std::vector<DtuSession> DtuSessionManager::reconcileDefinitions(
                 auto defIt = validByDtuKey.find(session.dtuKey);
                 stale = defIt == validByDtuKey.end() || defIt->second.linkId != session.linkId;
                 if (!stale) {
-                    for (const auto& [slaveId, deviceId] : session.deviceIdsBySlave) {
-                        auto deviceIt = defIt->second.devicesBySlave.find(slaveId);
-                        if (deviceIt == defIt->second.devicesBySlave.end()
-                            || deviceIt->second.deviceId != deviceId) {
-                            stale = true;
-                            break;
+                    for (auto routeIt = routeBySessionAndSlave_.begin(); routeIt != routeBySessionAndSlave_.end();) {
+                        if (routeIt->second.sessionKey == session.sessionKey) {
+                            routeByDeviceId_.erase(routeIt->second.deviceId);
+                            routeIt = routeBySessionAndSlave_.erase(routeIt);
+                        } else {
+                            ++routeIt;
                         }
+                    }
+
+                    session.deviceIdsBySlave.clear();
+                    for (const auto& [slaveId, device] : defIt->second.devicesBySlave) {
+                        session.deviceIdsBySlave[slaveId] = device.deviceId;
+
+                        OnlineRoute route;
+                        route.sessionKey = session.sessionKey;
+                        route.dtuKey = defIt->second.dtuKey;
+                        route.linkId = session.linkId;
+                        route.clientAddr = session.clientAddr;
+                        route.slaveId = slaveId;
+                        route.deviceId = device.deviceId;
+
+                        routeBySessionAndSlave_[detail::makeRouteKey(session.sessionKey, slaveId)] = route;
+                        routeByDeviceId_[device.deviceId] = route;
                     }
                 }
             }

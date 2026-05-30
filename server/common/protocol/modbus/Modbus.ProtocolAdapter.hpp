@@ -14,10 +14,13 @@
 #include "common/utils/Constants.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -209,10 +212,15 @@ public:
 
             if (!bound) {
                 if (!normalized.payload.empty()) {
-                    LOG_DEBUG << "[Modbus][Adapter] Drop payload from unbound DTU: linkId="
-                              << linkId << ", client=" << clientAddr
-                              << ", bytes=" << normalized.payload.size()
-                              << ", hex=" << ModbusUtils::toHexString(normalized.payload);
+                    auto [shouldLog, suppressed] = shouldLogUnboundDrop(linkId, clientAddr);
+                    if (shouldLog) {
+                        LOG_DEBUG << "[Modbus][Adapter] Drop payload from unbound DTU: linkId="
+                                  << linkId << ", client=" << clientAddr
+                                  << ", bytes=" << normalized.payload.size()
+                                  << ", reason=waiting_registration"
+                                  << ", suppressed=" << suppressed
+                                  << ", hex=" << ModbusUtils::toHexString(normalized.payload);
+                    }
                 }
                 return;
             }
@@ -449,6 +457,25 @@ public:
     }
 
 private:
+    std::pair<bool, size_t> shouldLogUnboundDrop(int linkId, const std::string& clientAddr) {
+        static constexpr auto kLogInterval = std::chrono::seconds(60);
+        const auto key = std::to_string(linkId) + "|" + clientAddr;
+        const auto now = std::chrono::steady_clock::now();
+
+        std::lock_guard<std::mutex> lock(unboundDropLogMutex_);
+        auto& state = unboundDropLogState_[key];
+        if (state.lastLog.time_since_epoch().count() == 0
+            || now - state.lastLog >= kLogInterval) {
+            const auto suppressed = state.suppressed;
+            state.lastLog = now;
+            state.suppressed = 0;
+            return {true, suppressed};
+        }
+
+        ++state.suppressed;
+        return {false, 0};
+    }
+
     void cleanupLegacyConnectionCacheMappings() {
         const int removed = DeviceConnectionCache::instance().removeByMinSlaveId(1);
         legacyMappingsCleanedLast_.store(removed, std::memory_order_relaxed);
@@ -766,6 +793,12 @@ private:
     trantor::TimerId sessionStatusTimerId_{0};
     bool sessionStatusTimerStarted_ = false;
     std::shared_ptr<std::atomic_bool> adapterAlive_{std::make_shared<std::atomic_bool>(true)};
+    struct UnboundDropLogState {
+        std::chrono::steady_clock::time_point lastLog{};
+        size_t suppressed = 0;
+    };
+    std::mutex unboundDropLogMutex_;
+    std::unordered_map<std::string, UnboundDropLogState> unboundDropLogState_;
 };
 
 }  // namespace modbus
