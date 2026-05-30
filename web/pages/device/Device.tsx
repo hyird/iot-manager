@@ -1184,9 +1184,6 @@ const DevicePage = () => {
         <Flex justify="space-between" align="center" gap={12} wrap>
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-800">{group.name}</div>
-            <div className="mt-1 text-xs text-slate-500">
-              同一分组内的设备会集中展示，便于批量维护
-            </div>
           </div>
           {renderSectionStats(sectionStats)}
         </Flex>
