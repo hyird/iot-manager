@@ -335,9 +335,9 @@ const getResponsiveDeviceGridColumns = () => {
 };
 
 const getEstimatedGroupSectionHeight = (columnCount: number) => {
-  if (columnCount >= 4) return 320;
-  if (columnCount >= 2) return 540;
-  return 760;
+  if (columnCount >= 4) return 340;
+  if (columnCount >= 2) return 580;
+  return 820;
 };
 
 const useResponsiveDeviceGridColumns = () => {
@@ -357,40 +357,18 @@ const useResponsiveDeviceGridColumns = () => {
 const useWindowVirtualRows = (rowCount: number, estimatedRowHeight: number) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [range, setRange] = useState({ start: 0, end: Math.min(rowCount, 12) });
-  const [measureVersion, setMeasureVersion] = useState(0);
-  const itemSizeMapRef = useRef<Map<number, number>>(new Map());
 
-  const getItemSize = useCallback(
-    (index: number) => itemSizeMapRef.current.get(index) ?? estimatedRowHeight,
+  const getOffset = useCallback(
+    (endIndex: number) => endIndex * estimatedRowHeight,
     [estimatedRowHeight]
   );
 
-  const getOffset = useCallback(
-    (endIndex: number) => {
-      let offset = 0;
-      for (let index = 0; index < endIndex; index++) {
-        offset += getItemSize(index);
-      }
-      return offset;
-    },
-    [getItemSize]
-  );
-
   const getIndexAtOffset = useCallback(
-    (offset: number) => {
-      let cursor = 0;
-      for (let index = 0; index < rowCount; index++) {
-        cursor += getItemSize(index);
-        if (cursor >= offset) return index;
-      }
-      return rowCount;
-    },
-    [getItemSize, rowCount]
+    (offset: number) => Math.min(rowCount, Math.floor(offset / estimatedRowHeight)),
+    [estimatedRowHeight, rowCount]
   );
 
   useEffect(() => {
-    void measureVersion;
-
     const findScrollParent = (element: HTMLElement) => {
       let parent = element.parentElement;
 
@@ -458,45 +436,7 @@ const useWindowVirtualRows = (rowCount: number, estimatedRowHeight: number) => {
       window.removeEventListener("resize", updateRange);
       resizeObserver?.disconnect();
     };
-  }, [estimatedRowHeight, getIndexAtOffset, measureVersion, rowCount]);
-
-  const rangeKey = `${range.start}:${range.end}`;
-
-  useEffect(() => {
-    void rangeKey;
-
-    const container = containerRef.current;
-    if (!container || typeof ResizeObserver === "undefined") return;
-
-    const observer = new ResizeObserver((entries) => {
-      let hasChanges = false;
-
-      for (const entry of entries) {
-        const index = Number((entry.target as HTMLElement).dataset.virtualIndex);
-        if (!Number.isFinite(index)) continue;
-
-        const nextHeight =
-          entry.borderBoxSize?.[0]?.blockSize ?? entry.target.getBoundingClientRect().height;
-        const previousHeight = itemSizeMapRef.current.get(index);
-
-        if (nextHeight > 0 && Math.abs((previousHeight ?? 0) - nextHeight) > 1) {
-          itemSizeMapRef.current.set(index, nextHeight);
-          hasChanges = true;
-        }
-      }
-
-      if (hasChanges) {
-        setMeasureVersion((version) => version + 1);
-      }
-    });
-
-    const items = container.querySelectorAll<HTMLElement>("[data-virtual-index]");
-    items.forEach((item) => {
-      observer.observe(item);
-    });
-
-    return () => observer.disconnect();
-  }, [rangeKey]);
+  }, [estimatedRowHeight, getIndexAtOffset, rowCount]);
 
   return {
     bottomSpacerHeight: Math.max(0, getOffset(rowCount) - getOffset(range.end)),
@@ -827,7 +767,7 @@ const VirtualizedDeviceGrid = memo(
               key={row.map((device) => device.id).join("-")}
               data-virtual-index={range.start + visibleIndex}
               className="grid gap-3"
-              style={{ gridTemplateColumns }}
+              style={{ gridTemplateColumns, minHeight: DEVICE_CARD_ESTIMATED_ROW_HEIGHT }}
             >
               {row.map((device) => {
                 const span = getDeviceCardSpan(device, columnCount);
@@ -854,9 +794,10 @@ interface VirtualizedGroupSectionsProps {
 const VirtualizedGroupSections = memo(
   ({ groups, depth, renderGroupSection }: VirtualizedGroupSectionsProps) => {
     const columnCount = useResponsiveDeviceGridColumns();
+    const estimatedSectionHeight = getEstimatedGroupSectionHeight(columnCount);
     const { bottomSpacerHeight, containerRef, range, topSpacerHeight } = useWindowVirtualRows(
       groups.length,
-      getEstimatedGroupSectionHeight(columnCount)
+      estimatedSectionHeight
     );
     const visibleGroups = groups.slice(range.start, range.end);
 
@@ -873,13 +814,17 @@ const VirtualizedGroupSections = memo(
     return (
       <div ref={containerRef} className="mt-4">
         {topSpacerHeight > 0 ? <div style={{ height: topSpacerHeight }} /> : null}
-        <Space direction="vertical" className="w-full" size="middle">
+        <div className="w-full">
           {visibleGroups.map((group, visibleIndex) => (
-            <div key={group.id} data-virtual-index={range.start + visibleIndex}>
+            <div
+              key={group.id}
+              data-virtual-index={range.start + visibleIndex}
+              style={{ boxSizing: "border-box", height: estimatedSectionHeight, paddingBottom: 16 }}
+            >
               {renderGroupSection(group, depth)}
             </div>
           ))}
-        </Space>
+        </div>
         {bottomSpacerHeight > 0 ? <div style={{ height: bottomSpacerHeight }} /> : null}
       </div>
     );
