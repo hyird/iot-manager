@@ -131,39 +131,42 @@ const DeviceGroupPanel = ({
   };
 
   const treeContent = (
-    <div className="w-56">
+    <div className="w-72 max-w-[calc(100vw-32px)]">
       {isLoading ? (
         <div className="py-6 text-center">
           <Spin size="small" />
         </div>
       ) : (
-        <Tree
-          treeData={antTreeData}
-          selectedKeys={selectedKeys}
-          onSelect={handleSelect}
-          defaultExpandAll
-          blockNode
-          titleRender={(node) => {
-            const items = contextMenuItems(node.key as TreeKey);
-            if (!items.length) return <span>{node.title as string}</span>;
-            return (
-              <Dropdown
-                menu={{
-                  items,
-                  onClick: ({ key }) => {
-                    const id = Number(node.key);
-                    if (key === "addChild") handleAddChild(id);
-                    else if (key === "edit") handleEdit(id);
-                    else if (key === "delete") handleDelete(id);
-                  },
-                }}
-                trigger={["contextMenu"]}
-              >
-                <span className="block">{node.title as string}</span>
-              </Dropdown>
-            );
-          }}
-        />
+        <div className="max-h-[min(68vh,560px)] overflow-y-auto pr-1">
+          <Tree
+            treeData={antTreeData}
+            selectedKeys={selectedKeys}
+            onSelect={handleSelect}
+            defaultExpandAll
+            blockNode
+            titleRender={(node) => {
+              const items = contextMenuItems(node.key as TreeKey);
+              const title = <span className="block whitespace-normal break-words pr-2">{node.title as string}</span>;
+              if (!items.length) return title;
+              return (
+                <Dropdown
+                  menu={{
+                    items,
+                    onClick: ({ key }) => {
+                      const id = Number(node.key);
+                      if (key === "addChild") handleAddChild(id);
+                      else if (key === "edit") handleEdit(id);
+                      else if (key === "delete") handleDelete(id);
+                    },
+                  }}
+                  trigger={["contextMenu"]}
+                >
+                  {title}
+                </Dropdown>
+              );
+            }}
+          />
+        </div>
       )}
       {canManageGroup && (
         <Button

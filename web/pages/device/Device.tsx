@@ -31,6 +31,7 @@ import {
 } from "antd";
 import {
   memo,
+  type CSSProperties,
   type ReactNode,
   startTransition,
   useCallback,
@@ -81,7 +82,11 @@ const DEVICE_CARD_COLUMNS = 4;
 const WIDE_DEVICE_CARD_COLUMNS = 8;
 const DEVICE_CARD_ITEM_LENGTH = 16;
 const WIDE_DEVICE_CARD_ITEM_LENGTH = 12;
-const DEVICE_STATUS_TICK_INTERVAL = 1000;
+const DEVICE_STATUS_TICK_INTERVAL = 5000;
+const DEVICE_CARD_ESTIMATED_ROW_HEIGHT = 340;
+const DEVICE_CARD_VIRTUAL_OVERSCAN_ROWS = 4;
+const DEVICE_CARD_VIRTUAL_MIN_COUNT = 48;
+const DEVICE_GROUP_VIRTUAL_MIN_COUNT = 24;
 
 interface DeviceProtocolStats {
   total: number;
@@ -286,6 +291,221 @@ const buildDeviceCardItems = (elements?: Device.Element[]): DeviceCardDisplayIte
     .filter((item): item is NonNullable<typeof item> => item !== null);
 };
 
+const getDeviceCardSpan = (device: Device.RealTimeData, columnCount: number) => {
+  const isWideCard = (device.elements?.length ?? 0) >= WIDE_DEVICE_CARD_ITEM_COUNT;
+  return isWideCard && columnCount > 1 ? Math.min(2, columnCount) : 1;
+};
+
+const buildDeviceRows = (devices: Device.RealTimeData[], columnCount: number) => {
+  const rows: Device.RealTimeData[][] = [];
+  let currentRow: Device.RealTimeData[] = [];
+  let currentSpan = 0;
+
+  for (const device of devices) {
+    const span = getDeviceCardSpan(device, columnCount);
+
+    if (currentRow.length > 0 && currentSpan + span > columnCount) {
+      rows.push(currentRow);
+      currentRow = [];
+      currentSpan = 0;
+    }
+
+    currentRow.push(device);
+    currentSpan += span;
+
+    if (currentSpan >= columnCount) {
+      rows.push(currentRow);
+      currentRow = [];
+      currentSpan = 0;
+    }
+  }
+
+  if (currentRow.length > 0) {
+    rows.push(currentRow);
+  }
+
+  return rows;
+};
+
+const getResponsiveDeviceGridColumns = () => {
+  if (typeof window === "undefined") return 1;
+  if (window.matchMedia("(min-width: 1536px)").matches) return 4;
+  if (window.matchMedia("(min-width: 1280px)").matches) return 2;
+  return 1;
+};
+
+const getEstimatedGroupSectionHeight = (columnCount: number) => {
+  if (columnCount >= 4) return 320;
+  if (columnCount >= 2) return 540;
+  return 760;
+};
+
+const useResponsiveDeviceGridColumns = () => {
+  const [columnCount, setColumnCount] = useState(getResponsiveDeviceGridColumns);
+
+  useEffect(() => {
+    const updateColumnCount = () => setColumnCount(getResponsiveDeviceGridColumns());
+
+    updateColumnCount();
+    window.addEventListener("resize", updateColumnCount);
+    return () => window.removeEventListener("resize", updateColumnCount);
+  }, []);
+
+  return columnCount;
+};
+
+const useWindowVirtualRows = (rowCount: number, estimatedRowHeight: number) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [range, setRange] = useState({ start: 0, end: Math.min(rowCount, 12) });
+  const [measureVersion, setMeasureVersion] = useState(0);
+  const itemSizeMapRef = useRef<Map<number, number>>(new Map());
+
+  const getItemSize = useCallback(
+    (index: number) => itemSizeMapRef.current.get(index) ?? estimatedRowHeight,
+    [estimatedRowHeight]
+  );
+
+  const getOffset = useCallback(
+    (endIndex: number) => {
+      let offset = 0;
+      for (let index = 0; index < endIndex; index++) {
+        offset += getItemSize(index);
+      }
+      return offset;
+    },
+    [getItemSize]
+  );
+
+  const getIndexAtOffset = useCallback(
+    (offset: number) => {
+      let cursor = 0;
+      for (let index = 0; index < rowCount; index++) {
+        cursor += getItemSize(index);
+        if (cursor >= offset) return index;
+      }
+      return rowCount;
+    },
+    [getItemSize, rowCount]
+  );
+
+  useEffect(() => {
+    void measureVersion;
+
+    const findScrollParent = (element: HTMLElement) => {
+      let parent = element.parentElement;
+
+      while (parent) {
+        const style = window.getComputedStyle(parent);
+        const canScroll =
+          (style.overflowY === "auto" || style.overflowY === "scroll") &&
+          parent.scrollHeight > parent.clientHeight;
+
+        if (canScroll) return parent;
+        parent = parent.parentElement;
+      }
+
+      return null;
+    };
+
+    const container = containerRef.current;
+    const scrollParent = container ? findScrollParent(container) : null;
+
+    const updateRange = () => {
+      const currentContainer = containerRef.current;
+      if (!currentContainer) return;
+
+      const containerRect = currentContainer.getBoundingClientRect();
+      const viewportTop = scrollParent ? scrollParent.scrollTop : window.scrollY;
+      const viewportHeight = scrollParent ? scrollParent.clientHeight : window.innerHeight;
+      const containerTop = scrollParent
+        ? containerRect.top - scrollParent.getBoundingClientRect().top + scrollParent.scrollTop
+        : containerRect.top + window.scrollY;
+      const viewportBottom = viewportTop + viewportHeight;
+      const overscanPx = estimatedRowHeight * DEVICE_CARD_VIRTUAL_OVERSCAN_ROWS;
+
+      const rawStart = getIndexAtOffset(Math.max(0, viewportTop - containerTop - overscanPx));
+      const rawEnd = getIndexAtOffset(Math.max(0, viewportBottom - containerTop + overscanPx)) + 1;
+      const nextStart = Math.min(rowCount, Math.max(0, rawStart));
+      const nextEnd = Math.min(rowCount, Math.max(nextStart, rawEnd));
+
+      setRange((previous) =>
+        previous.start === nextStart && previous.end === nextEnd
+          ? previous
+          : { start: nextStart, end: nextEnd }
+      );
+    };
+
+    updateRange();
+    if (scrollParent) {
+      scrollParent.addEventListener("scroll", updateRange, { passive: true });
+    } else {
+      window.addEventListener("scroll", updateRange, { passive: true });
+    }
+    window.addEventListener("resize", updateRange);
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateRange);
+    if (containerRef.current && resizeObserver) {
+      resizeObserver.observe(containerRef.current);
+    }
+
+    return () => {
+      if (scrollParent) {
+        scrollParent.removeEventListener("scroll", updateRange);
+      } else {
+        window.removeEventListener("scroll", updateRange);
+      }
+      window.removeEventListener("resize", updateRange);
+      resizeObserver?.disconnect();
+    };
+  }, [estimatedRowHeight, getIndexAtOffset, measureVersion, rowCount]);
+
+  const rangeKey = `${range.start}:${range.end}`;
+
+  useEffect(() => {
+    void rangeKey;
+
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver((entries) => {
+      let hasChanges = false;
+
+      for (const entry of entries) {
+        const index = Number((entry.target as HTMLElement).dataset.virtualIndex);
+        if (!Number.isFinite(index)) continue;
+
+        const nextHeight =
+          entry.borderBoxSize?.[0]?.blockSize ?? entry.target.getBoundingClientRect().height;
+        const previousHeight = itemSizeMapRef.current.get(index);
+
+        if (nextHeight > 0 && Math.abs((previousHeight ?? 0) - nextHeight) > 1) {
+          itemSizeMapRef.current.set(index, nextHeight);
+          hasChanges = true;
+        }
+      }
+
+      if (hasChanges) {
+        setMeasureVersion((version) => version + 1);
+      }
+    });
+
+    const items = container.querySelectorAll<HTMLElement>("[data-virtual-index]");
+    items.forEach((item) => {
+      observer.observe(item);
+    });
+
+    return () => observer.disconnect();
+  }, [rangeKey]);
+
+  return {
+    bottomSpacerHeight: Math.max(0, getOffset(rowCount) - getOffset(range.end)),
+    containerRef,
+    range,
+    topSpacerHeight: getOffset(range.start),
+  };
+};
+
 interface DeviceGridItemProps {
   device: Device.RealTimeData;
   statusNow: number;
@@ -366,7 +586,7 @@ const DeviceGridItem = memo(
         <DeviceCard
           title={
             <Flex justify="space-between" align="start" gap={10} className="w-full min-w-0">
-              <span className="min-w-0 truncate pr-1">
+              <span className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-left leading-5">
                 {device.name}
                 {device.device_code ? `:${device.device_code}` : ""}
               </span>
@@ -516,6 +736,151 @@ const DeviceGridItem = memo(
             </Flex>
           }
         />
+      </div>
+    );
+  }
+);
+
+interface VirtualizedDeviceGridProps {
+  devices: Device.RealTimeData[];
+  statusNow: number;
+  canEdit: boolean;
+  canDelete: boolean;
+  canShareByRole: boolean;
+  commandPopoverOpen: boolean;
+  commandDeviceId?: number;
+  commandFunc: Device.CommandOperation | null;
+  onImageClick: (imageOp: Device.ImageOperation) => void;
+  onOpenCommandPopover: (device: Device.RealTimeData, op: Device.CommandOperation) => void;
+  onCloseCommandPopover: () => void;
+  onOpenHistoryModal: (device: Device.RealTimeData) => void;
+  onOpenEditModal: (device: Device.RealTimeData) => void;
+  onDeleteDevice: (device: Device.RealTimeData) => void;
+  onOpenShareModal: (device: Device.RealTimeData) => void;
+}
+
+const VirtualizedDeviceGrid = memo(
+  ({
+    devices,
+    statusNow,
+    canEdit,
+    canDelete,
+    canShareByRole,
+    commandPopoverOpen,
+    commandDeviceId,
+    commandFunc,
+    onImageClick,
+    onOpenCommandPopover,
+    onCloseCommandPopover,
+    onOpenHistoryModal,
+    onOpenEditModal,
+    onDeleteDevice,
+    onOpenShareModal,
+  }: VirtualizedDeviceGridProps) => {
+    const columnCount = useResponsiveDeviceGridColumns();
+    const renderDeviceItem = (device: Device.RealTimeData, style?: CSSProperties) => (
+      <div key={device.id} style={style}>
+        <DeviceGridItem
+          device={device}
+          statusNow={statusNow}
+          canEdit={canEdit && device.can_edit !== false}
+          canDelete={canDelete && device.can_delete !== false}
+          canCommand={device.can_command === true}
+          canShare={canShareByRole && device.can_share === true}
+          isCommandPopoverOpen={commandPopoverOpen && commandDeviceId === device.id}
+          activeCommandFunc={commandDeviceId === device.id ? commandFunc : null}
+          onImageClick={onImageClick}
+          onOpenCommandPopover={onOpenCommandPopover}
+          onCloseCommandPopover={onCloseCommandPopover}
+          onOpenHistoryModal={onOpenHistoryModal}
+          onOpenEditModal={onOpenEditModal}
+          onDeleteDevice={onDeleteDevice}
+          onOpenShareModal={onOpenShareModal}
+        />
+      </div>
+    );
+
+    const rows = useMemo(() => buildDeviceRows(devices, columnCount), [devices, columnCount]);
+    const { bottomSpacerHeight, containerRef, range, topSpacerHeight } = useWindowVirtualRows(
+      rows.length,
+      DEVICE_CARD_ESTIMATED_ROW_HEIGHT
+    );
+    const visibleRows = rows.slice(range.start, range.end);
+    const gridTemplateColumns = `repeat(${columnCount}, minmax(0, 1fr))`;
+
+    if (devices.length === 0) return null;
+
+    if (devices.length < DEVICE_CARD_VIRTUAL_MIN_COUNT) {
+      return (
+        <div className={`mt-4 ${DEVICE_CARD_GRID_CLASS}`}>
+          {devices.map((device) => renderDeviceItem(device))}
+        </div>
+      );
+    }
+
+    return (
+      <div ref={containerRef} className="mt-4">
+        {topSpacerHeight > 0 ? <div style={{ height: topSpacerHeight }} /> : null}
+        <div className="flex flex-col gap-3">
+          {visibleRows.map((row, visibleIndex) => (
+            <div
+              key={row.map((device) => device.id).join("-")}
+              data-virtual-index={range.start + visibleIndex}
+              className="grid gap-3"
+              style={{ gridTemplateColumns }}
+            >
+              {row.map((device) => {
+                const span = getDeviceCardSpan(device, columnCount);
+                const itemStyle: CSSProperties =
+                  span > 1 ? { gridColumn: `span ${span} / span ${span}` } : {};
+
+                return renderDeviceItem(device, itemStyle);
+              })}
+            </div>
+          ))}
+        </div>
+        {bottomSpacerHeight > 0 ? <div style={{ height: bottomSpacerHeight }} /> : null}
+      </div>
+    );
+  }
+);
+
+interface VirtualizedGroupSectionsProps {
+  groups: DeviceGroup.TreeItem[];
+  depth: number;
+  renderGroupSection: (group: DeviceGroup.TreeItem, depth: number) => ReactNode;
+}
+
+const VirtualizedGroupSections = memo(
+  ({ groups, depth, renderGroupSection }: VirtualizedGroupSectionsProps) => {
+    const columnCount = useResponsiveDeviceGridColumns();
+    const { bottomSpacerHeight, containerRef, range, topSpacerHeight } = useWindowVirtualRows(
+      groups.length,
+      getEstimatedGroupSectionHeight(columnCount)
+    );
+    const visibleGroups = groups.slice(range.start, range.end);
+
+    if (groups.length === 0) return null;
+
+    if (groups.length < DEVICE_GROUP_VIRTUAL_MIN_COUNT) {
+      return (
+        <Space direction="vertical" className="mt-4 w-full" size="middle">
+          {groups.map((group) => renderGroupSection(group, depth))}
+        </Space>
+      );
+    }
+
+    return (
+      <div ref={containerRef} className="mt-4">
+        {topSpacerHeight > 0 ? <div style={{ height: topSpacerHeight }} /> : null}
+        <Space direction="vertical" className="w-full" size="middle">
+          {visibleGroups.map((group, visibleIndex) => (
+            <div key={group.id} data-virtual-index={range.start + visibleIndex}>
+              {renderGroupSection(group, depth)}
+            </div>
+          ))}
+        </Space>
+        {bottomSpacerHeight > 0 ? <div style={{ height: bottomSpacerHeight }} /> : null}
       </div>
     );
   }
@@ -770,28 +1135,23 @@ const DevicePage = () => {
   }, []);
 
   const renderDeviceCards = (devices: Device.RealTimeData[]) => (
-    <div className={`mt-4 ${DEVICE_CARD_GRID_CLASS}`}>
-      {devices.map((device) => (
-        <DeviceGridItem
-          key={device.id}
-          device={device}
-          statusNow={statusNow}
-          canEdit={canEdit && device.can_edit !== false}
-          canDelete={canDelete && device.can_delete !== false}
-          canCommand={device.can_command === true}
-          canShare={canEdit && device.can_share === true}
-          isCommandPopoverOpen={commandPopoverOpen && commandDevice?.id === device.id}
-          activeCommandFunc={commandDevice?.id === device.id ? commandFunc : null}
-          onImageClick={handleImageClick}
-          onOpenCommandPopover={openCommandPopover}
-          onCloseCommandPopover={closeCommandPopover}
-          onOpenHistoryModal={openHistoryModal}
-          onOpenEditModal={openEditModal}
-          onDeleteDevice={onDeleteDevice}
-          onOpenShareModal={openShareModal}
-        />
-      ))}
-    </div>
+    <VirtualizedDeviceGrid
+      devices={devices}
+      statusNow={statusNow}
+      canEdit={canEdit}
+      canDelete={canDelete}
+      canShareByRole={canEdit}
+      commandPopoverOpen={commandPopoverOpen}
+      commandDeviceId={commandDevice?.id}
+      commandFunc={commandFunc}
+      onImageClick={handleImageClick}
+      onOpenCommandPopover={openCommandPopover}
+      onCloseCommandPopover={closeCommandPopover}
+      onOpenHistoryModal={openHistoryModal}
+      onOpenEditModal={openEditModal}
+      onDeleteDevice={onDeleteDevice}
+      onOpenShareModal={openShareModal}
+    />
   );
 
   const renderSectionStats = (sectionStats: DeviceGroupStats) => (
@@ -810,9 +1170,10 @@ const DevicePage = () => {
     }
 
     const directDevices = visibleDeviceMap.get(group.id) ?? [];
-    const childSections = (group.children ?? [])
-      .map((child) => renderGroupSection(child, depth + 1))
-      .filter((item): item is ReactNode => item !== null && item !== undefined && item !== false);
+    const visibleChildren = (group.children ?? []).filter((child) => {
+      const childStats = visibleGroupStatsMap.get(child.id);
+      return childStats && childStats.total > 0;
+    });
 
     return (
       <section
@@ -832,10 +1193,12 @@ const DevicePage = () => {
 
         {directDevices.length > 0 ? renderDeviceCards(directDevices) : null}
 
-        {childSections.length > 0 ? (
-          <Space direction="vertical" className="mt-4 w-full" size="middle">
-            {childSections}
-          </Space>
+        {visibleChildren.length > 0 ? (
+          <VirtualizedGroupSections
+            groups={visibleChildren}
+            depth={depth + 1}
+            renderGroupSection={renderGroupSection}
+          />
         ) : null}
       </section>
     );
