@@ -234,32 +234,6 @@ inline std::string resolveClientIp(const drogon::HttpRequestPtr& req) {
     return req->peerAddr().toIpPort();
 }
 
-/** 检查主机名是否为内网/回环地址（SSRF 防护） */
-inline bool isPrivateHost(const std::string& host) {
-    // 回环地址
-    if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0") {
-        return true;
-    }
-    // 云元数据地址
-    if (host == "169.254.169.254" || host == "metadata.google.internal") {
-        return true;
-    }
-    // RFC 1918 内网段简单检查
-    if (host.rfind("10.", 0) == 0 || host.rfind("192.168.", 0) == 0) {
-        return true;
-    }
-    // 172.16.0.0/12
-    if (host.rfind("172.", 0) == 0) {
-        try {
-            int second = std::stoi(host.substr(4, host.find('.', 4) - 4));
-            if (second >= 16 && second <= 31) return true;
-        } catch (...) {}
-    }
-    // 链路本地
-    if (host.rfind("169.254.", 0) == 0) return true;
-    return false;
-}
-
 inline ParsedUrl parseWebhookUrl(const std::string& url) {
     if (!(url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0)) {
         throw ValidationException("Webhook 地址必须以 http:// 或 https:// 开头");
@@ -320,10 +294,6 @@ inline ParsedUrl parseWebhookUrl(const std::string& url) {
     }
     if (host.empty()) {
         throw ValidationException("Webhook 地址主机无效");
-    }
-
-    if (isPrivateHost(host)) {
-        throw ForbiddenException("Webhook 地址不允许指向内网或回环地址");
     }
 
     std::string path = "/";
