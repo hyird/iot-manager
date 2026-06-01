@@ -432,7 +432,9 @@ private:
             try {
                 auto parsedUrl = OpenAccess::parseWebhookUrl(target.url);
                 auto client = drogon::HttpClient::newHttpClient(
-                    parsedUrl.baseUrl,
+                    parsedUrl.host,
+                    parsedUrl.port,
+                    parsedUrl.useSsl,
                     DrogonLoopSelector::getNext(),
                     false,
                     false

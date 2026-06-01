@@ -45,6 +45,10 @@ struct WebhookTarget {
 
 struct ParsedUrl {
     std::string baseUrl;
+    std::string scheme;
+    std::string host;
+    uint16_t port = 0;
+    bool useSsl = false;
     std::string path;
 };
 
@@ -261,22 +265,81 @@ inline ParsedUrl parseWebhookUrl(const std::string& url) {
         throw ValidationException("Webhook 地址必须以 http:// 或 https:// 开头");
     }
 
-    // 提取主机名并检查 SSRF
-    size_t schemeEnd = url.find("://") + 3;
-    size_t pathPos = url.find('/', schemeEnd);
-    size_t portPos = url.find(':', schemeEnd);
-    size_t hostEnd = std::min({pathPos, portPos, url.size()});
-    std::string host = url.substr(schemeEnd, hostEnd - schemeEnd);
+    size_t schemeSep = url.find("://");
+    std::string scheme = url.substr(0, schemeSep);
+    bool useSsl = scheme == "https";
+    uint16_t defaultPort = useSsl ? 443 : 80;
+
+    // 提取 authority/path。path 可携带 query，fragment 不参与 HTTP 请求。
+    size_t authorityStart = schemeSep + 3;
+    size_t pathPos = url.find_first_of("/?#", authorityStart);
+    size_t authorityEnd = pathPos == std::string::npos ? url.size() : pathPos;
+    std::string authority = url.substr(authorityStart, authorityEnd - authorityStart);
+    if (authority.empty() || authority.find('@') != std::string::npos) {
+        throw ValidationException("Webhook 地址主机无效");
+    }
+
+    std::string host;
+    uint16_t port = defaultPort;
+    if (authority.rfind("[", 0) == 0) {
+        size_t bracketEnd = authority.find(']');
+        if (bracketEnd == std::string::npos) {
+            throw ValidationException("Webhook 地址主机无效");
+        }
+        host = authority.substr(1, bracketEnd - 1);
+        if (bracketEnd + 1 < authority.size()) {
+            if (authority[bracketEnd + 1] != ':') {
+                throw ValidationException("Webhook 地址端口无效");
+            }
+            std::string portText = authority.substr(bracketEnd + 2);
+            if (portText.empty() || !std::all_of(portText.begin(), portText.end(), ::isdigit)) {
+                throw ValidationException("Webhook 地址端口无效");
+            }
+            int parsedPort = std::stoi(portText);
+            if (parsedPort <= 0 || parsedPort > 65535) {
+                throw ValidationException("Webhook 地址端口无效");
+            }
+            port = static_cast<uint16_t>(parsedPort);
+        }
+    } else {
+        size_t portPos = authority.rfind(':');
+        if (portPos == std::string::npos) {
+            host = authority;
+        } else {
+            host = authority.substr(0, portPos);
+            std::string portText = authority.substr(portPos + 1);
+            if (portText.empty() || !std::all_of(portText.begin(), portText.end(), ::isdigit)) {
+                throw ValidationException("Webhook 地址端口无效");
+            }
+            int parsedPort = std::stoi(portText);
+            if (parsedPort <= 0 || parsedPort > 65535) {
+                throw ValidationException("Webhook 地址端口无效");
+            }
+            port = static_cast<uint16_t>(parsedPort);
+        }
+    }
+    if (host.empty()) {
+        throw ValidationException("Webhook 地址主机无效");
+    }
 
     if (isPrivateHost(host)) {
         throw ForbiddenException("Webhook 地址不允许指向内网或回环地址");
     }
 
-    if (pathPos == std::string::npos) {
-        return {url, "/"};
+    std::string path = "/";
+    if (pathPos != std::string::npos) {
+        path = url[pathPos] == '#' ? "/" : url.substr(pathPos);
+        size_t fragmentPos = path.find('#');
+        if (fragmentPos != std::string::npos) {
+            path = path.substr(0, fragmentPos);
+        }
+        if (path.empty() || path[0] == '?') {
+            path = "/" + path;
+        }
     }
 
-    return {url.substr(0, pathPos), url.substr(pathPos)};
+    std::string baseUrl = scheme + "://" + authority;
+    return {baseUrl, scheme, host, port, useSsl, path};
 }
 
 inline const std::set<std::string>& supportedWebhookEvents() {

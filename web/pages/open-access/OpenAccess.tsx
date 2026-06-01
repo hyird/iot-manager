@@ -313,6 +313,21 @@ function AccessKeyFormModal({
 }) {
   const [form] = Form.useForm<AccessKeyFormValues>();
   const { message } = App.useApp();
+  const selectedDeviceIds = Form.useWatch("deviceIds", form) ?? [];
+  const allDeviceIds = useMemo(() => deviceOptions.map((device) => device.id), [deviceOptions]);
+  const allDevicesSelected =
+    allDeviceIds.length > 0 && allDeviceIds.every((id) => selectedDeviceIds.includes(id));
+  const canSelectDevices =
+    !deviceOptionsUnavailable && !deviceOptionsLoading && allDeviceIds.length > 0;
+
+  const handleSelectAllDevices = () => {
+    form.setFieldsValue({ deviceIds: allDeviceIds });
+    form.validateFields(["deviceIds"]).catch(() => undefined);
+  };
+
+  const handleClearDevices = () => {
+    form.setFieldsValue({ deviceIds: [] });
+  };
 
   const handleOpenChange = (isOpen: boolean) => {
     if (!isOpen) return;
@@ -424,7 +439,39 @@ function AccessKeyFormModal({
         </Form.Item>
 
         <Form.Item
-          label="可访问设备"
+          label={
+            <div className="flex w-full items-center justify-between gap-3">
+              <span>可访问设备</span>
+              <Space size={8}>
+                <Button
+                  type="link"
+                  size="small"
+                  className="!h-auto !p-0"
+                  disabled={!canSelectDevices || allDevicesSelected}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handleSelectAllDevices();
+                  }}
+                >
+                  选择全部
+                </Button>
+                <Button
+                  type="link"
+                  size="small"
+                  className="!h-auto !p-0"
+                  disabled={selectedDeviceIds.length === 0}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handleClearDevices();
+                  }}
+                >
+                  清空
+                </Button>
+              </Space>
+            </div>
+          }
           name="deviceIds"
           rules={[{ type: "array", required: true, min: 1, message: "请至少选择一个设备" }]}
           extra="该设备范围同时用于主动查询和 webhook 推送"
