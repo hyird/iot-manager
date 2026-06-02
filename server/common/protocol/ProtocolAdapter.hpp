@@ -319,14 +319,18 @@ protected:
      */
     Task<CommandResult> awaitCommandResponse(const std::string& commandKey, int timeoutMs,
                                               int64_t downCommandId) {
-        bool success = co_await runtimeContext_.commandCoordinator.wait(commandKey, timeoutMs);
-        if (success) {
+        auto waitResult = co_await runtimeContext_.commandCoordinator.wait(commandKey, timeoutMs);
+        if (waitResult.success) {
             co_await runtimeContext_.commandStore.updateCommandStatus(downCommandId, "SUCCESS", "");
             co_return CommandResult::success();
-        } else {
+        } else if (waitResult.timedOut) {
             co_await runtimeContext_.commandStore.updateCommandStatus(
                 downCommandId, "TIMEOUT", "设备应答超时");
             co_return CommandResult::timeout();
+        } else {
+            co_await runtimeContext_.commandStore.updateCommandStatus(
+                downCommandId, "SEND_FAILED", "设备应答失败");
+            co_return CommandResult::sendFailed("设备应答失败");
         }
     }
 

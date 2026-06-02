@@ -152,6 +152,11 @@ private:
             || fc == FuncCodes::WRITE_MULTIPLE_REGISTERS;
     }
 
+    static bool isLastWriteJobInCommand(const ModbusJob& job) {
+        return job.commandBatchSize <= 1
+            || job.commandBatchIndex + 1 >= job.commandBatchSize;
+    }
+
     static void validateModbusValue(double value, DataType dataType, const std::string& name) {
         switch (dataType) {
             case DataType::BOOL:
@@ -229,6 +234,11 @@ private:
         const std::string& clientAddr,
         const ModbusResponse& response);
     bool tryDispatchNext(int linkId, const std::string& clientAddr);
+    void notifyWriteCommandCompletion(const ModbusJob& job, bool success) const;
+    void dropQueuedWriteJobsForCommand(
+        int linkId,
+        const std::string& clientAddr,
+        const std::string& commandKey);
     std::optional<ModbusJob> buildDiscoveryJob(
         const ModbusDeviceDef& device,
         size_t readGroupIndex,
@@ -290,6 +300,38 @@ inline void ModbusSessionEngine::releaseLinkDiscovery(int linkId) {
 
     std::lock_guard<std::mutex> lock(discoveryMutex_);
     linkDiscoveryInFlight_[linkId] = false;
+}
+
+inline void ModbusSessionEngine::notifyWriteCommandCompletion(const ModbusJob& job, bool success) const {
+    if (!commandCompletionCallback_) {
+        return;
+    }
+    if (success && !isLastWriteJobInCommand(job)) {
+        return;
+    }
+    commandCompletionCallback_(
+        job.commandKey,
+        FUNC_WRITE,
+        success,
+        0,
+        job.deviceId);
+}
+
+inline void ModbusSessionEngine::dropQueuedWriteJobsForCommand(
+    int linkId,
+    const std::string& clientAddr,
+    const std::string& commandKey) {
+
+    if (commandKey.empty()) {
+        return;
+    }
+
+    sessions_.mutateSession(linkId, clientAddr, [&](DtuSession& session) {
+        session.jobQueue.removeIf([&](const ModbusJob& job) {
+            return job.kind == ModbusJobKind::WriteRegisters
+                && job.commandKey == commandKey;
+        });
+    });
 }
 
 inline bool ModbusSessionEngine::hasPendingLinkDiscovery(int linkId) const {
@@ -565,13 +607,9 @@ inline bool ModbusSessionEngine::tryDispatchNext(int linkId, const std::string& 
         }
     }
 
-    if (failedWriteJob && commandCompletionCallback_) {
-        commandCompletionCallback_(
-            failedWriteJob->commandKey,
-            FUNC_WRITE,
-            false,
-            0,
-            failedWriteJob->deviceId);
+    if (failedWriteJob) {
+        dropQueuedWriteJobsForCommand(linkId, clientAddr, failedWriteJob->commandKey);
+        notifyWriteCommandCompletion(*failedWriteJob, false);
     }
 
     return false;
@@ -643,6 +681,12 @@ inline std::vector<ModbusJob> ModbusSessionEngine::buildWriteJobs(
         single.append(elem);
         job.writeElements = single;
         jobs.push_back(std::move(job));
+    }
+
+    const size_t totalJobs = jobs.size();
+    for (size_t index = 0; index < totalJobs; ++index) {
+        jobs[index].commandBatchIndex = index;
+        jobs[index].commandBatchSize = totalJobs;
     }
 
     return jobs;
@@ -936,7 +980,8 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onPayload(
             totalExceptions_.fetch_add(1, std::memory_order_relaxed);
         }
 
-        if (isWriteFunctionCode(response.functionCode)) {
+        if (inflightOpt->job.kind == ModbusJobKind::WriteRegisters
+            || isWriteFunctionCode(response.functionCode)) {
             bool success = !response.isException;
             char fcHex[8];
             snprintf(fcHex, sizeof(fcHex), "0x%02X", response.functionCode);
@@ -945,9 +990,10 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onPayload(
                       << ",slave=" << static_cast<int>(response.slaveId)
                       << ") fc=" << fcHex
                       << ", status=" << (success ? "SUCCESS" : "EXCEPTION");
-            if (commandCompletionCallback_) {
-                commandCompletionCallback_(inflightOpt->job.commandKey, FUNC_WRITE, success, 0, inflightOpt->job.deviceId);
+            if (!success) {
+                dropQueuedWriteJobsForCommand(linkId, clientAddr, inflightOpt->job.commandKey);
             }
+            notifyWriteCommandCompletion(inflightOpt->job, success);
             tryDispatchNext(linkId, clientAddr);
             continue;
         }
@@ -1275,9 +1321,11 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::processTimeouts()
         totalTimeouts_.fetch_add(1, std::memory_order_relaxed);
 
         if (timedOut->job.kind == ModbusJobKind::WriteRegisters) {
-            if (commandCompletionCallback_) {
-                commandCompletionCallback_(timedOut->job.commandKey, FUNC_WRITE, false, 0, timedOut->job.deviceId);
-            }
+            dropQueuedWriteJobsForCommand(
+                sessionSnapshot.linkId,
+                sessionSnapshot.clientAddr,
+                timedOut->job.commandKey);
+            notifyWriteCommandCompletion(timedOut->job, false);
         } else if (timedOut->job.kind == ModbusJobKind::PollRead) {
             auto deviceOpt = registry_.findDevice(timedOut->job.deviceId);
         if (deviceOpt) {

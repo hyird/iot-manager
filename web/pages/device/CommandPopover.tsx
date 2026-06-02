@@ -123,7 +123,7 @@ const validateValue = (el: CommandElement): string | null => {
 const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
   const { message } = App.useApp();
   const commandMutation = useDeviceCommand();
-  const isS7SingleSelect = device.protocol_type === "S7";
+  const isSl651CompleteCommand = device.protocol_type === "SL651";
 
   const [elements, setElements] = useState<CommandElement[]>(() =>
     (func.elements || []).map((el) => ({
@@ -132,7 +132,9 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
       value: el.value ?? "",
     }))
   );
-  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>(() =>
+    isSl651CompleteCommand ? (func.elements || []).map((el) => String(el.elementId ?? el.name)) : []
+  );
 
   const checkOnline = useCallback((): Promise<boolean> => {
     const connectionState = getDeviceConnectionState(
@@ -159,11 +161,7 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
   const handleSend = useCallback(async () => {
     const toSend = elements.filter((el) => selectedKeys.includes(el._key));
     if (!toSend.length) {
-      message.warning(isS7SingleSelect ? "请选择一个要素" : "请至少选择一个要素");
-      return;
-    }
-    if (isS7SingleSelect && toSend.length > 1) {
-      message.warning("S7 写寄存器一次只能选择一个要素");
+      message.warning("请至少选择一个要素");
       return;
     }
     for (const el of toSend) {
@@ -196,12 +194,18 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
     onClose,
     checkOnline,
     checkLinkId,
-    isS7SingleSelect,
     message,
   ]);
 
   const handlePresetClick = useCallback(
     async (el: CommandElement, optValue: string) => {
+      if (isSl651CompleteCommand) {
+        setElements((prev) =>
+          prev.map((item) => (item._key === el._key ? { ...item, value: optValue } : item))
+        );
+        setSelectedKeys(elements.map((item) => item._key));
+        return;
+      }
       if (!checkLinkId() || !(await checkOnline())) return;
       const linkId = device.link_id ?? 0;
       commandMutation.mutate({
@@ -213,7 +217,7 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
         },
       });
     },
-    [device, commandMutation, checkOnline, checkLinkId]
+    [device, commandMutation, checkOnline, checkLinkId, elements, isSl651CompleteCommand]
   );
 
   if (!elements.length) return <div className="p-3">暂无可下发要素</div>;
@@ -225,9 +229,6 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
           设备：{device.name}（{device.device_code}）
         </div>
         <div className="text-xs text-gray-400">指令：{func.name}</div>
-        {isS7SingleSelect && (
-          <div className="text-xs text-gray-400">S7 写寄存器一次只能选择一个要素</div>
-        )}
       </div>
       <div className="max-h-[260px] overflow-y-auto pr-1 mb-2">
         {elements.map((el) => {
@@ -239,10 +240,11 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
               <Flex align="center" className={hasOptions ? "mb-1.5" : ""}>
                 <Checkbox
                   checked={checked}
+                  disabled={isSl651CompleteCommand}
                   onChange={(e) =>
                     setSelectedKeys((prev) =>
                       e.target.checked
-                        ? (isS7SingleSelect ? [key] : [...prev, key])
+                        ? [...prev, key]
                         : prev.filter((k) => k !== key)
                     )
                   }
@@ -294,7 +296,7 @@ const CommandPopover = ({ device, func, onClose }: CommandPopoverProps) => {
           size="small"
           type="primary"
           loading={commandMutation.isPending}
-          disabled={!selectedKeys.length || (isS7SingleSelect && selectedKeys.length > 1)}
+          disabled={!selectedKeys.length}
           onClick={handleSend}
         >
           下发

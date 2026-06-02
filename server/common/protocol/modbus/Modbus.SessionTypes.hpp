@@ -100,6 +100,8 @@ struct ModbusJob {
     size_t readGroupIndex = 0;
     Json::Value writeElements;
     std::string commandKey;
+    size_t commandBatchIndex = 0;
+    size_t commandBatchSize = 1;
     std::vector<uint8_t> requestFrame;
     uint8_t requestFunctionCode = 0;
     uint16_t transactionId = 0;

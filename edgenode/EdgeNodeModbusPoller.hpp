@@ -150,17 +150,8 @@ public:
                          << " deviceId=" << writeState_->deviceId
                          << ", frame=" << (writeState_->currentFrameIndex + 1)
                          << "/" << writeState_->writeFrames.size()
-                         << ", action=continue_to_readback";
-                writeState_->responseBuffer.clear();
-                writeState_->waitingWriteResponse = false;
-                // 继续下一帧或进入回读，由回读确认写入结果
-                writeState_->currentFrameIndex++;
-                auto it = devices_.find(writeState_->deviceId);
-                if (it != devices_.end()) {
-                    dispatchNextWriteFrame(it->second);
-                } else {
-                    completeWriteCommand(true, "写入已发送(无响应确认)");
-                }
+                         << ", action=fail";
+                completeWriteCommand(false, "写响应超时");
             }
             return;  // 写命令进行中，暂停轮询
         }
@@ -420,7 +411,7 @@ private:
 
     void dispatchNextWriteFrame(DevicePollContext& ctx) {
         if (!writeState_ || writeState_->currentFrameIndex >= writeState_->writeFrames.size()) {
-            // 所有写帧已发送完，立即回调成功（不等回读）
+            // 所有写帧均收到成功响应后回调成功。
             if (writeState_ && writeState_->callback) {
                 auto cb = std::move(writeState_->callback);
                 cb(true, "写入成功");

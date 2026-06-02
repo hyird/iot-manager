@@ -28,6 +28,11 @@ public:
     template<typename T = void>
     using Task = drogon::Task<T>;
 
+    struct CommandWaitResult {
+        bool success = false;
+        bool timedOut = false;
+    };
+
     using ResponseMatcher = std::function<bool(
         const std::string& requestCode,
         const std::string& responseCode)>;
@@ -73,13 +78,13 @@ public:
         pendingCommands_.erase(commandKey);
     }
 
-    Task<bool> wait(const std::string& commandKey, int timeoutMs) {
+    Task<CommandWaitResult> wait(const std::string& commandKey, int timeoutMs) {
         std::shared_ptr<CommandWaitState> waitState;
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
             auto it = pendingCommands_.find(commandKey);
             if (it == pendingCommands_.end()) {
-                co_return false;
+                co_return CommandWaitResult{false, false};
             }
             waitState = it->second.waitState;
         }
@@ -139,6 +144,7 @@ private:
         std::atomic<bool> suspended{false};
         std::atomic_flag resumedOnce = ATOMIC_FLAG_INIT;  // 保证只 resume 一次
         bool result = false;
+        bool timedOut = false;
     };
 
     /**
@@ -148,9 +154,13 @@ private:
      * - resolved 保证只有一方（定时器或应答）设置结果
      * - resumedOnce 保证 handle.resume() 最多调用一次
      */
-    static void resolveWaitState(const std::shared_ptr<CommandWaitState>& state, bool success) {
+    static void resolveWaitState(
+        const std::shared_ptr<CommandWaitState>& state,
+        bool success,
+        bool timedOut = false) {
         if (!state->resolved.exchange(true, std::memory_order_acq_rel)) {
             state->result = success;
+            state->timedOut = timedOut;
             if (state->suspended.load(std::memory_order_acquire)) {
                 // 协程已挂起，需要通过 queueInLoop 在正确的线程上恢复
                 state->loop->queueInLoop([state]() {
@@ -180,7 +190,7 @@ private:
                 static_cast<double>(timeoutMs) / 1000.0,
                 [weak]() {
                     if (auto s = weak.lock()) {
-                        resolveWaitState(s, false);
+                        resolveWaitState(s, false, true);
                     }
                 }
             );
@@ -207,8 +217,8 @@ private:
             return true;
         }
 
-        bool await_resume() const noexcept {
-            return state->result;
+        CommandWaitResult await_resume() const noexcept {
+            return CommandWaitResult{state->result, state->timedOut};
         }
     };
 

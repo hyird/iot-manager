@@ -551,6 +551,7 @@ private:
         }
 
         std::unordered_map<std::string, std::string> elementFuncCodes;
+        std::unordered_map<std::string, std::unordered_set<std::string>> funcElementIds;
         for (const auto& func : device.protocolConfig["funcs"]) {
             if (func.get("dir", "").asString() != "DOWN") continue;
 
@@ -559,10 +560,12 @@ private:
                 continue;
             }
 
+            auto& requiredIds = funcElementIds[funcCode];
             for (const auto& element : func["elements"]) {
                 std::string elementId = element.get("id", "").asString();
                 if (elementId.empty()) continue;
 
+                requiredIds.insert(elementId);
                 auto [it, inserted] = elementFuncCodes.emplace(elementId, funcCode);
                 if (!inserted && it->second != funcCode) {
                     throw ConflictException("协议配置异常：同一要素归属多个功能码");
@@ -571,8 +574,12 @@ private:
         }
 
         std::string resolvedFuncCode;
+        std::unordered_set<std::string> requestedIds;
         for (const auto& element : elements) {
             auto input = requireCommandElementInput(element);
+            if (!requestedIds.insert(input.elementId).second) {
+                throw ConflictException("一次下发不能包含重复要素: " + input.elementId);
+            }
 
             auto it = elementFuncCodes.find(input.elementId);
             if (it == elementFuncCodes.end()) {
@@ -590,6 +597,29 @@ private:
             throw ConflictException("无法根据要素推导功能码");
         }
 
+        auto requiredIt = funcElementIds.find(resolvedFuncCode);
+        if (requiredIt == funcElementIds.end() || requiredIt->second.empty()) {
+            throw ConflictException("协议配置异常：下行功能码缺少要素配置");
+        }
+        std::vector<std::string> missingIds;
+        for (const auto& requiredId : requiredIt->second) {
+            if (!requestedIds.contains(requiredId)) {
+                missingIds.push_back(requiredId);
+            }
+        }
+        if (!missingIds.empty() || requestedIds.size() != requiredIt->second.size()) {
+            std::sort(missingIds.begin(), missingIds.end());
+            std::string message = "SL651 下发功能码 " + resolvedFuncCode + " 必须包含全部要素";
+            if (!missingIds.empty()) {
+                message += "，缺少: ";
+                for (std::size_t i = 0; i < missingIds.size(); ++i) {
+                    if (i > 0) message += ", ";
+                    message += missingIds[i];
+                }
+            }
+            throw ConflictException(message);
+        }
+
         return resolvedFuncCode;
     }
 
@@ -601,9 +631,6 @@ private:
             return "MODBUS_WRITE";
         }
         if (device.protocolType == Constants::PROTOCOL_S7) {
-            if (!elements.isArray() || elements.size() != 1) {
-                throw ConflictException("S7 写寄存器一次只能下发一个要素");
-            }
             return "S7_WRITE";
         }
         if (device.protocolType == Constants::PROTOCOL_SL651) {

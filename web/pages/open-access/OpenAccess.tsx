@@ -123,10 +123,13 @@ const COMMAND_QUERY_EXAMPLE = [
   "  -d '{",
   '    "deviceId": 123,',
   '    "elements": [',
-  '      { "elementId": "001", "value": "1" }',
+  '      { "elementId": "001", "value": "1" },',
+  '      { "elementId": "002", "value": "0" }',
   "    ]",
   "  }'",
   "",
+  "# Modbus / S7：多要素按单寄存器逐个顺序写入",
+  "# SL651：一次只能对应一个下行功能码，并且该功能码的全部要素必须带齐",
   "# 成功返回：accepted + device",
 ].join("\n");
 
