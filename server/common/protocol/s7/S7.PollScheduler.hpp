@@ -67,6 +67,10 @@ public:
         scheduler_.resetInProgress(deviceId);
     }
 
+    void deferPoll(int deviceId, int delaySec = 1) {
+        scheduler_.defer(deviceId, delaySec);
+    }
+
     void activateFastRead(int deviceId, int durationSec = 60, int intervalSec = 1) {
         scheduler_.activateFastRead(deviceId, durationSec, intervalSec);
     }

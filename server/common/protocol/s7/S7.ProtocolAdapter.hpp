@@ -164,6 +164,7 @@ struct S7DeviceRuntime {
     bool sessionDiscoveryInFlight = false;
     bool connectInProgress = false;
     bool operationRunning = false;
+    ProtocolJobPriority runningOperationPriority = ProtocolJobPriority::Normal;
     std::uint64_t connectGeneration = 0;
     std::size_t sourceRefIndex = 0;
     std::chrono::steady_clock::time_point sessionDiscoveryStartedAt{};
@@ -199,6 +200,7 @@ struct S7DeviceRuntime {
         , sessionDiscoveryInFlight(other.sessionDiscoveryInFlight)
         , connectInProgress(other.connectInProgress)
         , operationRunning(other.operationRunning)
+        , runningOperationPriority(other.runningOperationPriority)
         , connectGeneration(other.connectGeneration)
         , sourceRefIndex(other.sourceRefIndex)
         , sessionDiscoveryStartedAt(other.sessionDiscoveryStartedAt)
@@ -233,6 +235,7 @@ struct S7DeviceRuntime {
         sessionDiscoveryInFlight = other.sessionDiscoveryInFlight;
         connectInProgress = other.connectInProgress;
         operationRunning = other.operationRunning;
+        runningOperationPriority = other.runningOperationPriority;
         connectGeneration = other.connectGeneration;
         sourceRefIndex = other.sourceRefIndex;
         sessionDiscoveryStartedAt = other.sessionDiscoveryStartedAt;
@@ -2310,6 +2313,17 @@ private:
             && runtime.sessionLinkId > 0;
     }
 
+    static bool hasHighPriorityDeviceOperationLocked(const S7DeviceRuntime& runtime) {
+        return runtime.runningOperationPriority == ProtocolJobPriority::High
+            || runtime.operationQueue.highSize() > 0;
+    }
+
+    void deferScheduledPoll(int deviceId, int delaySec = 1) {
+        if (pollScheduler_ && deviceId > 0) {
+            pollScheduler_->deferPoll(deviceId, delaySec);
+        }
+    }
+
     std::vector<S7DtuSession> acquireLinkDiscoverySessions(int linkId, int deviceId) {
         if (!sessionManager_ || linkId <= 0 || deviceId <= 0) {
             return {};
@@ -2455,8 +2469,17 @@ private:
         }
 
         bool shouldStart = false;
+        int deviceId = 0;
+        std::size_t deferredNormalOps = 0;
         {
             std::lock_guard lock(runtime->mutex);
+            deviceId = runtime->deviceId;
+            if (priority == ProtocolJobPriority::High) {
+                deferredNormalOps = runtime->operationQueue.removeIf(
+                    [](const S7DeviceRuntime::QueuedOperation& op) {
+                        return op.priority == ProtocolJobPriority::Normal;
+                    });
+            }
             if (!runtime->operationQueue.push(
                     S7DeviceRuntime::QueuedOperation{.priority = priority, .run = std::move(run)},
                     priority)) {
@@ -2467,6 +2490,13 @@ private:
                 return false;
             }
             shouldStart = !runtime->operationRunning;
+        }
+
+        if (deferredNormalOps > 0) {
+            deferScheduledPoll(deviceId, 1);
+            LOG_DEBUG << "[S7][Adapter] Deferred queued poll before high priority command: "
+                      << "deviceId=" << deviceId
+                      << ", deferred=" << deferredNormalOps;
         }
 
         if (shouldStart) {
@@ -2490,6 +2520,7 @@ private:
                 return;
             }
             runtime->operationRunning = true;
+            runtime->runningOperationPriority = op.priority;
         }
 
         op.run([this, runtime]() {
@@ -2506,6 +2537,7 @@ private:
         {
             std::lock_guard lock(runtime->mutex);
             runtime->operationRunning = false;
+            runtime->runningOperationPriority = ProtocolJobPriority::Normal;
             hasNext = !runtime->operationQueue.empty();
         }
         if (hasNext) {
@@ -3316,15 +3348,20 @@ private:
         bool hasAreas = false;
         bool tcpServerMode = false;
         bool sessionBound = false;
+        bool highPriorityBusy = false;
         int linkId = 0;
         {
             std::lock_guard runtimeLock(runtime->mutex);
             hasAreas = !runtime->areas.empty();
             tcpServerMode = runtime->tcpServerMode;
             sessionBound = runtime->sessionBound;
+            highPriorityBusy = hasHighPriorityDeviceOperationLocked(*runtime);
             linkId = runtime->linkId;
         }
         if (!hasAreas) {
+            return false;
+        }
+        if (highPriorityBusy) {
             return false;
         }
         if (tcpServerMode && !sessionBound) {
@@ -3841,6 +3878,7 @@ private:
         bool tcpServerMode = false;
         bool sessionReady = false;
         bool sessionBound = false;
+        bool highPriorityBusy = false;
         int linkId = 0;
         {
             std::lock_guard runtimeLock(runtime->mutex);
@@ -3849,10 +3887,22 @@ private:
             sessionBound = runtime->sessionBound
                 && runtime->sessionLinkId > 0
                 && !runtime->sessionClientAddr.empty();
+            highPriorityBusy = hasHighPriorityDeviceOperationLocked(*runtime);
             linkId = runtime->linkId;
+        }
+        if (highPriorityBusy) {
+            deferScheduledPoll(deviceId, 1);
+            co_return;
         }
 
         auto enqueuePollOnDeviceQueue = [this, runtime, deviceId]() {
+            {
+                std::lock_guard runtimeLock(runtime->mutex);
+                if (hasHighPriorityDeviceOperationLocked(*runtime)) {
+                    deferScheduledPoll(deviceId, 1);
+                    return;
+                }
+            }
             if (!enqueueDeviceOperation(
                     runtime,
                     ProtocolJobPriority::Normal,

@@ -20,6 +20,9 @@
 #include "modules/device/domain/Events.hpp"
 #include "modules/protocol/domain/Events.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -140,6 +143,13 @@ public:
 
         // 定期刷新物化视图（5 分钟周期）
         backgroundLoop_->runEvery(300.0, [this]() {
+            auto now = std::chrono::steady_clock::now();
+            auto cooldownUntil = viewRefreshCooldownUntil_.load(std::memory_order_acquire);
+            if (cooldownUntil > 0 && now.time_since_epoch().count() < cooldownUntil) {
+                LOG_DEBUG << "[BackgroundTasks] Skipping view refresh (backoff active)";
+                return;
+            }
+
             bool expected = false;
             if (!viewRefreshing_.compare_exchange_strong(expected, true)) {
                 LOG_DEBUG << "[BackgroundTasks] Skipping view refresh (previous still running)";
@@ -147,12 +157,25 @@ public:
             }
             try {
                 drogon::async_run([this]() -> Task<> {
+                    bool success = false;
                     try {
                         DatabaseService dbService;
                         co_await dbService.execSqlCoro("SELECT refresh_device_data_views()");
                         LOG_DEBUG << "[BackgroundTasks] Materialized views refreshed";
+                        success = true;
                     } catch (const std::exception& e) {
-                        LOG_WARN << "[BackgroundTasks] Failed to refresh materialized views: " << e.what();
+                        auto failures = viewRefreshFailureCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+                        auto retryAfter = std::chrono::steady_clock::now() + std::chrono::minutes(30);
+                        viewRefreshCooldownUntil_.store(
+                            retryAfter.time_since_epoch().count(),
+                            std::memory_order_release);
+                        LOG_WARN << "[BackgroundTasks] Failed to refresh materialized views: "
+                                 << e.what() << ", failureCount=" << failures
+                                 << ", retryIn=30min";
+                    }
+                    if (success) {
+                        viewRefreshFailureCount_.store(0, std::memory_order_release);
+                        viewRefreshCooldownUntil_.store(0, std::memory_order_release);
                     }
                     viewRefreshing_.store(false, std::memory_order_release);
                 });
@@ -699,4 +722,6 @@ private:
     std::mutex reloadPendingMutex_;  // 保护 adapterReloadPending_ 的并发访问
 
     std::atomic<bool> viewRefreshing_{false};
+    std::atomic<int> viewRefreshFailureCount_{0};
+    std::atomic<int64_t> viewRefreshCooldownUntil_{0};
 };

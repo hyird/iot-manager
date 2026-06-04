@@ -104,9 +104,8 @@ public:
     }
 
     template<typename Predicate>
-    void removeIf(Predicate predicate) {
-        filterQueue(high_, predicate);
-        filterQueue(normal_, predicate);
+    std::size_t removeIf(Predicate predicate) {
+        return filterQueue(high_, predicate) + filterQueue(normal_, predicate);
     }
 
 private:
@@ -115,14 +114,18 @@ private:
     }
 
     template<typename Predicate>
-    static void filterQueue(std::deque<Job>& source, Predicate predicate) {
+    static std::size_t filterQueue(std::deque<Job>& source, Predicate predicate) {
         std::deque<Job> kept;
+        std::size_t removed = 0;
         for (auto& job : source) {
             if (!predicate(job)) {
                 kept.push_back(std::move(job));
+            } else {
+                ++removed;
             }
         }
         source = std::move(kept);
+        return removed;
     }
 
     std::size_t maxSize_;

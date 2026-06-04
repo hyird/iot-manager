@@ -8,8 +8,10 @@
 #include "common/protocol/FrameResult.hpp"
 #include "common/utils/DrogonLoopSelector.hpp"
 
+#include <cstddef>
 #include <map>
 #include <set>
+#include <vector>
 
 class OpenWebhookDispatcher {
 public:
@@ -27,9 +29,12 @@ public:
         drogon::async_run([batch]() -> Task<void> {
             try {
                 std::set<int> deviceIds;
-                for (const auto& item : batch) {
-                    if (item.deviceId > 0) {
-                        deviceIds.insert(item.deviceId);
+                std::vector<std::set<std::string>> batchEvents(batch.size());
+                for (std::size_t i = 0; i < batch.size(); ++i) {
+                    auto events = resolveEvents(batch[i]);
+                    if (!events.empty() && batch[i].deviceId > 0) {
+                        deviceIds.insert(batch[i].deviceId);
+                        batchEvents[i] = std::move(events);
                     }
                 }
                 if (deviceIds.empty()) co_return;
@@ -44,12 +49,14 @@ public:
                     deviceMap[device.id] = &device;
                 }
 
-                for (const auto& frame : batch) {
+                for (std::size_t i = 0; i < batch.size(); ++i) {
+                    const auto& frame = batch[i];
+                    const auto& events = batchEvents[i];
+                    if (events.empty()) continue;
+
                     auto deviceIt = deviceMap.find(frame.deviceId);
                     const DeviceCache::CachedDevice* device =
                         deviceIt == deviceMap.end() ? nullptr : deviceIt->second;
-                    auto events = resolveEvents(frame);
-                    if (events.empty()) continue;
 
                     for (const auto& target : targets) {
                         if (!target.deviceIds.contains(frame.deviceId)) continue;

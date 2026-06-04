@@ -183,6 +183,19 @@ public:
         it->second.nextDueTime = std::chrono::steady_clock::now();
     }
 
+    void defer(int deviceId, int delaySec = 1) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = pollEntries_.find(deviceId);
+        if (it == pollEntries_.end()) {
+            return;
+        }
+
+        it->second.cycleInProgress = false;
+        it->second.nextStepIndex = 0;
+        it->second.nextDueTime = std::chrono::steady_clock::now()
+            + std::chrono::seconds(std::max(1, delaySec));
+    }
+
     void activateFastRead(int deviceId, int durationSec, int intervalSec) {
         if (durationSec <= 0) {
             return;

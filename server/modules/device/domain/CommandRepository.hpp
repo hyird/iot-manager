@@ -14,6 +14,8 @@ public:
     template<typename T = void>
     using Task = drogon::Task<T>;
 
+    inline static constexpr const char* RECENT_COMMAND_WINDOW = "2 days";
+
     /** 批量写入条目 */
     struct SaveItem {
         int deviceId = 0;
@@ -103,13 +105,22 @@ public:
 
         try {
             DatabaseService dbService;
-            co_await dbService.execSqlCoro(R"(
+            auto result = co_await dbService.execSqlCoro(R"(
                 UPDATE device_data
                 SET data = data || jsonb_build_object('responseId', ?::bigint)
                 WHERE id = ?
+                  AND report_time >= now() - INTERVAL '2 days'
+                RETURNING id
             )", {std::to_string(responseId), std::to_string(downCommandId)});
 
-            LOG_DEBUG << "[CommandRepository] 指令已关联应答: downId=" << downCommandId << ", respId=" << responseId;
+            if (result.empty()) {
+                LOG_WARN << "[CommandRepository] 关联应答未命中新近指令记录: downId="
+                         << downCommandId << ", window=" << RECENT_COMMAND_WINDOW;
+                co_return;
+            }
+
+            LOG_DEBUG << "[CommandRepository] 指令已关联应答: downId=" << downCommandId
+                      << ", respId=" << responseId;
         } catch (const std::exception& e) {
             LOG_ERROR << "[CommandRepository] 关联应答失败: " << e.what();
         }
@@ -133,11 +144,20 @@ public:
 
             std::string updateJson = JsonHelper::serialize(updateFields);
 
-            co_await dbService.execSqlCoro(R"(
+            auto result = co_await dbService.execSqlCoro(R"(
                 UPDATE device_data
                 SET data = data || ?::jsonb
                 WHERE id = ?
+                  AND report_time >= now() - INTERVAL '2 days'
+                RETURNING id
             )", {updateJson, std::to_string(downCommandId)});
+
+            if (result.empty()) {
+                LOG_WARN << "[CommandRepository] 指令状态更新未命中新近记录: id="
+                         << downCommandId << ", status=" << status
+                         << ", window=" << RECENT_COMMAND_WINDOW;
+                co_return;
+            }
 
             LOG_DEBUG << "[CommandRepository] 指令状态已更新: id=" << downCommandId << ", status=" << status;
         } catch (const std::exception& e) {
