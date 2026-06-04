@@ -77,6 +77,8 @@ interface RealtimeUpdate {
   image?: { operationId: string; data: string } | null;
 }
 
+const sortRealtimeById = (items: Device.Realtime[]) => [...items].sort((a, b) => a.id - b.id);
+
 export function WebSocketProvider({ children }: { children: ReactNode }) {
   const token = useAppSelector((s) => s.auth.token);
   const queryClient = useQueryClient();
@@ -113,7 +115,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       const existing = queryClient.getQueryData<{ list: Device.Realtime[] }>(queryKey);
 
       if (!existing?.list?.length) {
-        queryClient.setQueryData(queryKey, { list: updates as Device.Realtime[] });
+        queryClient.setQueryData(queryKey, { list: sortRealtimeById(updates as Device.Realtime[]) });
         return;
       }
 
@@ -157,7 +159,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
       // 仅在真正有变化时更新缓存，避免无变更时触发组件重渲染
       if (hasChanges) {
-        queryClient.setQueryData(queryKey, { list: mergedList });
+        queryClient.setQueryData(queryKey, { list: sortRealtimeById(mergedList) });
       }
     },
     [queryClient]

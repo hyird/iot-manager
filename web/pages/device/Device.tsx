@@ -291,8 +291,11 @@ const buildDeviceCardItems = (elements?: Device.Element[]): DeviceCardDisplayIte
     .filter((item): item is NonNullable<typeof item> => item !== null);
 };
 
+const getDeviceDisplayElementCount = (device: Device.RealTimeData) =>
+  device.element_count ?? device.elements?.length ?? 0;
+
 const getDeviceCardSpan = (device: Device.RealTimeData, columnCount: number) => {
-  const isWideCard = (device.elements?.length ?? 0) >= WIDE_DEVICE_CARD_ITEM_COUNT;
+  const isWideCard = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
   return isWideCard && columnCount > 1 ? Math.min(2, columnCount) : 1;
 };
 
@@ -499,7 +502,7 @@ const DeviceGridItem = memo(
     ]);
     const statusTag = getDeviceStatusBadge(connectionState);
     const items = useMemo(() => buildDeviceCardItems(device.elements), [device.elements]);
-    const isWideCard = items.length >= WIDE_DEVICE_CARD_ITEM_COUNT;
+    const isWideCard = getDeviceDisplayElementCount(device) >= WIDE_DEVICE_CARD_ITEM_COUNT;
     const canRemoteControl = device.remote_control !== false;
     const commandOps = device.commandOperations ?? EMPTY_COMMAND_OPS;
     const imageOps = device.imageOperations ?? EMPTY_IMAGE_OPS;

@@ -67,6 +67,31 @@ const getReportTimeMs = (reportTime?: string) => {
   return Number.isNaN(ts) ? Number.NEGATIVE_INFINITY : ts;
 };
 
+const getGroupSortValue = (groupId?: number | null) =>
+  groupId && groupId > 0 ? groupId : Number.MAX_SAFE_INTEGER;
+
+const getCreatedAtSortValue = (createdAt?: string) => createdAt || "9999-12-31T23:59:59";
+
+const compareDeviceDisplayOrder = (
+  a: Pick<Device.StaticData, "id" | "group_id" | "created_at">,
+  b: Pick<Device.StaticData, "id" | "group_id" | "created_at">
+) => {
+  const groupDiff = getGroupSortValue(a.group_id) - getGroupSortValue(b.group_id);
+  if (groupDiff !== 0) return groupDiff;
+
+  const createdA = getCreatedAtSortValue(a.created_at);
+  const createdB = getCreatedAtSortValue(b.created_at);
+  if (createdA !== createdB) return createdA.localeCompare(createdB);
+
+  return a.id - b.id;
+};
+
+const sortDevicesForDisplay = <T extends Pick<Device.StaticData, "id" | "group_id" | "created_at">>(
+  devices: T[]
+) => [...devices].sort(compareDeviceDisplayOrder);
+
+const sortRealtimeById = (items: Device.Realtime[]) => [...items].sort((a, b) => a.id - b.id);
+
 const shouldPreferCurrentRealtime = (current?: Device.Realtime, fetched?: Device.Realtime) => {
   if (!current) return false;
   if (!fetched) return true;
@@ -94,8 +119,8 @@ const mergeRealtimeSnapshots = (
   currentList: Device.Realtime[],
   fetchedList: Device.Realtime[]
 ) => {
-  if (currentList.length === 0) return fetchedList;
-  if (fetchedList.length === 0) return currentList;
+  if (currentList.length === 0) return sortRealtimeById(fetchedList);
+  if (fetchedList.length === 0) return sortRealtimeById(currentList);
 
   const currentMap = new Map(currentList.map((item) => [item.id, item]));
   const fetchedMap = new Map(fetchedList.map((item) => [item.id, item]));
@@ -123,7 +148,7 @@ const mergeRealtimeSnapshots = (
     });
   }
 
-  return mergedList;
+  return sortRealtimeById(mergedList);
 };
 
 /** 设备详情 Query */
@@ -228,7 +253,7 @@ export function useDeviceList(options?: {
 
   // 合并静态数据和实时数据
   const mergedList = useMemo(() => {
-    const staticList = staticQuery.data?.list ?? [];
+    const staticList = sortDevicesForDisplay(staticQuery.data?.list ?? []);
     const realtimeList = realtimeQuery.data?.list ?? [];
 
     if (staticList.length === 0) {
@@ -312,7 +337,6 @@ export function useDeviceList(options?: {
     }),
     [
       data,
-      realtimeQuery.isFetching,
       isFetching,
       isLoading,
       realtimeQuery.error,
@@ -320,8 +344,6 @@ export function useDeviceList(options?: {
       refetch,
       staticQuery.error,
       staticQuery.isError,
-      staticQuery.isLoading,
-      staticQuery.isFetching,
     ]
   );
 }

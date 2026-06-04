@@ -105,6 +105,27 @@ private:
         }
     }
 
+    static bool deviceDisplayLess(
+        const DeviceCache::CachedDevice& lhs,
+        const DeviceCache::CachedDevice& rhs
+    ) {
+        const int lhsGroup = lhs.groupId > 0 ? lhs.groupId : std::numeric_limits<int>::max();
+        const int rhsGroup = rhs.groupId > 0 ? rhs.groupId : std::numeric_limits<int>::max();
+        if (lhsGroup != rhsGroup) {
+            return lhsGroup < rhsGroup;
+        }
+        if (lhs.createdAt != rhs.createdAt) {
+            if (lhs.createdAt.empty()) return false;
+            if (rhs.createdAt.empty()) return true;
+            return lhs.createdAt < rhs.createdAt;
+        }
+        return lhs.id < rhs.id;
+    }
+
+    static void sortDevicesForDisplay(std::vector<DeviceCache::CachedDevice>& devices) {
+        std::stable_sort(devices.begin(), devices.end(), deviceDisplayLess);
+    }
+
     Task<std::tuple<std::vector<DeviceCache::CachedDevice>, std::unordered_map<int, std::string>, bool>>
     filterAccessibleDevices(const std::vector<DeviceCache::CachedDevice>& cachedDevices, int userId) {
         if (cachedDevices.empty()) {
@@ -112,12 +133,16 @@ private:
         }
 
         if (userId <= 0) {
-            co_return {cachedDevices, {}, true};
+            auto visibleDevices = cachedDevices;
+            sortDevicesForDisplay(visibleDevices);
+            co_return {visibleDevices, {}, true};
         }
 
         const bool isSuperAdmin = co_await PermissionChecker::isSuperAdmin(userId);
         if (isSuperAdmin) {
-            co_return {cachedDevices, {}, true};
+            auto visibleDevices = cachedDevices;
+            sortDevicesForDisplay(visibleDevices);
+            co_return {visibleDevices, {}, true};
         }
 
         std::vector<int> deviceIds;
@@ -135,6 +160,7 @@ private:
                 visibleDevices.push_back(device);
             }
         }
+        sortDevicesForDisplay(visibleDevices);
 
         co_return {visibleDevices, sharePermissions, false};
     }

@@ -10,6 +10,7 @@
 #include <cmath>
 #include <functional>
 #include <optional>
+#include <set>
 
 /**
  * @brief 设备数据转换器
@@ -236,6 +237,56 @@ public:
         );
     }
 
+    static int countDisplayElements(const DeviceCache::CachedDevice& device) {
+        const auto& config = device.protocolConfig;
+        if (!config.isObject()) return 0;
+
+        if (device.protocolType == Constants::PROTOCOL_MODBUS) {
+            return config.isMember("registers") && config["registers"].isArray()
+                ? static_cast<int>(config["registers"].size())
+                : 0;
+        }
+
+        if (device.protocolType == Constants::PROTOCOL_S7) {
+            const Json::Value* areas = nullptr;
+            if (config.isMember("areas") && config["areas"].isArray()) {
+                areas = &config["areas"];
+            } else if (config.isMember("poll") && config["poll"].isObject()
+                && config["poll"].isMember("areas") && config["poll"]["areas"].isArray()) {
+                areas = &config["poll"]["areas"];
+            }
+            return areas ? static_cast<int>(areas->size()) : 0;
+        }
+
+        if (device.protocolType != Constants::PROTOCOL_SL651
+            || !config.isMember("funcs") || !config["funcs"].isArray()) {
+            return 0;
+        }
+
+        std::set<std::string> addedGuideHex;
+        int count = 0;
+        for (const auto& func : config["funcs"]) {
+            if (func.get("dir", "").asString() != "UP"
+                || !func.isMember("elements") || !func["elements"].isArray()
+                || hasJpegElement(func)) {
+                continue;
+            }
+            for (const auto& el : func["elements"]) {
+                std::string guideHex = el.get("guideHex", "").asString();
+                if (guideHex.empty()) {
+                    guideHex = el.get("id", "").asString();
+                }
+                if (guideHex.empty()) {
+                    guideHex = std::to_string(count);
+                }
+                if (addedGuideHex.insert(guideHex).second) {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    }
+
     static Json::Value buildDeviceBaseInfo(const DeviceCache::CachedDevice& device) {
         Json::Value item(Json::objectValue);
 
@@ -250,6 +301,7 @@ public:
         // 默认口径：3 个轮询周期未收到最新数据则视为离线
         item["online_timeout"] = resolveEffectiveOnlineTimeout(device);
         item["remote_control"] = device.remoteControl;
+        item["element_count"] = countDisplayElements(device);
         if (device.readInterval > 0) {
             item["read_interval"] = device.readInterval;
         }

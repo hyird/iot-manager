@@ -57,6 +57,8 @@ export interface DeviceItem {
   read_interval?: number;
   /** 历史数据存储间隔（秒），来自设备类型配置 */
   storage_interval?: number;
+  /** 协议配置中的展示要素数量，用于稳定设备卡片布局 */
+  element_count?: number;
   /** Modbus 通信模式（仅当链路是 TCP Server 且协议是 Modbus 时使用） */
   modbus_mode?: ModbusMode;
   /** Modbus 从站地址（1-247），默认 1 */
@@ -181,6 +183,8 @@ export interface DeviceStaticData {
   remote_control?: boolean;
   read_interval?: number;
   storage_interval?: number;
+  /** 协议配置中的展示要素数量，用于稳定设备卡片布局 */
+  element_count?: number;
   modbus_mode?: ModbusMode;
   slave_id?: number;
   timezone?: string;
