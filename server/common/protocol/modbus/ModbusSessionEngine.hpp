@@ -976,6 +976,32 @@ inline ModbusSessionEngine::ProcessResult ModbusSessionEngine::onPayload(
             continue;
         }
 
+        if (!sessionOpt->dtuKey.empty() && deviceOpt->dtuKey != sessionOpt->dtuKey) {
+            LOG_WARN << "[Modbus][SessionEngine] Drop stale inflight response: "
+                     << deviceOpt->deviceName
+                     << "(id=" << deviceOpt->deviceId
+                     << ", dtuKey=" << deviceOpt->dtuKey
+                     << ") on session dtuKey=" << sessionOpt->dtuKey
+                     << ", client=" << clientAddr
+                     << ", slave=" << static_cast<int>(response.slaveId);
+
+            if (inflightOpt->job.kind == ModbusJobKind::WriteRegisters) {
+                dropQueuedWriteJobsForCommand(linkId, clientAddr, inflightOpt->job.commandKey);
+                notifyWriteCommandCompletion(inflightOpt->job, false);
+            } else if (inflightOpt->job.kind == ModbusJobKind::PollRead) {
+                clearPollCycle(inflightOpt->job.deviceId);
+                if (readCompletionCallback_) {
+                    readCompletionCallback_(
+                        inflightOpt->job.deviceId,
+                        inflightOpt->job.readGroupIndex,
+                        false);
+                }
+            }
+
+            tryDispatchNext(linkId, clientAddr);
+            continue;
+        }
+
         if (response.isException) {
             totalExceptions_.fetch_add(1, std::memory_order_relaxed);
         }
