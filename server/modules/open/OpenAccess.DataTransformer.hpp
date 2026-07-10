@@ -316,7 +316,9 @@ private:
                     const std::string stableId = stableIdFromKey(key);
                     id = aliasToId.contains(stableId) ? aliasToId[stableId] : stableId;
                 }
-                if (id.empty()) continue;
+                // RealtimeDataCache may still contain values from a prior protocol
+                // configuration. Open webhooks must expose only active point definitions.
+                if (id.empty() || !templateById.contains(id)) continue;
 
                 auto timeIt = pointTimes.find(id);
                 if (timeIt != pointTimes.end() && !funcData.reportTime.empty()
@@ -324,27 +326,16 @@ private:
                     continue;
                 }
 
-                const auto templateIt = templateById.find(id);
-                const std::string fallbackName = templateIt != templateById.end()
-                    ? templateIt->second.name
-                    : id;
-                const std::string fallbackUnit = templateIt != templateById.end()
-                    ? templateIt->second.unit
-                    : "";
-                pointsById[id] = actualPoint(id, fallbackName, fallbackUnit, element, funcData.reportTime);
+                const auto& point = templateById.at(id);
+                pointsById[id] = actualPoint(
+                    id, point.name, point.unit, element, funcData.reportTime);
                 pointTimes[id] = funcData.reportTime;
             }
         }
 
         Json::Value points(Json::arrayValue);
-        std::set<std::string> appended;
         for (const auto& point : templates) {
             points.append(pointsById[point.id]);
-            appended.insert(point.id);
-        }
-        for (const auto& [id, point] : pointsById) {
-            if (appended.contains(id)) continue;
-            points.append(point);
         }
         return points;
     }

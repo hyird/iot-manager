@@ -206,6 +206,17 @@ private:
         registerBuiltinEffect("ProtocolConfig", [](const DomainEvent& event) -> Task<void> {
             try {
                 co_await DeviceCache::instance().refreshDevicesByProtocolConfigId(event.aggregateId);
+
+                // 协议配置可能会修改要素 ID、寄存器地址或解析方式。刷新设备配置后，
+                // 同时清除关联设备的实时值，避免旧要素键继续出现在开放接口数据中。
+                if (event.type == "ProtocolConfigUpdated") {
+                    auto devices = co_await DeviceCache::instance().getDevices();
+                    for (const auto& device : devices) {
+                        if (device.protocolConfigId == event.aggregateId) {
+                            RealtimeDataCache::instance().invalidate(device.id);
+                        }
+                    }
+                }
             } catch (const std::exception& e) {
                 LOG_WARN << "EventBus: incremental device cache refresh failed for ProtocolConfig#"
                          << event.aggregateId << ": " << e.what()
