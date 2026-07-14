@@ -72,6 +72,16 @@ export default function LayoutBreadcrumb() {
     );
   }
 
+  const demoBreadcrumbs: Record<string, [string, string]> = {
+    "/iot/opc-da": ["协议配置", "OPC Client-DA"],
+    "/iot/opc-ua": ["协议配置", "OPC Client-UA"],
+    "/iot/advanced-tags": ["IOT管理", "高级标签"],
+  };
+  const demoBreadcrumb = demoBreadcrumbs[location.pathname];
+  if (demoBreadcrumb) {
+    return <Breadcrumb items={demoBreadcrumb.map((title) => ({ title }))} />;
+  }
+
   if (breadcrumbData.length === 0) {
     return null;
   }

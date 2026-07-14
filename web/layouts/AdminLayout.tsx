@@ -1,4 +1,6 @@
 import {
+  ApiOutlined,
+  FunctionOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -70,7 +72,35 @@ export default function AdminLayout() {
           };
         });
     };
-    return buildMenuItems(menuTree);
+    const originalItems = buildMenuItems(menuTree);
+    const enhancedItems = originalItems.map((item) => {
+      if (!item || !("key" in item)) return item;
+
+      if (item.key === "/iot") {
+        const protocolMenu = item as { children?: ItemType[] };
+        return {
+          ...item,
+          children: [
+            ...(protocolMenu.children || []),
+            { key: "/iot/opc-da", icon: <ApiOutlined />, label: "OPC Client-DA" },
+            { key: "/iot/opc-ua", icon: <ApiOutlined />, label: "OPC Client-UA" },
+          ],
+        };
+      }
+
+      return item;
+    });
+    const openAccessIndex = enhancedItems.findIndex(
+      (item) => item && "key" in item && item.key === "/iot/open-access"
+    );
+    if (openAccessIndex >= 0) {
+      enhancedItems.splice(openAccessIndex + 1, 0, {
+        key: "/iot/advanced-tags",
+        icon: <FunctionOutlined />,
+        label: "高级标签",
+      });
+    }
+    return enhancedItems;
   }, [menuTree]);
 
   // 菜单搜索过滤

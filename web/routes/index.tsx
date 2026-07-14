@@ -12,6 +12,8 @@ import type { Menu } from "@/types";
 const LoginPage = lazy(() => import("@/pages/system/Login"));
 const AdminLayout = lazy(() => import("@/layouts/AdminLayout"));
 const HomePage = lazy(() => import("@/pages/Home"));
+const ProtocolAccessDemoPage = lazy(() => import("@/pages/inspection/ProtocolAccessDemo"));
+const AdvancedTagDemoPage = lazy(() => import("@/pages/inspection/AdvancedTagDemo"));
 
 // 从统一注册中心获取组件映射
 const componentMap: Record<string, () => Promise<{ default: ComponentType<unknown> }>> =
@@ -87,6 +89,9 @@ export function AppRoutes() {
                       path: "home",
                       element: <HomePage />,
                     },
+                    { path: "iot/opc-da", element: <ProtocolAccessDemoPage /> },
+                    { path: "iot/opc-ua", element: <ProtocolAccessDemoPage /> },
+                    { path: "iot/advanced-tags", element: <AdvancedTagDemoPage /> },
                     ...pageMenus.map((menu) => ({
                       path: menu.path!.trim().replace(/^\//, ""),
                       element: getRouteComponent(menu),

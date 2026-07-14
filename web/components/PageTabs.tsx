@@ -62,6 +62,9 @@ export default function PageTabs() {
     };
 
     traverse(menuTree);
+    map.set("/iot/opc-da", "OPC Client-DA");
+    map.set("/iot/opc-ua", "OPC Client-UA");
+    map.set("/iot/advanced-tags", "高级标签");
     return map;
   }, [menuTree]);
 

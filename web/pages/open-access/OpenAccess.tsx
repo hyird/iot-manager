@@ -33,6 +33,7 @@ import { useMemo, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { StatusTag } from "@/components/StatusTag";
 import { usePermission } from "@/hooks";
+import DataServiceDemo from "@/pages/inspection/DataServiceDemo";
 import {
   useAccessKeyDelete,
   useAccessKeyRotate,
@@ -1520,6 +1521,8 @@ export default function OpenAccessPage() {
           </div>
         </Card>
       </div>
+
+      <DataServiceDemo />
 
       {!canViewDevices && (
         <Alert
