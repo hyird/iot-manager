@@ -32,7 +32,6 @@ export default function Gb28181Page() {
   const { message } = App.useApp();
   const canQuery = usePermission("iot:gb28181:query");
   const canControl = usePermission("iot:gb28181:control");
-  const canPtz = usePermission("iot:gb28181:ptz");
   const token = useAppSelector((state) => state.auth.token);
 
   const [keyword, setKeyword] = useState("");
@@ -156,7 +155,7 @@ export default function Gb28181Page() {
     activePtzChannel.ptz_type < 0 ||
     activePtzChannel.ptz_capable;
   const ptzDisabled =
-    !canPtz ||
+    !canControl ||
     !activeSession ||
     !activePtzDevice?.online ||
     activePtzChannel?.online === false ||
@@ -265,7 +264,7 @@ export default function Gb28181Page() {
     <div className="flex flex-wrap items-center justify-between gap-3">
       <Space size={12} wrap>
         <Title level={4} className="!mb-0">
-          GB28181
+          视频监控
         </Title>
         {healthQuery.isError && <Tag color="error">模块异常</Tag>}
       </Space>
@@ -352,28 +351,30 @@ export default function Gb28181Page() {
               </Space>
             }
           >
-            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_280px] gap-4 items-center">
-              <div className="relative aspect-video bg-black rounded overflow-hidden">
-                {activeSession ? (
-                  <Gb28181LivePlayer key={activeSession.session_id} session={activeSession} />
-                ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-white/70">
-                    <VideoCameraOutlined className="text-5xl mb-3" />
-                    <Text className="!text-white/80">
-                      {selectedDevice
-                        ? `${selectedDevice.name || selectedDevice.id} / ${selectedChannel?.name || selectedChannel?.id || "未选择通道"}`
-                        : "请选择设备和通道"}
-                    </Text>
-                  </div>
-                )}
-              </div>
+            <div className="relative aspect-video overflow-hidden rounded bg-black">
+              {activeSession ? (
+                <Gb28181LivePlayer key={activeSession.session_id} session={activeSession} />
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center text-white/70">
+                  <VideoCameraOutlined className="mb-3 text-5xl" />
+                  <Text className="!text-white/80">
+                    {selectedDevice
+                      ? `${selectedDevice.name || selectedDevice.id} / ${selectedChannel?.name || selectedChannel?.id || "未选择通道"}`
+                      : "请选择设备和通道"}
+                  </Text>
+                </div>
+              )}
 
-              <PtzPanel
-                speed={ptzSpeed}
-                disabled={ptzDisabled}
-                onSpeedChange={setPtzSpeed}
-                onAction={handlePtz}
-              />
+              {activeSession && activeChannelSupportsPtz ? (
+                <div className="absolute right-3 top-3 z-20">
+                  <PtzPanel
+                    speed={ptzSpeed}
+                    disabled={ptzDisabled}
+                    onSpeedChange={setPtzSpeed}
+                    onAction={handlePtz}
+                  />
+                </div>
+              ) : null}
             </div>
           </Card>
 

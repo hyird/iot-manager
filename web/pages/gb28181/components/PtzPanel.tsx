@@ -3,12 +3,13 @@ import {
   ArrowLeftOutlined,
   ArrowRightOutlined,
   ArrowUpOutlined,
+  ControlOutlined,
   MinusOutlined,
   PlusOutlined,
   StopOutlined,
 } from "@ant-design/icons";
-import { Button, Slider, Space, Tooltip, Typography } from "antd";
-import { type ReactNode, useCallback, useEffect, useRef } from "react";
+import { Button, Popover, Slider, Space, Tooltip, Typography } from "antd";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { GB28181 } from "@/types";
 
 const { Text } = Typography;
@@ -34,6 +35,7 @@ type PtzPanelProps = {
 };
 
 export function PtzPanel({ speed, disabled, onSpeedChange, onAction }: PtzPanelProps) {
+  const [open, setOpen] = useState(false);
   const holdingRef = useRef<GB28181.PtzAction | null>(null);
   const onActionRef = useRef(onAction);
 
@@ -73,15 +75,15 @@ export function PtzPanel({ speed, disabled, onSpeedChange, onAction }: PtzPanelP
     [disabled, sendAction]
   );
 
-  return (
-    <div className="space-y-4 self-center">
+  const panel = (
+    <div className="w-[240px] select-none space-y-3 rounded-lg bg-black/70 p-3 text-white shadow-xl backdrop-blur-md">
       <div className="flex items-center justify-between">
-        <Text strong>云台</Text>
-        <Text type="secondary" className="text-xs">
-          速度 {speed}
+        <Text strong className="!text-white">
+          云台控制
         </Text>
+        <Text className="!text-white/70 text-xs">速度 {speed}</Text>
       </div>
-      <Text type="secondary" className="block text-center text-xs">
+      <Text className="!text-white/70 block text-center text-xs">
         按住方向或变倍按钮控制，松开即停止
       </Text>
       <div>
@@ -153,5 +155,35 @@ export function PtzPanel({ speed, disabled, onSpeedChange, onAction }: PtzPanelP
         </Button>
       </Space.Compact>
     </div>
+  );
+
+  return (
+    <Popover
+      trigger="click"
+      placement="bottomRight"
+      arrow={false}
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) stopHolding();
+        setOpen(nextOpen);
+      }}
+      content={panel}
+      styles={{
+        container: {
+          padding: 0,
+          background: "transparent",
+          boxShadow: "none",
+        },
+      }}
+    >
+      <Button
+        type="primary"
+        icon={<ControlOutlined />}
+        disabled={disabled}
+        className="!bg-black/65 !shadow-lg backdrop-blur hover:!bg-black/75"
+      >
+        云台
+      </Button>
+    </Popover>
   );
 }

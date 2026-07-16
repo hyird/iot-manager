@@ -111,14 +111,13 @@ registerPage({
 // GB28181
 registerPage({
   component: "GB28181",
-  name: "GB28181",
+  name: "视频监控",
   module: "IOT管理",
   description: "国标设备、通道、预览、云台、录像和流状态管理",
   loader: () => import("./gb28181/Gb28181"),
   permissions: [
     { code: "iot:gb28181:query", name: "查询国标", action: "query" },
     { code: "iot:gb28181:control", name: "国标控制", action: "control" },
-    { code: "iot:gb28181:ptz", name: "云台控制", action: "control" },
     { code: "iot:gb28181:record", name: "录像回放", action: "record" },
   ],
 });
