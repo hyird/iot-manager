@@ -336,7 +336,11 @@ private:
                     co_await txn->execSqlCoro(
                         "INSERT INTO schema_migrations "
                         "(version, name, checksum, execution_time_ms, success) "
-                        "VALUES ($1, $2, $3, $4, true)",
+                        "VALUES ($1, $2, $3, $4, true) "
+                        "ON CONFLICT (version) DO UPDATE SET "
+                        "name = EXCLUDED.name, checksum = EXCLUDED.checksum, "
+                        "executed_at = CURRENT_TIMESTAMP, "
+                        "execution_time_ms = EXCLUDED.execution_time_ms, success = true",
                         migInfo.version,
                         migInfo.name,
                         std::string(""),  // checksum 预留
@@ -368,7 +372,11 @@ private:
                     co_await db->execSqlCoro(
                         "INSERT INTO schema_migrations "
                         "(version, name, checksum, execution_time_ms, success) "
-                        "VALUES ($1, $2, $3, $4, true)",
+                        "VALUES ($1, $2, $3, $4, true) "
+                        "ON CONFLICT (version) DO UPDATE SET "
+                        "name = EXCLUDED.name, checksum = EXCLUDED.checksum, "
+                        "executed_at = CURRENT_TIMESTAMP, "
+                        "execution_time_ms = EXCLUDED.execution_time_ms, success = true",
                         migInfo.version,
                         migInfo.name,
                         std::string(""),
@@ -385,7 +393,10 @@ private:
                     co_await db->execSqlCoro(
                         "INSERT INTO schema_migrations "
                         "(version, name, checksum, execution_time_ms, success) "
-                        "VALUES ($1, $2, $3, 0, false)",
+                        "VALUES ($1, $2, $3, 0, false) "
+                        "ON CONFLICT (version) DO UPDATE SET "
+                        "name = EXCLUDED.name, checksum = EXCLUDED.checksum, "
+                        "executed_at = CURRENT_TIMESTAMP, execution_time_ms = 0, success = false",
                         migInfo.version,
                         migInfo.name,
                         std::string(""));

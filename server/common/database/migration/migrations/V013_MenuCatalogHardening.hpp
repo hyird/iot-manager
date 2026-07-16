@@ -5,7 +5,12 @@
 class V013_MenuCatalogHardening : public MigrationBase {
 public:
     MigrationInfo info() const override {
-        return {13, "menu_catalog_hardening", "Add EdgeNode menu and enforce active menu uniqueness"};
+        return {
+            .version = 13,
+            .name = "MenuCatalogHardening",
+            .description = "Add EdgeNode menu and enforce active menu uniqueness",
+            .transactional = true
+        };
     }
 
     Task<> up(const TransactionPtr& txn) override {
