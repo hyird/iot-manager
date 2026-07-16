@@ -16,6 +16,7 @@
 #include "migration/migrations/V009_Gb28181Menu.hpp"
 #include "migration/migrations/V010_Gb28181PtzMenu.hpp"
 #include "migration/migrations/V011_VideoMonitorMenu.hpp"
+#include "migration/migrations/V012_MenuSeedRepair.hpp"
 #include <cstdlib>
 
 /**
@@ -55,6 +56,7 @@ private:
         registry.add<V009_Gb28181Menu>();
         registry.add<V010_Gb28181PtzMenu>();
         registry.add<V011_VideoMonitorMenu>();
+        registry.add<V012_MenuSeedRepair>();
         // 新增迁移在此处注册，例如：
         // registry.add<V003_AddDeviceTags>();
         return registry;
@@ -190,6 +192,19 @@ private:
         co_return co_await insertMenu(db, name, parentId, Constants::MENU_TYPE_BUTTON, "", "", permissionCode, "", false, sortOrder);
     }
 
+    static Task<> ensureButton(const DbClientPtr& db, const std::string& name,
+                               int parentId, const std::string& permissionCode, int sortOrder) {
+        auto existing = co_await db->execSqlCoro(
+            R"(SELECT id FROM sys_menu
+               WHERE parent_id = $1 AND permission_code = $2 AND deleted_at IS NULL
+               ORDER BY id LIMIT 1)",
+            parentId, permissionCode
+        );
+        if (existing.empty()) {
+            co_await insertButton(db, name, parentId, permissionCode, sortOrder);
+        }
+    }
+
     static Task<> initializeMenus(const DbClientPtr& db, int roleId) {
         // 首页
         int homeId = co_await insertMenu(db, "首页", 0, Constants::MENU_TYPE_PAGE, "/home", "Home", "", "HomeOutlined", true, 0);
@@ -222,6 +237,14 @@ private:
         co_await insertButton(db, "导入配置", modbusId, "iot:protocol:import", 5);
         co_await insertButton(db, "导出配置", modbusId, "iot:protocol:export", 6);
 
+        int s7Id = co_await insertMenu(db, "S7配置", protocolId, Constants::MENU_TYPE_PAGE, "/iot/s7", "S7Config", "", "SettingOutlined", false, 2);
+        co_await insertButton(db, "查询配置", s7Id, "iot:protocol:query", 1);
+        co_await insertButton(db, "新增配置", s7Id, "iot:protocol:add", 2);
+        co_await insertButton(db, "编辑配置", s7Id, "iot:protocol:edit", 3);
+        co_await insertButton(db, "删除配置", s7Id, "iot:protocol:delete", 4);
+        co_await insertButton(db, "导入配置", s7Id, "iot:protocol:import", 5);
+        co_await insertButton(db, "导出配置", s7Id, "iot:protocol:export", 6);
+
         // 设备管理
         int deviceId = co_await insertMenu(db, "设备管理", 0, Constants::MENU_TYPE_PAGE, "/device", "Device", "", "HddOutlined", false, 3);
         co_await insertButton(db, "查询设备", deviceId, "iot:device:query", 1);
@@ -234,10 +257,30 @@ private:
         co_await insertButton(db, "删除分组", deviceId, "iot:device-group:delete", 8);
 
         // 视频监控（GB28181）
-        int gb28181Id = co_await insertMenu(db, "视频监控", 0, Constants::MENU_TYPE_PAGE, "/iot/gb28181", "GB28181", "", "VideoCameraOutlined", false, 4);
-        co_await insertButton(db, "查询国标", gb28181Id, "iot:gb28181:query", 1);
-        co_await insertButton(db, "国标控制", gb28181Id, "iot:gb28181:control", 2);
-        co_await insertButton(db, "录像回放", gb28181Id, "iot:gb28181:record", 3);
+        auto gb28181Menus = co_await db->execSqlCoro(R"(
+            SELECT id FROM sys_menu
+            WHERE deleted_at IS NULL
+              AND (component = 'GB28181' OR path = '/iot/gb28181')
+            ORDER BY id
+            LIMIT 1
+        )");
+        int gb28181Id;
+        if (gb28181Menus.empty()) {
+            gb28181Id = co_await insertMenu(db, "视频监控", 0, Constants::MENU_TYPE_PAGE, "/iot/gb28181", "GB28181", "", "VideoCameraOutlined", false, 4);
+        } else {
+            gb28181Id = gb28181Menus[0]["id"].as<int>();
+            co_await db->execSqlCoro(R"(
+                UPDATE sys_menu
+                SET name = '视频监控', parent_id = 0, type = 'page',
+                    path = '/iot/gb28181', component = 'GB28181',
+                    permission_code = NULL, icon = 'VideoCameraOutlined',
+                    status = 'enabled', sort_order = 4, updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1
+            )", gb28181Id);
+        }
+        co_await ensureButton(db, "查询国标", gb28181Id, "iot:gb28181:query", 1);
+        co_await ensureButton(db, "国标控制", gb28181Id, "iot:gb28181:control", 2);
+        co_await ensureButton(db, "录像回放", gb28181Id, "iot:gb28181:record", 3);
 
         // 开放接入
         int openAccessId = co_await insertMenu(db, "开放接入", 0, Constants::MENU_TYPE_PAGE, "/iot/open-access", "OpenAccess", "", "CloudServerOutlined", false, 5);
