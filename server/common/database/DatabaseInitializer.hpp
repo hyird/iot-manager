@@ -17,6 +17,7 @@
 #include "migration/migrations/V010_Gb28181PtzMenu.hpp"
 #include "migration/migrations/V011_VideoMonitorMenu.hpp"
 #include "migration/migrations/V012_MenuSeedRepair.hpp"
+#include "migration/migrations/V013_MenuCatalogHardening.hpp"
 #include <cstdlib>
 
 /**
@@ -57,6 +58,7 @@ private:
         registry.add<V010_Gb28181PtzMenu>();
         registry.add<V011_VideoMonitorMenu>();
         registry.add<V012_MenuSeedRepair>();
+        registry.add<V013_MenuCatalogHardening>();
         // 新增迁移在此处注册，例如：
         // registry.add<V003_AddDeviceTags>();
         return registry;
@@ -98,7 +100,8 @@ public:
                  << fmtVersion(result.currentVersion);
 
         // ─── 2. 种子数据（管理员用户） ──────────────────────
-        co_await initializeAdminUser(db);
+        int superadminRoleId = co_await initializeAdminUser(db);
+        co_await initializeMenus(db, superadminRoleId);
 
         // ─── 3. 动态物化视图（依赖运行时 protocol_config 数据） ──
         co_await createMaterializedViews(db);
@@ -109,19 +112,8 @@ public:
 private:
     // ─── 种子数据：管理员用户初始化 ─────────────────────────
 
-    static Task<> initializeAdminUser(const DbClientPtr& db) {
-        auto userCount = co_await db->execSqlCoro(
-            R"(SELECT COUNT(*) as count FROM sys_user WHERE deleted_at IS NULL)"
-        );
-
-        if (!userCount.empty() && userCount[0]["count"].as<int64_t>() > 0) {
-            LOG_INFO << "Users already exist, skipping initialization";
-            co_return;
-        }
-
-        LOG_INFO << "No users found, creating default admin...";
-
-        // 创建超级管理员角色
+    static Task<int> initializeAdminUser(const DbClientPtr& db) {
+        // 超级管理员角色和默认菜单需要在已有数据库中持续校准，不能被用户计数短路。
         co_await db->execSqlCoro(
             R"(INSERT INTO sys_role (name, code, description, sort_order)
                VALUES ('超级管理员', 'superadmin', '拥有系统所有权限', 1)
@@ -132,6 +124,17 @@ private:
             "SELECT id FROM sys_role WHERE code = 'superadmin'"
         );
         int roleId = roleResult[0]["id"].as<int>();
+
+        auto userCount = co_await db->execSqlCoro(
+            R"(SELECT COUNT(*) as count FROM sys_user WHERE deleted_at IS NULL)"
+        );
+
+        if (!userCount.empty() && userCount[0]["count"].as<int64_t>() > 0) {
+            LOG_INFO << "Users already exist, skipping default admin creation";
+            co_return roleId;
+        }
+
+        LOG_INFO << "No users found, creating default admin...";
 
         // 创建管理员用户
         std::string initPassword;
@@ -165,10 +168,8 @@ private:
             userId, roleId
         );
 
-        // 创建基础菜单
-        co_await initializeMenus(db, roleId);
-
         LOG_INFO << "Default admin user created: admin";
+        co_return roleId;
     }
 
     // ─── 种子数据：菜单初始化 ────────────────────────────────
@@ -178,6 +179,36 @@ private:
                                 const std::string& path, const std::string& component,
                                 const std::string& permissionCode, const std::string& icon,
                                 bool isDefault, int sortOrder) {
+        auto existing = co_await db->execSqlCoro(
+            R"(SELECT id FROM sys_menu
+               WHERE deleted_at IS NULL AND (
+                   ($1 = 'button' AND type = 'button' AND parent_id = $2
+                       AND permission_code = NULLIF($3, ''))
+                   OR ($1 = 'page' AND type = 'page' AND NULLIF($4, '') IS NOT NULL
+                       AND component = NULLIF($4, ''))
+                   OR ($1 NOT IN ('button', 'page') AND type = $1::menu_type_enum
+                       AND path = NULLIF($5, ''))
+               )
+               ORDER BY id LIMIT 1)",
+            type, parentId, permissionCode, component, path
+        );
+
+        if (!existing.empty()) {
+            int id = existing[0]["id"].as<int>();
+            co_await db->execSqlCoro(
+                R"(UPDATE sys_menu
+                   SET name = $1, parent_id = $2, type = $3,
+                       path = NULLIF($4, ''), component = NULLIF($5, ''),
+                       permission_code = NULLIF($6, ''), icon = NULLIF($7, ''),
+                       is_default = $8, status = 'enabled', sort_order = $9,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = $10)",
+                name, parentId, type, path, component, permissionCode,
+                icon, isDefault, sortOrder, id
+            );
+            co_return id;
+        }
+
         auto result = co_await db->execSqlCoro(
             R"(INSERT INTO sys_menu (name, parent_id, type, path, component, permission_code, icon, is_default, sort_order)
                VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''), $8, $9)
@@ -218,8 +249,13 @@ private:
         co_await insertButton(db, "编辑链路", linkId, "iot:link:edit", 3);
         co_await insertButton(db, "删除链路", linkId, "iot:link:delete", 4);
 
+        // 边缘节点（复用链路查询/编辑权限码，但独立挂载按钮，便于角色单独授权）
+        int edgeNodeId = co_await insertMenu(db, "边缘节点", 0, Constants::MENU_TYPE_PAGE, "/edge-node", "EdgeNode", "", "CloudServerOutlined", false, 2);
+        co_await insertButton(db, "查询边缘节点", edgeNodeId, "iot:link:query", 1);
+        co_await insertButton(db, "管理边缘节点", edgeNodeId, "iot:link:edit", 2);
+
         // 协议配置
-        int protocolId = co_await insertMenu(db, "协议配置", 0, Constants::MENU_TYPE_MENU, "/iot", "", "", "ApiOutlined", false, 2);
+        int protocolId = co_await insertMenu(db, "协议配置", 0, Constants::MENU_TYPE_MENU, "/iot", "", "", "ApiOutlined", false, 3);
 
         int sl651Id = co_await insertMenu(db, "SL651配置", protocolId, Constants::MENU_TYPE_PAGE, "/iot/sl651", "SL651Config", "", "SettingOutlined", false, 0);
         co_await insertButton(db, "查询配置", sl651Id, "iot:protocol:query", 1);
@@ -246,7 +282,7 @@ private:
         co_await insertButton(db, "导出配置", s7Id, "iot:protocol:export", 6);
 
         // 设备管理
-        int deviceId = co_await insertMenu(db, "设备管理", 0, Constants::MENU_TYPE_PAGE, "/device", "Device", "", "HddOutlined", false, 3);
+        int deviceId = co_await insertMenu(db, "设备管理", 0, Constants::MENU_TYPE_PAGE, "/device", "Device", "", "HddOutlined", false, 4);
         co_await insertButton(db, "查询设备", deviceId, "iot:device:query", 1);
         co_await insertButton(db, "新增设备", deviceId, "iot:device:add", 2);
         co_await insertButton(db, "编辑设备", deviceId, "iot:device:edit", 3);
@@ -266,7 +302,7 @@ private:
         )");
         int gb28181Id;
         if (gb28181Menus.empty()) {
-            gb28181Id = co_await insertMenu(db, "视频监控", 0, Constants::MENU_TYPE_PAGE, "/iot/gb28181", "GB28181", "", "VideoCameraOutlined", false, 4);
+            gb28181Id = co_await insertMenu(db, "视频监控", 0, Constants::MENU_TYPE_PAGE, "/iot/gb28181", "GB28181", "", "VideoCameraOutlined", false, 5);
         } else {
             gb28181Id = gb28181Menus[0]["id"].as<int>();
             co_await db->execSqlCoro(R"(
@@ -274,7 +310,7 @@ private:
                 SET name = '视频监控', parent_id = 0, type = 'page',
                     path = '/iot/gb28181', component = 'GB28181',
                     permission_code = NULL, icon = 'VideoCameraOutlined',
-                    status = 'enabled', sort_order = 4, updated_at = CURRENT_TIMESTAMP
+                    status = 'enabled', sort_order = 5, updated_at = CURRENT_TIMESTAMP
                 WHERE id = $1
             )", gb28181Id);
         }
@@ -283,14 +319,14 @@ private:
         co_await ensureButton(db, "录像回放", gb28181Id, "iot:gb28181:record", 3);
 
         // 开放接入
-        int openAccessId = co_await insertMenu(db, "开放接入", 0, Constants::MENU_TYPE_PAGE, "/iot/open-access", "OpenAccess", "", "CloudServerOutlined", false, 5);
+        int openAccessId = co_await insertMenu(db, "开放接入", 0, Constants::MENU_TYPE_PAGE, "/iot/open-access", "OpenAccess", "", "CloudServerOutlined", false, 6);
         co_await insertButton(db, "查询开放接入", openAccessId, "iot:open-access:query", 1);
         co_await insertButton(db, "新增开放接入", openAccessId, "iot:open-access:add", 2);
         co_await insertButton(db, "编辑开放接入", openAccessId, "iot:open-access:edit", 3);
         co_await insertButton(db, "删除开放接入", openAccessId, "iot:open-access:delete", 4);
 
         // 告警管理
-        int alertId = co_await insertMenu(db, "告警管理", 0, Constants::MENU_TYPE_MENU, "/alert", "", "", "AlertOutlined", false, 6);
+        int alertId = co_await insertMenu(db, "告警管理", 0, Constants::MENU_TYPE_MENU, "/alert", "", "", "AlertOutlined", false, 7);
 
         int alertPageId = co_await insertMenu(db, "告警管理", alertId, Constants::MENU_TYPE_PAGE, "/alert", "Alert", "", "AlertOutlined", false, 1);
         co_await insertButton(db, "查询", alertPageId, "iot:alert:query", 1);
@@ -335,7 +371,7 @@ private:
             roleId
         );
 
-        LOG_INFO << "Default menus created";
+        LOG_INFO << "Default menus synchronized";
     }
 
     // ─── 动态物化视图（依赖运行时数据） ─────────────────────

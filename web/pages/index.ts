@@ -105,7 +105,10 @@ registerPage({
   module: "IOT管理",
   description: "边缘节点的在线状态、能力上报和配置同步状态",
   loader: () => import("./edgenode/EdgeNode"),
-  permissions: [{ code: "iot:link:query", name: "查询边缘节点", action: "query" }],
+  permissions: [
+    { code: "iot:link:query", name: "查询边缘节点", action: "query" },
+    { code: "iot:link:edit", name: "管理边缘节点", action: "edit" },
+  ],
 });
 
 // GB28181
