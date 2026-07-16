@@ -65,6 +65,14 @@ export function sendPtz(payload: GB28181.PtzPayload) {
   );
 }
 
+export function sendPtzPosition(payload: GB28181.PtzPositionPayload) {
+  return request.post<GB28181.CommandResult>(
+    `${BASE}/devices/${pathPart(payload.deviceId)}/channels/${pathPart(payload.channelId)}/ptz/position/set`,
+    undefined,
+    { params: { pan: payload.pan, tilt: payload.tilt, zoom: payload.zoom } }
+  );
+}
+
 export function queryRecords(payload: GB28181.RecordQueryPayload) {
   return request.post<GB28181.CommandResult>(
     `${BASE}/devices/${pathPart(payload.deviceId)}/channels/${pathPart(payload.channelId)}/records/query`,

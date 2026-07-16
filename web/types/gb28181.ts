@@ -115,6 +115,14 @@ export namespace GB28181 {
     speed: number;
   }
 
+  export interface PtzPositionPayload {
+    deviceId: string;
+    channelId: string;
+    pan: number;
+    tilt: number;
+    zoom: number;
+  }
+
   export interface RecordQueryPayload {
     deviceId: string;
     channelId: string;

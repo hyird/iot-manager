@@ -8,7 +8,7 @@ import {
   PlusOutlined,
   StopOutlined,
 } from "@ant-design/icons";
-import { Button, Popover, Slider, Space, Tooltip, Typography } from "antd";
+import { Button, Divider, InputNumber, Popover, Slider, Space, Tooltip, Typography } from "antd";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { GB28181 } from "@/types";
 
@@ -32,10 +32,17 @@ type PtzPanelProps = {
   disabled: boolean;
   onSpeedChange: (speed: number) => void;
   onAction: (action: GB28181.PtzAction) => Promise<unknown>;
+  onPosition: (
+    position: Pick<GB28181.PtzPositionPayload, "pan" | "tilt" | "zoom">
+  ) => Promise<unknown>;
 };
 
-export function PtzPanel({ speed, disabled, onSpeedChange, onAction }: PtzPanelProps) {
+export function PtzPanel({ speed, disabled, onSpeedChange, onAction, onPosition }: PtzPanelProps) {
   const [open, setOpen] = useState(false);
+  const [pan, setPan] = useState(0);
+  const [tilt, setTilt] = useState(0);
+  const [zoom, setZoom] = useState(1);
+  const [positioning, setPositioning] = useState(false);
   const holdingRef = useRef<GB28181.PtzAction | null>(null);
   const onActionRef = useRef(onAction);
 
@@ -154,6 +161,63 @@ export function PtzPanel({ speed, disabled, onSpeedChange, onAction }: PtzPanelP
           变倍-
         </Button>
       </Space.Compact>
+      <Divider className="!my-3 !border-white/20" />
+      <Text strong className="!text-white block">
+        绝对定位
+      </Text>
+      <div className="grid grid-cols-3 gap-2">
+        <div className="space-y-1">
+          <Text className="!text-white/70 text-xs">水平角</Text>
+          <InputNumber<number>
+            className="w-full"
+            min={0}
+            max={360}
+            precision={2}
+            value={pan}
+            disabled={disabled}
+            onChange={(value) => setPan(value ?? 0)}
+          />
+        </div>
+        <div className="space-y-1">
+          <Text className="!text-white/70 text-xs">垂直角</Text>
+          <InputNumber<number>
+            className="w-full"
+            min={-30}
+            max={90}
+            precision={2}
+            value={tilt}
+            disabled={disabled}
+            onChange={(value) => setTilt(value ?? 0)}
+          />
+        </div>
+        <div className="space-y-1">
+          <Text className="!text-white/70 text-xs">变倍</Text>
+          <InputNumber<number>
+            className="w-full"
+            min={1}
+            precision={2}
+            value={zoom}
+            disabled={disabled}
+            onChange={(value) => setZoom(value ?? 1)}
+          />
+        </div>
+      </div>
+      <Button
+        block
+        type="primary"
+        disabled={disabled}
+        loading={positioning}
+        onClick={async () => {
+          setPositioning(true);
+          try {
+            await onPosition({ pan, tilt, zoom });
+          } finally {
+            setPositioning(false);
+          }
+        }}
+      >
+        定位
+      </Button>
     </div>
   );
 

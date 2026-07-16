@@ -7,6 +7,7 @@
 #include <drogon/drogon.h>
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace {
@@ -255,6 +256,47 @@ void ApiServer::registerRoutes(const std::string& apiPrefix) {
                     }},
                 }));
             });
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandler(
+        prefix + "/devices/{1}/channels/{2}/ptz/position/set",
+        [this](const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& deviceId, const std::string& channelId) {
+            double pan = 0.0;
+            double tilt = 0.0;
+            double zoom = 0.0;
+            try {
+                pan = std::stod(request->getParameter("pan"));
+                tilt = std::stod(request->getParameter("tilt"));
+                zoom = std::stod(request->getParameter("zoom"));
+            } catch (const std::exception&) {
+                callback(jsonBadRequest("pan、tilt、zoom 必须是有效数字"));
+                return;
+            }
+            if (!std::isfinite(pan) || pan < 0.0 || pan > 360.0 ||
+                !std::isfinite(tilt) || tilt < -30.0 || tilt > 90.0 ||
+                !std::isfinite(zoom) || zoom < 1.0) {
+                callback(jsonBadRequest("绝对定位参数超出范围：pan 0~360，tilt -30~90，zoom 不小于 1"));
+                return;
+            }
+
+            LOG_DEBUG << "[GB28181][API] PTZ precise control requested, device=" << deviceId
+                      << ", channel=" << channelId
+                      << ", pan=" << pan
+                      << ", tilt=" << tilt
+                      << ", zoom=" << zoom
+                      << ", client=" << request->peerAddr().toIpPort();
+            const auto sent = sipServer_.sendPtzPreciseControl(deviceId, channelId, pan, tilt, zoom);
+            if (!sent) {
+                callback(jsonNotFound("设备或通道不可用"));
+                return;
+            }
+            callback(jsonResponse({
+                {"sent", true},
+                {"pan", pan},
+                {"tilt", tilt},
+                {"zoom", zoom},
+            }));
         },
         {drogon::Post});
 

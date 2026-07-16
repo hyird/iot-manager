@@ -16,6 +16,7 @@
 #include <random>
 #include <sstream>
 #include <iomanip>
+#include <locale>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -1217,6 +1218,94 @@ bool SipServer::sendPtzControl(const std::string& deviceId, const std::string& c
              << ", branch=" << branch
              << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
              << ", body_bytes=" << bodyText.size();
+    return true;
+}
+
+bool SipServer::sendPtzPreciseControl(
+    const std::string& deviceId,
+    const std::string& channelId,
+    double pan,
+    double tilt,
+    double zoom) {
+    LOG_DEBUG << "[GB28181][PTZ] Precise control requested, device=" << deviceId
+              << ", channel=" << channelId
+              << ", pan=" << pan
+              << ", tilt=" << tilt
+              << ", zoom=" << zoom;
+
+    const auto route = deviceRegistry_.findRouteSnapshot(deviceId);
+    const auto unavailableReason = routeUnavailableReason(route);
+    if (!unavailableReason.empty()) {
+        LOG_WARN << "[GB28181][PTZ] Precise control skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=" << unavailableReason;
+        return false;
+    }
+
+    const auto endpoint = parseRemoteEndpoint(route->remoteAddress);
+    if (!endpoint.has_value()) {
+        LOG_WARN << "[GB28181][PTZ] Precise control skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=invalid_remote_address"
+                 << ", remote_address=" << route->remoteAddress;
+        return false;
+    }
+
+    auto remote = peerFromAddress(route->remoteAddress);
+    if (!remote.has_value()) {
+        LOG_WARN << "[GB28181][PTZ] Precise control skipped, device=" << deviceId
+                 << ", channel=" << channelId
+                 << ", reason=peer_unavailable"
+                 << ", remote_address=" << route->remoteAddress;
+        return false;
+    }
+
+    const auto sn = cseq_.fetch_add(1);
+    std::ostringstream body;
+    body.imbue(std::locale::classic());
+    body << std::fixed << std::setprecision(2)
+         << "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n"
+         << "<Control>\r\n"
+         << "<CmdType>DeviceControl</CmdType>\r\n"
+         << "<SN>" << sn << "</SN>\r\n"
+         << "<DeviceID>" << channelId << "</DeviceID>\r\n"
+         << "<PTZPreciseCtrl>\r\n"
+         << "<Pan>" << pan << "</Pan>\r\n"
+         << "<Tilt>" << tilt << "</Tilt>\r\n"
+         << "<Zoom>" << zoom << "</Zoom>\r\n"
+         << "</PTZPreciseCtrl>\r\n"
+         << "</Control>\r\n";
+
+    const auto bodyText = body.str();
+    const auto publicHost = sipConfig_.publicIp.empty() || sipConfig_.publicIp == "YOUR_PUBLIC_SERVER_IP" ? sipConfig_.host : sipConfig_.publicIp;
+    const auto branch = "z9hG4bK-" + makeToken("ptz-precise");
+    const auto tag = makeToken("tag");
+    const auto callId = makeToken("ptz-precise") + "@" + sipConfig_.domain;
+
+    std::ostringstream request;
+    request << "MESSAGE sip:" << channelId << "@" << endpoint->host << ":" << endpoint->port << " SIP/2.0\r\n"
+            << "Via: SIP/2.0/" << transportName(remote->transport) << " " << publicHost << ":" << sipConfig_.port << ";branch=" << branch << "\r\n"
+            << "From: <sip:" << sipConfig_.id << "@" << sipConfig_.domain << ">;tag=" << tag << "\r\n"
+            << "To: <sip:" << channelId << "@" << sipConfig_.domain << ">\r\n"
+            << "Call-ID: " << callId << "\r\n"
+            << "CSeq: " << sn << " MESSAGE\r\n"
+            << "Max-Forwards: 70\r\n"
+            << "User-Agent: gb28181-platform-cpp\r\n"
+            << "Content-Type: Application/MANSCDP+xml\r\n"
+            << "Content-Length: " << bodyText.size() << "\r\n\r\n"
+            << bodyText;
+
+    sendRequest(request.str(), *remote);
+    LOG_DEBUG << "[GB28181][PTZ] Precise control sent, device=" << deviceId
+              << ", channel=" << channelId
+              << ", pan=" << pan
+              << ", tilt=" << tilt
+              << ", zoom=" << zoom
+              << ", sn=" << sn
+              << ", call_id=" << callId
+              << ", branch=" << branch
+              << ", remote=" << transportName(remote->transport) << " " << peerToString(*remote)
+              << ", body_bytes=" << bodyText.size();
     return true;
 }
 

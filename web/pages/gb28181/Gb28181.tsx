@@ -11,6 +11,7 @@ import { PageContainer } from "@/components/PageContainer";
 import { usePermission } from "@/hooks";
 import {
   sendPtz,
+  sendPtzPosition,
   stopPreviewKeepalive,
   useGb28181CatalogQuery,
   useGb28181Devices,
@@ -252,6 +253,28 @@ export default function Gb28181Page() {
     }
   };
 
+  const handlePtzPosition = async (
+    position: Pick<GB28181.PtzPositionPayload, "pan" | "tilt" | "zoom">
+  ) => {
+    const session = activeSessionRef.current;
+    if (!session) {
+      message.warning("请先开始实时预览");
+      return;
+    }
+
+    try {
+      await sendPtzPosition({
+        deviceId: session.device_id,
+        channelId: session.channel_id,
+        ...position,
+      });
+      message.success("云台绝对定位指令已发送");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "云台绝对定位指令发送失败");
+      throw error;
+    }
+  };
+
   if (!canQuery) {
     return (
       <PageContainer>
@@ -372,6 +395,7 @@ export default function Gb28181Page() {
                     disabled={ptzDisabled}
                     onSpeedChange={setPtzSpeed}
                     onAction={handlePtz}
+                    onPosition={handlePtzPosition}
                   />
                 </div>
               ) : null}
