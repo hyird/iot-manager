@@ -10,13 +10,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageContainer } from "@/components/PageContainer";
 import { usePermission } from "@/hooks";
 import {
+  sendPtz,
   stopPreviewKeepalive,
   useGb28181CatalogQuery,
   useGb28181Devices,
   useGb28181Health,
   useGb28181PreviewStart,
   useGb28181PreviewStop,
-  useGb28181Ptz,
 } from "@/services";
 import { useAppSelector } from "@/store/hooks";
 import type { GB28181 } from "@/types";
@@ -32,6 +32,7 @@ export default function Gb28181Page() {
   const { message } = App.useApp();
   const canQuery = usePermission("iot:gb28181:query");
   const canControl = usePermission("iot:gb28181:control");
+  const canPtz = usePermission("iot:gb28181:ptz");
   const token = useAppSelector((state) => state.auth.token);
 
   const [keyword, setKeyword] = useState("");
@@ -40,6 +41,8 @@ export default function Gb28181Page() {
   const [activeSession, setActiveSession] = useState<GB28181.PreviewStartResult | null>(null);
   const [ptzSpeed, setPtzSpeed] = useState(80);
   const activeSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
+  const ptzSessionRef = useRef<GB28181.PreviewStartResult | null>(null);
+  const ptzSpeedRef = useRef(ptzSpeed);
   const tokenRef = useRef<string | null>(token);
 
   const healthQuery = useGb28181Health({ enabled: canQuery });
@@ -48,17 +51,29 @@ export default function Gb28181Page() {
   const catalogMutation = useGb28181CatalogQuery();
   const previewStartMutation = useGb28181PreviewStart();
   const previewStopMutation = useGb28181PreviewStop();
-  const ptzMutation = useGb28181Ptz();
-
   const devices = devicesQuery.data?.items ?? [];
 
   useEffect(() => {
     tokenRef.current = token;
   }, [token]);
 
+  useEffect(() => {
+    ptzSpeedRef.current = ptzSpeed;
+  }, [ptzSpeed]);
+
   const releaseActiveSession = useCallback(() => {
     const session = activeSessionRef.current;
     if (!session) return;
+    const ptzSession = ptzSessionRef.current;
+    ptzSessionRef.current = null;
+    if (ptzSession) {
+      void sendPtz({
+        deviceId: ptzSession.device_id,
+        channelId: ptzSession.channel_id,
+        action: "stop",
+        speed: ptzSpeedRef.current,
+      }).catch(() => undefined);
+    }
     activeSessionRef.current = null;
     stopPreviewKeepalive(session.session_id, tokenRef.current);
   }, []);
@@ -130,12 +145,22 @@ export default function Gb28181Page() {
     return { onlineDevices, channelCount, onlineChannels };
   }, [devices]);
 
-  const selectedChannelSupportsPtz =
-    selectedChannel?.ptz_type === undefined ||
-    selectedChannel.ptz_type < 0 ||
-    selectedChannel.ptz_capable;
+  const activePtzDevice = activeSession
+    ? devices.find((device) => device.id === activeSession.device_id)
+    : undefined;
+  const activePtzChannel = activePtzDevice?.channels.find(
+    (channel) => channel.id === activeSession?.channel_id
+  );
+  const activeChannelSupportsPtz =
+    activePtzChannel?.ptz_type === undefined ||
+    activePtzChannel.ptz_type < 0 ||
+    activePtzChannel.ptz_capable;
   const ptzDisabled =
-    !canControl || !selectedDevice || !selectedChannel || !selectedChannelSupportsPtz;
+    !canPtz ||
+    !activeSession ||
+    !activePtzDevice?.online ||
+    activePtzChannel?.online === false ||
+    !activeChannelSupportsPtz;
 
   const channelOptions = channels.map((channel) => ({
     label: `${channel.name || channel.id} (${channel.id})`,
@@ -198,10 +223,34 @@ export default function Gb28181Page() {
     );
   };
 
-  const handlePtz = (action: GB28181.PtzAction) => {
-    const target = currentTarget();
-    if (!target) return;
-    ptzMutation.mutate({ ...target, action, speed: ptzSpeed });
+  const handlePtz = async (action: GB28181.PtzAction) => {
+    const session =
+      action === "stop"
+        ? (ptzSessionRef.current ?? activeSessionRef.current)
+        : activeSessionRef.current;
+    if (action === "stop") {
+      ptzSessionRef.current = null;
+    } else {
+      ptzSessionRef.current = session;
+    }
+    if (!session) {
+      if (action !== "stop") message.warning("请先开始实时预览");
+      return;
+    }
+
+    try {
+      await sendPtz({
+        deviceId: session.device_id,
+        channelId: session.channel_id,
+        action,
+        speed: ptzSpeed,
+      });
+    } catch (error) {
+      if (action !== "stop") {
+        message.error(error instanceof Error ? error.message : "云台指令发送失败");
+      }
+      throw error;
+    }
   };
 
   if (!canQuery) {
@@ -322,7 +371,6 @@ export default function Gb28181Page() {
               <PtzPanel
                 speed={ptzSpeed}
                 disabled={ptzDisabled}
-                loading={ptzMutation.isPending}
                 onSpeedChange={setPtzSpeed}
                 onAction={handlePtz}
               />

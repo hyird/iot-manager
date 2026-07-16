@@ -118,6 +118,7 @@ registerPage({
   permissions: [
     { code: "iot:gb28181:query", name: "查询国标", action: "query" },
     { code: "iot:gb28181:control", name: "国标控制", action: "control" },
+    { code: "iot:gb28181:ptz", name: "云台控制", action: "control" },
     { code: "iot:gb28181:record", name: "录像回放", action: "record" },
   ],
 });

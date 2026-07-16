@@ -14,6 +14,7 @@
 #include "migration/migrations/V007_DeviceShareTargetInPermission.hpp"
 #include "migration/migrations/V008_DeviceShareDropTargetColumns.hpp"
 #include "migration/migrations/V009_Gb28181Menu.hpp"
+#include "migration/migrations/V010_Gb28181PtzMenu.hpp"
 #include <cstdlib>
 
 /**
@@ -51,6 +52,7 @@ private:
         registry.add<V007_DeviceShareTargetInPermission>();
         registry.add<V008_DeviceShareDropTargetColumns>();
         registry.add<V009_Gb28181Menu>();
+        registry.add<V010_Gb28181PtzMenu>();
         // 新增迁移在此处注册，例如：
         // registry.add<V003_AddDeviceTags>();
         return registry;
@@ -233,7 +235,8 @@ private:
         int gb28181Id = co_await insertMenu(db, "GB28181", 0, Constants::MENU_TYPE_PAGE, "/iot/gb28181", "GB28181", "", "VideoCameraOutlined", false, 4);
         co_await insertButton(db, "查询国标", gb28181Id, "iot:gb28181:query", 1);
         co_await insertButton(db, "国标控制", gb28181Id, "iot:gb28181:control", 2);
-        co_await insertButton(db, "录像回放", gb28181Id, "iot:gb28181:record", 3);
+        co_await insertButton(db, "云台控制", gb28181Id, "iot:gb28181:ptz", 3);
+        co_await insertButton(db, "录像回放", gb28181Id, "iot:gb28181:record", 4);
 
         // 开放接入
         int openAccessId = co_await insertMenu(db, "开放接入", 0, Constants::MENU_TYPE_PAGE, "/iot/open-access", "OpenAccess", "", "CloudServerOutlined", false, 5);

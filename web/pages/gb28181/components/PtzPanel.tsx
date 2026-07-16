@@ -8,7 +8,7 @@ import {
   StopOutlined,
 } from "@ant-design/icons";
 import { Button, Slider, Space, Tooltip, Typography } from "antd";
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useEffect, useRef } from "react";
 import type { GB28181 } from "@/types";
 
 const { Text } = Typography;
@@ -29,12 +29,50 @@ const PTZ_ACTIONS: Array<{
 type PtzPanelProps = {
   speed: number;
   disabled: boolean;
-  loading: boolean;
   onSpeedChange: (speed: number) => void;
-  onAction: (action: GB28181.PtzAction) => void;
+  onAction: (action: GB28181.PtzAction) => Promise<unknown>;
 };
 
-export function PtzPanel({ speed, disabled, loading, onSpeedChange, onAction }: PtzPanelProps) {
+export function PtzPanel({ speed, disabled, onSpeedChange, onAction }: PtzPanelProps) {
+  const holdingRef = useRef<GB28181.PtzAction | null>(null);
+  const onActionRef = useRef(onAction);
+
+  useEffect(() => {
+    onActionRef.current = onAction;
+  }, [onAction]);
+
+  const sendAction = useCallback((action: GB28181.PtzAction) => {
+    void onActionRef.current(action).catch(() => undefined);
+  }, []);
+
+  const stopHolding = useCallback(() => {
+    if (!holdingRef.current) return;
+    holdingRef.current = null;
+    sendAction("stop");
+  }, [sendAction]);
+
+  useEffect(() => {
+    if (disabled) stopHolding();
+  }, [disabled, stopHolding]);
+
+  useEffect(
+    () => () => {
+      if (!holdingRef.current) return;
+      holdingRef.current = null;
+      sendAction("stop");
+    },
+    [sendAction]
+  );
+
+  const startHolding = useCallback(
+    (action: GB28181.PtzAction) => {
+      if (disabled || holdingRef.current) return;
+      holdingRef.current = action;
+      sendAction(action);
+    },
+    [disabled, sendAction]
+  );
+
   return (
     <div className="space-y-4 self-center">
       <div className="flex items-center justify-between">
@@ -43,8 +81,16 @@ export function PtzPanel({ speed, disabled, loading, onSpeedChange, onAction }: 
           速度 {speed}
         </Text>
       </div>
+      <Text type="secondary" className="block text-center text-xs">
+        按住方向或变倍按钮控制，松开即停止
+      </Text>
       <div>
-        <Slider min={1} max={255} value={speed} onChange={(value) => onSpeedChange(Number(value))} />
+        <Slider
+          min={1}
+          max={255}
+          value={speed}
+          onChange={(value) => onSpeedChange(Number(value))}
+        />
       </div>
       <div className="grid grid-cols-3 gap-2 w-[210px] mx-auto">
         {PTZ_ACTIONS.map((item) => (
@@ -53,8 +99,27 @@ export function PtzPanel({ speed, disabled, loading, onSpeedChange, onAction }: 
               className={item.className}
               icon={item.icon}
               disabled={disabled}
-              loading={loading}
-              onClick={() => onAction(item.action)}
+              danger={item.action === "stop"}
+              type={item.action === "stop" ? "primary" : "default"}
+              onClick={
+                item.action === "stop"
+                  ? () => {
+                      holdingRef.current = null;
+                      sendAction("stop");
+                    }
+                  : undefined
+              }
+              onPointerDown={
+                item.action === "stop"
+                  ? undefined
+                  : (event) => {
+                      event.preventDefault();
+                      startHolding(item.action);
+                    }
+              }
+              onPointerUp={item.action === "stop" ? undefined : stopHolding}
+              onPointerCancel={item.action === "stop" ? undefined : stopHolding}
+              onPointerLeave={item.action === "stop" ? undefined : stopHolding}
             />
           </Tooltip>
         ))}
@@ -63,16 +128,26 @@ export function PtzPanel({ speed, disabled, loading, onSpeedChange, onAction }: 
         <Button
           icon={<PlusOutlined />}
           disabled={disabled}
-          loading={loading}
-          onClick={() => onAction("zoomin")}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            startHolding("zoomin");
+          }}
+          onPointerUp={stopHolding}
+          onPointerCancel={stopHolding}
+          onPointerLeave={stopHolding}
         >
           变倍+
         </Button>
         <Button
           icon={<MinusOutlined />}
           disabled={disabled}
-          loading={loading}
-          onClick={() => onAction("zoomout")}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            startHolding("zoomout");
+          }}
+          onPointerUp={stopHolding}
+          onPointerCancel={stopHolding}
+          onPointerLeave={stopHolding}
         >
           变倍-
         </Button>
