@@ -35,6 +35,7 @@ import {
   alertKeys,
 } from "@/services";
 import type { Alert } from "@/types";
+import { DATE_TIME_COLUMN_WIDTH, formatDateTime } from "@/utils";
 import { AlertRuleFormModal } from "./AlertRuleFormModal";
 import { AlertTemplateFormModal } from "./AlertTemplateFormModal";
 
@@ -571,8 +572,8 @@ const AlertPage = () => {
     {
       title: "触发时间",
       dataIndex: "triggered_at",
-      width: 170,
-      render: (v: string) => (v ? new Date(v).toLocaleString("zh-CN") : "-"),
+      width: DATE_TIME_COLUMN_WIDTH,
+      render: (value: string) => formatDateTime(value),
     },
     {
       title: "状态",
@@ -585,8 +586,8 @@ const AlertPage = () => {
     {
       title: "确认时间",
       dataIndex: "acknowledged_at",
-      width: 170,
-      render: (v: string | undefined) => (v ? new Date(v).toLocaleString("zh-CN") : "-"),
+      width: DATE_TIME_COLUMN_WIDTH,
+      render: (value?: string) => formatDateTime(value),
     },
     {
       title: "操作",

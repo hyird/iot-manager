@@ -48,6 +48,7 @@ import { memo, type ReactNode } from "react";
 echarts.use([LineChart, GridComponent, TooltipComponent, SVGRenderer]);
 
 import type { HomeStats, MonitorData, SystemInfo } from "@/services/home/types";
+import { formatDateTime } from "@/utils";
 import {
   formatBytes,
   formatDisk,
@@ -825,9 +826,7 @@ export const SystemInfoCard = memo(function SystemInfoCard({
           <InfoRow
             label="服务器时间"
             icon={<CloudServerOutlined className="text-purple-500" />}
-            value={
-              systemInfo?.serverTime ? new Date(systemInfo.serverTime).toLocaleString("zh-CN") : "-"
-            }
+            value={formatDateTime(systemInfo?.serverTime)}
           />
           <Divider className="!my-2" />
           <InfoRow

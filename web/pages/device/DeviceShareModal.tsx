@@ -10,6 +10,7 @@ import {
   useUserList,
 } from "@/services";
 import type { Department, Device } from "@/types";
+import { DATE_TIME_COLUMN_WIDTH, formatDateTime } from "@/utils";
 
 interface ShareFormValues {
   department_ids?: number[];
@@ -103,8 +104,8 @@ const DeviceShareModal = ({ open, device, onClose }: DeviceShareModalProps) => {
       {
         title: "更新时间",
         dataIndex: "updated_at",
-        width: 180,
-        render: (value?: string) => value || "-",
+        width: DATE_TIME_COLUMN_WIDTH,
+        render: (value?: string) => formatDateTime(value),
       },
       {
         title: "操作",

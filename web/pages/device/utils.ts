@@ -4,6 +4,7 @@
 
 import dayjs from "dayjs";
 import type { Device } from "@/types";
+import { formatDateTime } from "@/utils";
 
 /** 默认在线超时时间（秒） */
 export const DEFAULT_ONLINE_TIMEOUT = 300;
@@ -68,12 +69,7 @@ export const getDeviceStatusBadge = (connectionState: DeviceConnectionState): De
 };
 
 /** 格式化上报时间 */
-export const formatReportTime = (reportTime?: string) => {
-  if (!reportTime) return "--";
-  const t = dayjs(reportTime);
-  if (!t.isValid()) return "--";
-  return t.format("YYYY-MM-DD HH:mm:ss");
-};
+export const formatReportTime = formatDateTime;
 
 const NUMERIC_TEXT_RE = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 

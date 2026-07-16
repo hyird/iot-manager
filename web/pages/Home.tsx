@@ -13,6 +13,7 @@ import { usePermission } from "@/hooks";
 import { useWsStatus } from "@/providers/WebSocketProvider";
 import { useClearCache, useHomeStats, useMonitorData, useSystemInfo } from "@/services";
 import { useAuthStore } from "@/store/hooks";
+import { formatMonthDay, formatTime } from "@/utils";
 import {
   AlertCenterCard,
   CapacityCard,
@@ -120,10 +121,7 @@ export default function HomePage() {
       grid: { left: "3%", right: "4%", bottom: "3%", top: "10%", containLabel: true },
       xAxis: {
         type: "category" as const,
-        data: stats.dataGrowthTrend.map((item) => {
-          const d = new Date(item.date);
-          return `${d.getMonth() + 1}/${d.getDate()}`;
-        }),
+        data: stats.dataGrowthTrend.map((item) => formatMonthDay(item.date)),
         axisLabel: { fontSize: 11 },
       },
       yAxis: {
@@ -187,7 +185,7 @@ export default function HomePage() {
           {!monitorFetching && monitorUpdatedAt && (
             <Text type="secondary" className="text-xs">
               <ClockCircleOutlined className="mr-1" />
-              {new Date(monitorUpdatedAt).toLocaleTimeString("zh-CN")} 更新
+              {formatTime(monitorUpdatedAt)} 更新
             </Text>
           )}
         </Space>

@@ -20,6 +20,7 @@ import { useDebounceFn, usePermission } from "@/hooks";
 import { useWsStatus } from "@/providers";
 import { useLinkDelete, useLinkEnums, useLinkList, useLinkSave, usePublicIp } from "@/services";
 import type { Link } from "@/types";
+import { DATE_TIME_COLUMN_WIDTH, formatDateTime } from "@/utils";
 
 /** 连接状态配置 */
 const connStatusConfig: Record<string, { label: string; color: string }> = {
@@ -209,7 +210,12 @@ const LinkPage = () => {
         return <Tag color={config.color}>{config.label}</Tag>;
       },
     },
-    { title: "创建时间", dataIndex: "created_at" },
+    {
+      title: "创建时间",
+      dataIndex: "created_at",
+      width: DATE_TIME_COLUMN_WIDTH,
+      render: (value?: string) => formatDateTime(value),
+    },
     {
       title: "操作",
       key: "actions",

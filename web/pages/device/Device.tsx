@@ -532,6 +532,9 @@ const DeviceGridItem = memo(
               <span className="min-w-0 flex-1 whitespace-normal break-words pr-1 text-left leading-5">
                 {device.name}
                 {device.device_code ? `:${device.device_code}` : ""}
+                <span className="ml-2 whitespace-nowrap text-xs font-normal text-slate-400">
+                  设备 ID：{device.id}
+                </span>
               </span>
               <Tag color={statusTag.color} className="!mr-0 shrink-0 !rounded-md !px-2">
                 {statusTag.label}

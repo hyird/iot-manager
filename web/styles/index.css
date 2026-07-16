@@ -32,11 +32,25 @@
 /* Table Styles */
 @layer components {
   .ant-table {
-    .ant-table-thead > tr > th,
-    .ant-table-tbody > tr > td {
+    .ant-table-thead > tr > th {
       text-align: center;
       white-space: nowrap;
       min-width: 80px;
+    }
+
+    .ant-table-tbody > tr > td {
+      text-align: center;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      min-width: 80px;
+    }
+
+    .ant-table-tbody > tr > td.ant-table-cell-ellipsis {
+      overflow: hidden;
+      white-space: nowrap;
+      word-break: normal;
+      text-overflow: ellipsis;
     }
   }
 }

@@ -31,6 +31,7 @@ echarts.use([LineChart, GridComponent, TooltipComponent, DataZoomComponent, SVGR
 
 import { deviceApi } from "@/services";
 import type { Device, HistoryDataType } from "@/types";
+import { DATE_TIME_COLUMN_WIDTH, formatDateTime } from "@/utils";
 import { getDefaultTimeRange, resolveElementDisplay } from "./utils";
 
 const { RangePicker } = DatePicker;
@@ -306,7 +307,7 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
 
     const dataSource: ElementRowType[] = records.map((r, idx) => ({
       key: `${idx}_${new Date(r.reportTime).getTime()}`,
-      reportTime: new Date(r.reportTime).toLocaleString(),
+      reportTime: formatDateTime(r.reportTime),
       elements: r.elements,
       direction: r.direction,
       status: r.status,
@@ -317,7 +318,13 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
     }));
 
     const cols: ColumnsType<ElementRowType> = [
-      { title: "时间", dataIndex: "reportTime", key: "reportTime", fixed: "left", width: 180 },
+      {
+        title: "时间",
+        dataIndex: "reportTime",
+        key: "reportTime",
+        fixed: "left",
+        width: DATE_TIME_COLUMN_WIDTH,
+      },
       ...(hasDownData
         ? [
             {
@@ -412,13 +419,18 @@ const HistoryDataModal = ({ open, device, onClose }: HistoryDataModalProps) => {
 
     const dataSource: ImageRowType[] = records.map((r, idx) => ({
       key: `${idx}_${new Date(r.reportTime).getTime()}`,
-      reportTime: new Date(r.reportTime).toLocaleString(),
+      reportTime: formatDateTime(r.reportTime),
       size: r.size,
       data: r.data,
     }));
 
     const cols: ColumnsType<ImageRowType> = [
-      { title: "时间", dataIndex: "reportTime", key: "reportTime", width: 180 },
+      {
+        title: "时间",
+        dataIndex: "reportTime",
+        key: "reportTime",
+        width: DATE_TIME_COLUMN_WIDTH,
+      },
       { title: "大小（字节）", dataIndex: "size", key: "size", width: 120 },
       {
         title: "预览",

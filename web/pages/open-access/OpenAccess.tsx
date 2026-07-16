@@ -45,6 +45,7 @@ import {
   useWebhookSave,
 } from "@/services";
 import type { Device, OpenAccess } from "@/types";
+import { DATE_TIME_COLUMN_WIDTH, formatDateTime } from "@/utils";
 
 const { Search, TextArea } = Input;
 
@@ -211,12 +212,6 @@ interface JsonPayloadCardProps {
   content?: string;
   emptyText?: string;
 }
-
-const formatDateTime = (value?: string | null) => {
-  if (!value) return "--";
-  const parsed = dayjs(value);
-  return parsed.isValid() ? parsed.format("YYYY-MM-DD HH:mm:ss") : value;
-};
 
 const toHeaderList = (
   headers: Record<string, string | number | boolean>
@@ -1116,7 +1111,7 @@ export default function OpenAccessPage() {
     {
       title: "过期时间",
       dataIndex: "expiresAt",
-      width: 180,
+      width: DATE_TIME_COLUMN_WIDTH,
       render: (value: string | null | undefined) => formatDateTime(value),
     },
     {
@@ -1220,7 +1215,7 @@ export default function OpenAccessPage() {
     {
       title: "最近触发",
       dataIndex: "lastTriggeredAt",
-      width: 180,
+      width: DATE_TIME_COLUMN_WIDTH,
       render: (value: string | null | undefined) => formatDateTime(value),
     },
     {
@@ -1291,7 +1286,7 @@ export default function OpenAccessPage() {
     {
       title: "时间",
       dataIndex: "createdAt",
-      width: 170,
+      width: DATE_TIME_COLUMN_WIDTH,
       render: (value: string) => formatDateTime(value),
     },
     {
