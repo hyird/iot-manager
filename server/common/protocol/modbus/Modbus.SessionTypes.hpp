@@ -34,6 +34,8 @@ struct ModbusDeviceDef {
     std::string deviceName;
     int linkId = 0;
     std::string linkMode;
+    std::string targetId;
+    std::string targetAddr;
     std::string dtuKey;
     uint8_t slaveId = 1;
     FrameMode frameMode = FrameMode::TCP;
@@ -59,6 +61,8 @@ struct DtuDefinition {
     std::string dtuKey;
     int linkId = 0;
     std::string linkMode;
+    std::string targetId;
+    std::string targetAddr;
     std::string name;
     std::vector<uint8_t> registrationBytes;
     std::vector<uint8_t> heartbeatBytes;

@@ -131,6 +131,7 @@ public:
             pollScheduler_->reload(*dtuRegistry_, false);
         }
 
+        bindConfiguredClientSessions();
         refreshBoundDtuRuntime();
         co_return;
     }
@@ -162,7 +163,25 @@ public:
             && !previousSession->dtuKey.empty()) {
             pollScheduler_->onSessionUnbound(previousSession->dtuKey);
         }
+        if (connected && LinkTransportFacade::instance().isTcpClient(linkId)) {
+            if (dtuRegistry_ && sessionManager_) {
+                if (auto dtu = dtuRegistry_->findClientTarget(linkId, clientAddr)) {
+                    if (sessionManager_->bindSession(linkId, clientAddr, *dtu)) {
+                        activateBoundDtu(*dtu);
+                        triggerDtuDevicesNow(*dtu);
+                        LOG_INFO << "[Modbus][Adapter] TCP Client target bound directly: linkId="
+                                 << linkId << ", target=" << dtu->targetId
+                                 << ", remote=" << clientAddr;
+                    }
+                } else {
+                    LOG_INFO << "[Modbus][Adapter] TCP Client target connected without assigned device: linkId="
+                             << linkId << ", remote=" << clientAddr;
+                }
+            }
+            return;
+        }
         if (connected && sessionEngine_) {
+            // TCP Server 仍使用注册包/真实查询发现 DTU。
             sessionEngine_->triggerDiscovery(linkId, clientAddr);
         }
     }
@@ -504,6 +523,15 @@ private:
                 activateBoundDtu(dtu);
             }
         );
+    }
+
+    void bindConfiguredClientSessions() {
+        if (!sessionManager_ || !dtuRegistry_) return;
+        for (const auto& session : sessionManager_->listSessions()) {
+            if (session.bindState == SessionBindState::Bound) continue;
+            auto dtu = dtuRegistry_->findClientTarget(session.linkId, session.clientAddr);
+            if (dtu) sessionManager_->bindSession(session.linkId, session.clientAddr, *dtu);
+        }
     }
 
     void reconcileSessionBindingsAfterRegistryReload() {

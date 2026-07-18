@@ -92,12 +92,17 @@ public:
         ValidatorHelper::requireNonEmptyString(*json, "name", "链路名称").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "mode", "模式").throwIfInvalid();
         ValidatorHelper::requireNonEmptyString(*json, "protocol", "协议").throwIfInvalid();
-        ValidatorHelper::requireNonEmptyString(*json, "ip", "IP地址").throwIfInvalid();
-        ValidatorHelper::requirePositiveInt(*json, "port", "端口").throwIfInvalid();
         ValidatorHelper::requireInList(*json, "mode", ALLOWED_LINK_MODES,
             "模式", "TCP Server 或 TCP Client").throwIfInvalid();
         ValidatorHelper::requireInList(*json, "protocol", ALLOWED_LINK_PROTOCOLS,
             "协议", "SL651、Modbus 或 S7").throwIfInvalid();
+        const auto mode = (*json)["mode"].asString();
+        if (mode == Constants::LINK_MODE_TCP_SERVER) {
+            ValidatorHelper::requireNonEmptyString(*json, "ip", "监听IP").throwIfInvalid();
+            ValidatorHelper::requirePositiveInt(*json, "port", "监听端口").throwIfInvalid();
+        } else if (!json->isMember("targets") || !(*json)["targets"].isArray()) {
+            throw ValidationException("TCP Client 模式需要配置目标地址");
+        }
         if (json->isMember("agent_id") && !(*json)["agent_id"].isNull()) {
             ControllerUtils::requireNonNegativeValue((*json)["agent_id"].asInt(), "采集Agent参数错误");
         }

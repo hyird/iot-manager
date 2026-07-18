@@ -34,6 +34,7 @@ interface DeviceFormValues {
   device_code?: string;
   connection_mode: ConnectionMode;
   link_id?: number;
+  target_id?: string;
   // Agent 模式字段
   agent_id?: number;
   agent_endpoint_id?: number;
@@ -153,6 +154,7 @@ const DeviceFormModal = ({
         device_code: editing.device_code,
         connection_mode: isAgentMode ? "agent" : "link",
         link_id: isAgentMode ? undefined : editing.link_id,
+        target_id: editing.target_id,
         agent_id: editing.agent_id,
         agent_endpoint_id: editing.agent_endpoint_id,
         protocol_config_id: editing.protocol_config_id,
@@ -185,7 +187,7 @@ const DeviceFormModal = ({
 
   /** 链路变更时清除设备类型选择 */
   const handleLinkChange = () => {
-    form.setFieldValue("protocol_config_id", undefined);
+    form.setFieldsValue({ target_id: undefined, protocol_config_id: undefined });
   };
 
   /** Agent 变更时清除端点和后续字段 */
@@ -214,6 +216,7 @@ const DeviceFormModal = ({
   const handleConnectionModeChange = () => {
     form.setFieldsValue({
       link_id: undefined,
+      target_id: undefined,
       agent_id: undefined,
       agent_endpoint_id: undefined,
       protocol_config_id: undefined,
@@ -294,7 +297,32 @@ const DeviceFormModal = ({
             <Select placeholder="选择链路" onChange={handleLinkChange} disabled={!!editing}>
               {linkOptions.map((opt) => (
                 <Select.Option key={opt.id} value={opt.id}>
-                  {opt.name} ({opt.protocol} - {opt.mode} - {opt.ip}:{opt.port})
+                  {opt.name} ({opt.protocol} - {opt.mode}
+                  {opt.mode === "TCP Server"
+                    ? ` - ${opt.ip}:${opt.port}`
+                    : ` - ${opt.targets?.length || 0} 个目标`}
+                  )
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+        )}
+
+        {connectionMode !== "agent" && selectedLink?.mode === "TCP Client" && (
+          <Form.Item
+            label="目标地址"
+            name="target_id"
+            rules={[{ required: true, message: "请选择该设备使用的目标地址" }]}
+          >
+            <Select placeholder="选择目标 IP:Port">
+              {(selectedLink.targets || []).map((target) => (
+                <Select.Option
+                  key={target.id}
+                  value={target.id}
+                  disabled={target.status !== "enabled" && target.id !== editing?.target_id}
+                >
+                  {target.name} ({target.ip}:{target.port})
+                  {target.status === "disabled" ? " [已禁用]" : ""}
                 </Select.Option>
               ))}
             </Select>

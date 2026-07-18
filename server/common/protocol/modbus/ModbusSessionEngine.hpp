@@ -461,7 +461,7 @@ inline bool ModbusSessionEngine::sendFrame(
     const std::string data(frame.begin(), frame.end());
     bool ok;
     if (device.linkMode == Constants::LINK_MODE_TCP_CLIENT) {
-        ok = LinkTransportFacade::instance().sendData(device.linkId, data);
+        ok = LinkTransportFacade::instance().sendToTarget(device.linkId, device.targetId, data);
     } else {
         ok = LinkTransportFacade::instance().sendToClient(device.linkId, session.clientAddr, data);
     }
@@ -484,7 +484,7 @@ inline bool ModbusSessionEngine::sendFrame(
                  << "(id=" << device.deviceId << ") to " << session.clientAddr
                  << ", " << frame.size() << "B";
         if (device.linkMode == Constants::LINK_MODE_TCP_CLIENT) {
-            LinkTransportFacade::instance().forceDisconnectClient(device.linkId);
+            LinkTransportFacade::instance().forceDisconnectTarget(device.linkId, device.targetId);
         } else {
             LinkTransportFacade::instance().forceDisconnectServerClient(device.linkId, session.clientAddr);
         }

@@ -18,6 +18,7 @@
 #include "migration/migrations/V011_VideoMonitorMenu.hpp"
 #include "migration/migrations/V012_MenuSeedRepair.hpp"
 #include "migration/migrations/V013_MenuCatalogHardening.hpp"
+#include "migration/migrations/V014_LinkClientTargetsJsonb.hpp"
 #include <cstdlib>
 
 /**
@@ -59,6 +60,7 @@ private:
         registry.add<V011_VideoMonitorMenu>();
         registry.add<V012_MenuSeedRepair>();
         registry.add<V013_MenuCatalogHardening>();
+        registry.add<V014_LinkClientTargetsJsonb>();
         // 新增迁移在此处注册，例如：
         // registry.add<V003_AddDeviceTags>();
         return registry;

@@ -43,6 +43,8 @@ export interface DeviceItem {
   device_code?: string;
   /** 关联链路 ID（0 表示 Agent 模式） */
   link_id: number;
+  /** TCP Client 链路中的目标 ID */
+  target_id?: string;
   /** 关联协议配置 ID */
   protocol_config_id: number;
   /** 启用状态 */
@@ -118,6 +120,7 @@ export interface CreateDeviceDto {
   name: string;
   device_code: string;
   link_id: number;
+  target_id?: string;
   protocol_config_id: number;
   group_id?: number | null;
   status?: DeviceStatus;
@@ -146,6 +149,7 @@ export interface UpdateDeviceDto {
   name?: string;
   device_code?: string;
   link_id?: number;
+  target_id?: string;
   protocol_config_id?: number;
   group_id?: number | null;
   status?: DeviceStatus;
@@ -176,6 +180,7 @@ export interface DeviceStaticData {
   /** 设备编码（仅 SL651 设备返回） */
   device_code?: string;
   link_id: number;
+  target_id?: string;
   protocol_config_id: number;
   status: DeviceStatus;
   group_id?: number | null;

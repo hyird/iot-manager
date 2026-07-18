@@ -10,6 +10,7 @@ struct LinkCreated : DomainEvent {
     std::string protocol;
     std::string ip;
     int port;
+    Json::Value targets;
     int agentId;
     std::string agentInterface;
     std::string agentBindIp;
@@ -17,6 +18,7 @@ struct LinkCreated : DomainEvent {
     std::string agentGateway;
 
     LinkCreated(int linkId, std::string n, std::string m, std::string proto, std::string i, int p,
+                Json::Value clientTargets,
                 int managedAgentId, std::string managedInterface, std::string managedBindIp,
                 int managedPrefixLength, std::string managedGateway)
         : DomainEvent("LinkCreated", linkId, "Link")
@@ -25,6 +27,7 @@ struct LinkCreated : DomainEvent {
         , protocol(std::move(proto))
         , ip(std::move(i))
         , port(p)
+        , targets(std::move(clientTargets))
         , agentId(managedAgentId)
         , agentInterface(std::move(managedInterface))
         , agentBindIp(std::move(managedBindIp))
@@ -38,6 +41,7 @@ struct LinkUpdated : DomainEvent {
     std::string protocol;
     std::string ip;
     int port;
+    Json::Value targets;
     bool enabled;
     bool needReload;
     int agentId;
@@ -47,6 +51,7 @@ struct LinkUpdated : DomainEvent {
     std::string agentGateway;
 
     LinkUpdated(int linkId, std::string n, std::string m, std::string proto, std::string i, int p,
+                Json::Value clientTargets,
                 bool e, bool reload, int managedAgentId, std::string managedInterface,
                 std::string managedBindIp, int managedPrefixLength, std::string managedGateway)
         : DomainEvent("LinkUpdated", linkId, "Link")
@@ -55,6 +60,7 @@ struct LinkUpdated : DomainEvent {
         , protocol(std::move(proto))
         , ip(std::move(i))
         , port(p)
+        , targets(std::move(clientTargets))
         , enabled(e)
         , needReload(reload)
         , agentId(managedAgentId)

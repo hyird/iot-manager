@@ -50,6 +50,10 @@ public:
         int linkId,
         const std::vector<uint8_t>& registrationBytes) const;
 
+    /** TCP Client 连接按配置目标直接定位 DTU，不经过注册包发现。 */
+    std::optional<DtuDefinition> findClientTarget(
+        int linkId, const std::string& targetAddr) const;
+
     /** 通过设备 ID 获取静态设备定义 */
     std::optional<ModbusDeviceDef> findDevice(int deviceId) const;
 
@@ -84,6 +88,9 @@ inline std::string makeRegistrationToken(const std::vector<uint8_t>& bytes) {
 }
 
 inline std::string makeDtuKey(const DeviceCache::CachedDevice& device) {
+    if (device.linkMode == Constants::LINK_MODE_TCP_CLIENT && !device.targetId.empty()) {
+        return std::to_string(device.linkId) + ":TARGET:" + device.targetId;
+    }
     if (device.registrationBytes.empty()) {
         return std::to_string(device.linkId) + ":NO_REG:" + std::to_string(device.id);
     }
@@ -124,6 +131,10 @@ inline ModbusDeviceDef buildDeviceDef(const DeviceCache::CachedDevice& device, c
     def.deviceName = device.name;
     def.linkId = device.linkId;
     def.linkMode = device.linkMode;
+    def.targetId = device.targetId;
+    def.targetAddr = device.linkIp.empty() || device.linkPort <= 0
+        ? std::string()
+        : device.linkIp + ":" + std::to_string(device.linkPort);
     def.dtuKey = dtuKey;
     def.slaveId = device.slaveId;
 
@@ -223,6 +234,8 @@ inline DtuRegistry::Task<void> DtuRegistry::reload() {
             dtu.dtuKey = dtuKey;
             dtu.linkId = device.linkId;
             dtu.linkMode = device.linkMode;
+            dtu.targetId = device.targetId;
+            dtu.targetAddr = deviceDef.targetAddr;
             dtu.name = device.linkName.empty() ? device.name : device.linkName;
             dtu.registrationBytes = device.registrationBytes;
             dtu.heartbeatBytes = device.heartbeatBytes;
@@ -233,6 +246,9 @@ inline DtuRegistry::Task<void> DtuRegistry::reload() {
         } else {
             if (dtu.linkId != device.linkId) {
                 throw ConflictException("DTU 聚合异常：同 dtuKey 出现跨链路设备");
+            }
+            if (dtu.targetId != device.targetId) {
+                throw ConflictException("DTU 聚合异常：同 dtuKey 出现不同目标地址");
             }
             if (!dtu.registrationBytes.empty() && !device.registrationBytes.empty()
                 && dtu.registrationBytes != device.registrationBytes) {
@@ -326,6 +342,23 @@ inline std::optional<DtuDefinition> DtuRegistry::findByRegistration(
         if (defIt == definitionsByKey_.end()) continue;
         if (defIt->second.registrationBytes == registrationBytes) {
             return defIt->second;
+        }
+    }
+    return std::nullopt;
+}
+
+inline std::optional<DtuDefinition> DtuRegistry::findClientTarget(
+    int linkId, const std::string& targetAddr) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto linkIt = linkToDtuKeys_.find(linkId);
+    if (linkIt == linkToDtuKeys_.end()) return std::nullopt;
+    for (const auto& dtuKey : linkIt->second) {
+        auto defIt = definitionsByKey_.find(dtuKey);
+        if (defIt == definitionsByKey_.end()) continue;
+        const auto& definition = defIt->second;
+        if (definition.linkMode == Constants::LINK_MODE_TCP_CLIENT
+            && definition.targetAddr == targetAddr) {
+            return definition;
         }
     }
     return std::nullopt;

@@ -1002,6 +1002,7 @@ const DevicePage = () => {
       name: device.name,
       device_code: device.device_code,
       link_id: device.link_id,
+      target_id: device.target_id,
       protocol_config_id: device.protocol_config_id,
       status: device.status,
       online_timeout: device.online_timeout,

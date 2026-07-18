@@ -186,11 +186,22 @@ public:
                 req.funcCode, funcName, toHexString(data), req.userId, elementsData);
             runtimeContext_.commandCoordinator.attachDownCommandId(req.deviceCode, downCommandId);
 
-            bool sent = LinkTransportFacade::instance().sendToClient(
-                connOpt->linkId, connOpt->clientAddr, data);
+            auto cachedDevice = DeviceCache::instance().findByIdSync(configOpt->deviceId);
+            const bool tcpClient = cachedDevice
+                && cachedDevice->linkMode == Constants::LINK_MODE_TCP_CLIENT;
+            bool sent = tcpClient
+                ? LinkTransportFacade::instance().sendToTarget(
+                    connOpt->linkId, cachedDevice->targetId, data)
+                : LinkTransportFacade::instance().sendToClient(
+                    connOpt->linkId, connOpt->clientAddr, data);
             if (!sent) {
-                LinkTransportFacade::instance().forceDisconnectServerClient(
-                    connOpt->linkId, connOpt->clientAddr);
+                if (tcpClient) {
+                    LinkTransportFacade::instance().forceDisconnectTarget(
+                        connOpt->linkId, cachedDevice->targetId);
+                } else {
+                    LinkTransportFacade::instance().forceDisconnectServerClient(
+                        connOpt->linkId, connOpt->clientAddr);
+                }
                 co_await runtimeContext_.commandStore.updateCommandStatus(
                     downCommandId, "SEND_FAILED", "TCP发送失败");
                 co_return CommandResult::sendFailed("TCP发送失败");

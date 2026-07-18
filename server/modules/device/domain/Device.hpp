@@ -201,6 +201,50 @@ public:
         }
     }
 
+    /** TCP Client 设备必须选择所属链路 targets JSONB 中的目标。 */
+    static Task<void> targetValid(const Device& device) {
+        const auto targetId = device.protocolParams_.get("target_id", "").asString();
+        if (device.linkId_ <= 0) {
+            if (!targetId.empty()) {
+                throw ValidationException("Agent 模式不能配置 TCP Client 目标");
+            }
+            co_return;
+        }
+
+        DatabaseService db;
+        auto rows = co_await db.execSqlCoro(
+            "SELECT mode, targets FROM link WHERE id = ? AND deleted_at IS NULL",
+            {std::to_string(device.linkId_)});
+        if (rows.empty()) co_return;
+
+        const auto mode = FieldHelper::getString(rows[0]["mode"], "");
+        if (mode != Constants::LINK_MODE_TCP_CLIENT) {
+            if (!targetId.empty()) {
+                throw ValidationException("只有 TCP Client 模式需要选择目标地址");
+            }
+            co_return;
+        }
+        if (targetId.empty()) {
+            throw ValidationException("TCP Client 设备必须选择目标地址");
+        }
+
+        Json::Value targets(Json::arrayValue);
+        try {
+            targets = JsonHelper::parse(FieldHelper::getString(rows[0]["targets"], "[]"));
+        } catch (...) {
+            throw ValidationException("链路目标配置损坏");
+        }
+        if (!targets.isArray()) {
+            throw ValidationException("链路目标配置格式错误");
+        }
+        for (const auto& target : targets) {
+            if (target.get("id", "").asString() == targetId) {
+                co_return;
+            }
+        }
+        throw NotFoundException("所选目标地址不存在或不属于该链路");
+    }
+
     /**
      * @brief 约束：关联协议配置存在
      */
@@ -274,6 +318,14 @@ public:
         }
 
         if (protocol != Constants::PROTOCOL_MODBUS) co_return;
+
+        auto linkRows = co_await db.execSqlCoro(
+            "SELECT mode FROM link WHERE id = ? AND deleted_at IS NULL",
+            {std::to_string(device.linkId_)});
+        if (linkRows.empty()
+            || FieldHelper::getString(linkRows[0]["mode"], "") != Constants::LINK_MODE_TCP_SERVER) {
+            co_return;
+        }
 
         // 统计同链路上的其他设备数量
         std::string countSql = "SELECT COUNT(*) as cnt FROM device WHERE link_id = ? AND deleted_at IS NULL";
@@ -394,12 +446,53 @@ public:
             }
         }
 
-        if (linkMode != Constants::LINK_MODE_TCP_SERVER) {
-            co_return;
-        }
         if (protocol != Constants::PROTOCOL_MODBUS && protocol != Constants::PROTOCOL_S7) {
             co_return;
         }
+
+        if (linkMode == Constants::LINK_MODE_TCP_CLIENT) {
+            const auto targetId = device.protocolParams_.get("target_id", "").asString();
+            if (targetId.empty()) co_return;
+
+            std::string clientSql = R"(
+                SELECT d.id, d.name, d.protocol_params
+                FROM device d
+                JOIN protocol_config pc ON d.protocol_config_id = pc.id AND pc.deleted_at IS NULL
+                WHERE d.link_id = ? AND d.deleted_at IS NULL AND pc.protocol = ?
+                  AND d.protocol_params->>'target_id' = ?
+            )";
+            std::vector<std::string> clientParams = {
+                std::to_string(device.linkId_), protocol, targetId
+            };
+            if (device.id() > 0) {
+                clientSql += " AND d.id != ?";
+                clientParams.push_back(std::to_string(device.id()));
+            }
+            auto siblings = co_await db.execSqlCoro(clientSql, clientParams);
+            if (protocol == Constants::PROTOCOL_MODBUS) {
+                const int currentSlaveId = std::clamp(device.slaveId(), 1, 247);
+                for (const auto& row : siblings) {
+                    Json::Value siblingParams(Json::objectValue);
+                    try {
+                        siblingParams = JsonHelper::parse(FieldHelper::getString(row["protocol_params"], "{}"));
+                    } catch (...) {
+                        continue;
+                    }
+                    if (std::clamp(siblingParams.get("slave_id", 1).asInt(), 1, 247) == currentSlaveId) {
+                        throw ConflictException(
+                            "Modbus 设备冲突：同一目标地址下 slave_id 重复，冲突设备: "
+                            + FieldHelper::getString(row["name"], "未知设备"));
+                    }
+                }
+            } else if (!siblings.empty()) {
+                throw ConflictException(
+                    "S7 设备冲突：同一目标地址只能关联一个设备，冲突设备: "
+                    + FieldHelper::getString(siblings[0]["name"], "未知设备"));
+            }
+            co_return;
+        }
+
+        if (linkMode != Constants::LINK_MODE_TCP_SERVER) co_return;
 
         const std::string currentRegKey = normalizeRegistrationKey(device.protocolParams_);
         const int currentSlaveId = std::clamp(device.slaveId(), 1, 247);
@@ -480,7 +573,7 @@ public:
         }
 
         // 协议特有参数
-        for (const auto& key : {"device_code", "online_timeout", "remote_control",
+        for (const auto& key : {"device_code", "online_timeout", "remote_control", "target_id",
                                   "modbus_mode", "slave_id", "timezone",
                                   "heartbeat", "registration"}) {
             if (data.isMember(key)) {
@@ -520,6 +613,7 @@ public:
     int onlineTimeout() const { return protocolParams_.get("online_timeout", 300).asInt(); }
     bool remoteControl() const { return protocolParams_.get("remote_control", true).asBool(); }
     std::string modbusMode() const { return protocolParams_.get("modbus_mode", "").asString(); }
+    std::string targetId() const { return protocolParams_.get("target_id", "").asString(); }
     int slaveId() const { return protocolParams_.get("slave_id", 1).asInt(); }
     std::string timezone() const { return protocolParams_.get("timezone", "+08:00").asString(); }
 
@@ -554,6 +648,9 @@ public:
         );
         json["remote_control"] = remoteControl();
         json["timezone"] = timezone();
+        if (const auto target = targetId(); !target.empty()) {
+            json["target_id"] = target;
+        }
         auto mm = modbusMode();
         if (!mm.empty()) {
             json["modbus_mode"] = mm;
@@ -630,7 +727,7 @@ private:
 
         // 收集协议特有参数
         protocolParams_ = Json::objectValue;
-        for (const auto& key : {"device_code", "online_timeout", "remote_control",
+        for (const auto& key : {"device_code", "online_timeout", "remote_control", "target_id",
                                   "modbus_mode", "slave_id", "timezone",
                                   "heartbeat", "registration"}) {
             if (data.isMember(key) && !data[key].isNull()) {

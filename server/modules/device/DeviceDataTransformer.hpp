@@ -294,6 +294,7 @@ public:
         item["id"] = device.id;
         item["name"] = device.name;
         item["link_id"] = device.linkId;
+        if (!device.targetId.empty()) item["target_id"] = device.targetId;
         item["protocol_config_id"] = device.protocolConfigId;
         item["group_id"] = device.groupId > 0 ? Json::Value(device.groupId) : Json::Value::null;
         item["status"] = device.status;

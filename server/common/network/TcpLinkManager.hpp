@@ -5,22 +5,12 @@
 #include <cstddef>
 #include <coroutine>
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h>
-#include <cerrno>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
-
 /**
  * @brief 链路连接信息（JSON 序列化用）
  */
 struct LinkConnectionInfo {
     int linkId = 0;
+    std::string targetId;
     std::string name;
     std::string mode;           // "TCP Server" / "TCP Client"
     std::string ip;
@@ -35,6 +25,7 @@ struct LinkConnectionInfo {
     Json::Value toJson(const LinkStateMachine& fsm) const {
         Json::Value json;
         json["link_id"] = linkId;
+        if (!targetId.empty()) json["target_id"] = targetId;
         json["name"] = name;
         json["mode"] = mode;
         json["ip"] = ip;
@@ -68,9 +59,9 @@ struct LinkRuntime {
     LinkConnectionInfo info;
     LinkStateMachine fsm;                           // 状态机管理连接生命周期
     EventLoop* loop = nullptr;                      // 该链路使用的 EventLoop
-    std::string localBindIp;                       // TCP Client 指定本地出口地址
     mutable std::mutex connMutex;                   // 保护 serverConns 和 info 的并发访问
     std::atomic<time_t> lastActivityAtomic{0};      // 无锁活动时间戳（消息回调高频更新用）
+    std::atomic_bool reconnectScheduled{false};
 
     /** 无锁记录活动时间（仅在消息回调等高频路径使用） */
     void recordActivity() {
@@ -144,29 +135,6 @@ public:
             return ioLoopPool_->getNextLoop();
         }
         return drogon::app().getLoop();
-    }
-
-    static std::string validateBindableIp(const std::string& ip) {
-        if (ip.empty()) {
-            return {};
-        }
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(0);
-        if (::inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
-            return "IP 格式无效: " + ip;
-        }
-
-        auto fd = createSocket();
-        if (isInvalidSocket(fd)) {
-            return "无法创建绑定测试 socket";
-        }
-
-        const auto result = ::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
-        const auto error = result == 0 ? std::string() : buildBindError(ip);
-        closeSocket(fd);
-        return error;
     }
 
     /**
@@ -259,45 +227,43 @@ public:
     /**
      * @brief 启动 TCP Client
      */
-    void startClient(int linkId, const std::string& name, const std::string& ip, uint16_t port,
-                     const std::string& localBindIp = "") {
-        if (const auto error = validateBindableIp(localBindIp); !error.empty()) {
-            throw std::runtime_error(error);
-        }
-
+    void startClient(int linkId, const std::string& name, const std::string& ip, uint16_t port) {
         stop(linkId);
+        startClientTarget(linkId, "legacy-" + std::to_string(linkId), name, ip, port);
+    }
+
+    /** 启动 TCP Client 链路中的一个独立目标连接。 */
+    void startClientTarget(int linkId, const std::string& targetId, const std::string& name,
+                           const std::string& ip, uint16_t port) {
+        stopClientTarget(linkId, targetId);
 
         auto loop = getNextLoop();
 
         auto runtime = std::make_shared<LinkRuntime>();
         runtime->loop = loop;
         runtime->info.linkId = linkId;
+        runtime->info.targetId = targetId;
         runtime->info.name = name;
         runtime->info.mode = Constants::LINK_MODE_TCP_CLIENT;
         runtime->info.ip = ip;
         runtime->info.port = port;
         runtime->info.lastActivity = getCurrentTime();
-        runtime->localBindIp = localBindIp;
         runtime->fsm.onStartClient();
 
         {
             std::unique_lock lock(mutex_);
-            runtimes_[linkId] = runtime;
+            clientRuntimes_[clientRuntimeKey(linkId, targetId)] = runtime;
         }
 
-        loop->runInLoop([this, loop, linkId, name, ip, port, localBindIp, runtime]() {
+        loop->runInLoop([this, loop, linkId, targetId, ip, port, runtime]() {
             auto addr = InetAddress(ip, port);
-            auto client = std::make_shared<TcpClient>(loop, addr, "LinkClient_" + std::to_string(linkId));
-            if (!localBindIp.empty()) {
-                client->setSockOptCallback([linkId, localBindIp](int fd) {
-                    bindClientSocket(fd, linkId, localBindIp);
-                });
-            }
+            auto client = std::make_shared<TcpClient>(
+                loop, addr, "LinkClient_" + std::to_string(linkId) + "_" + targetId);
 
             runtime->client = client;
 
             // 连接回调
-            client->setConnectionCallback([this, linkId, runtimeWeak = std::weak_ptr(runtime)](const TcpConnectionPtr& conn) {
+            client->setConnectionCallback([this, linkId, targetId, runtimeWeak = std::weak_ptr(runtime)](const TcpConnectionPtr& conn) {
                 try {
                     auto rt = runtimeWeak.lock();
                     if (!rt) return;
@@ -307,11 +273,14 @@ public:
                     {
                         std::lock_guard<std::mutex> lock(rt->connMutex);
                         if (isConnected) {
-                            LOG_INFO << "[Link " << linkId << "] Connected to server: " << serverAddr;
+                            LOG_INFO << "[Link " << linkId << "/Target " << targetId
+                                     << "] Connected to server: " << serverAddr;
                             rt->clientConn = conn;
+                            rt->reconnectScheduled.store(false, std::memory_order_release);
                             rt->fsm.onConnected();
                         } else {
-                            LOG_INFO << "[Link " << linkId << "] Disconnected from server";
+                            LOG_INFO << "[Link " << linkId << "/Target " << targetId
+                                     << "] Disconnected from server";
                             rt->clientConn.reset();
                             rt->fsm.onDisconnected();
                         }
@@ -323,7 +292,7 @@ public:
                     }
 
                     if (!isConnected) {
-                        scheduleReconnect(linkId, runtimeWeak);
+                        scheduleTargetReconnect(linkId, targetId, runtimeWeak);
                     }
                 } catch (const std::exception& e) {
                     LOG_ERROR << "[Link " << linkId << "] Client connection callback error: " << e.what();
@@ -354,56 +323,84 @@ public:
             });
 
             // 连接错误回调
-            client->setConnectionErrorCallback([this, linkId, runtimeWeak = std::weak_ptr(runtime)]() {
+            client->setConnectionErrorCallback([this, linkId, targetId, runtimeWeak = std::weak_ptr(runtime)]() {
                 auto rt = runtimeWeak.lock();
                 if (!rt) return;
 
                 {
                     std::lock_guard<std::mutex> lock(rt->connMutex);
                     rt->fsm.onConnectionError("Connection failed, retrying...");
-                    LOG_WARN << "[Link " << linkId << "] Connection failed (attempt "
+                    LOG_WARN << "[Link " << linkId << "/Target " << targetId
+                             << "] Connection failed (attempt "
                              << rt->fsm.reconnectAttempts() << "), will retry...";
                 }
 
-                scheduleReconnect(linkId, runtimeWeak);
+                scheduleTargetReconnect(linkId, targetId, runtimeWeak);
             });
 
             client->connect();
 
-            LOG_INFO << "[Link " << linkId << "] TCP Client connecting to " << ip << ":" << port;
+            LOG_INFO << "[Link " << linkId << "/Target " << targetId
+                     << "] TCP Client connecting to " << ip << ":" << port;
         });
+    }
+
+    /** 按 JSONB 目标列表重载一个 TCP Client 链路。 */
+    void reloadClientTargets(int linkId, const std::string& linkName,
+                             const Json::Value& targets, bool enabled) {
+        stop(linkId);
+        if (!enabled || !targets.isArray()) return;
+
+        for (const auto& target : targets) {
+            if (target.get("status", "enabled").asString() != "enabled") continue;
+            const auto targetId = target.get("id", "").asString();
+            const auto ip = target.get("ip", "").asString();
+            const auto port = target.get("port", 0).asInt();
+            if (targetId.empty() || ip.empty() || port <= 0 || port > 65535) continue;
+            auto targetName = target.get("name", "").asString();
+            if (targetName.empty()) targetName = ip + ":" + std::to_string(port);
+            startClientTarget(linkId, targetId, linkName + "/" + targetName,
+                              ip, static_cast<uint16_t>(port));
+        }
     }
 
     /**
      * @brief 停止链路
      */
     void stop(int linkId) {
-        std::shared_ptr<LinkRuntime> runtime;
+        std::vector<std::shared_ptr<LinkRuntime>> runtimes;
         {
             std::unique_lock lock(mutex_);
             auto it = runtimes_.find(linkId);
-            if (it == runtimes_.end()) return;
-            runtime = it->second;
-            runtimes_.erase(it);
+            if (it != runtimes_.end()) {
+                runtimes.push_back(it->second);
+                runtimes_.erase(it);
+            }
+            for (auto clientIt = clientRuntimes_.begin(); clientIt != clientRuntimes_.end();) {
+                if (clientIt->second->info.linkId == linkId) {
+                    runtimes.push_back(clientIt->second);
+                    clientIt = clientRuntimes_.erase(clientIt);
+                } else {
+                    ++clientIt;
+                }
+            }
         }
 
+        for (const auto& runtime : runtimes) {
+            stopRuntime(runtime);
+        }
+    }
+
+    void stopClientTarget(int linkId, const std::string& targetId) {
+        std::shared_ptr<LinkRuntime> runtime;
         {
-            std::lock_guard<std::mutex> lock(runtime->connMutex);
-            runtime->fsm.onStop();
+            std::unique_lock lock(mutex_);
+            auto it = clientRuntimes_.find(clientRuntimeKey(linkId, targetId));
+            if (it == clientRuntimes_.end()) return;
+            runtime = it->second;
+            clientRuntimes_.erase(it);
         }
-
-        if (runtime->loop) {
-            runtime->loop->runInLoop([runtime, linkId]() {
-                if (runtime->server) {
-                    runtime->server->stop();
-                    LOG_INFO << "[Link " << linkId << "] TCP Server stopped";
-                }
-                if (runtime->client) {
-                    runtime->client->disconnect();
-                    LOG_INFO << "[Link " << linkId << "] TCP Client stopped";
-                }
-            });
-        }
+        stopRuntime(runtime);
     }
 
     /**
@@ -442,10 +439,13 @@ public:
     }
 
     void stopAllAsync(std::function<void()> onDone) {
-        std::map<int, std::shared_ptr<LinkRuntime>> toStop;
+        std::vector<std::shared_ptr<LinkRuntime>> toStop;
         {
             std::unique_lock lock(mutex_);
-            toStop.swap(runtimes_);
+            for (auto& [id, runtime] : runtimes_) toStop.push_back(runtime);
+            for (auto& [key, runtime] : clientRuntimes_) toStop.push_back(runtime);
+            runtimes_.clear();
+            clientRuntimes_.clear();
         }
 
         if (toStop.empty()) {
@@ -469,14 +469,16 @@ public:
             }
         };
 
-        for (auto& [id, runtime] : toStop) {
+        for (auto& runtime : toStop) {
+            const auto id = runtime->info.linkId;
+            const auto targetId = runtime->info.targetId;
             {
                 std::lock_guard<std::mutex> lock(runtime->connMutex);
                 runtime->fsm.onStop();
             }
 
             if (runtime->loop) {
-                runtime->loop->runInLoop([runtime, id, markDone]() {
+                runtime->loop->runInLoop([runtime, id, targetId, markDone]() {
                     try {
                         if (runtime->server) {
                             runtime->server->stop();
@@ -484,7 +486,8 @@ public:
                         }
                         if (runtime->client) {
                             runtime->client->disconnect();
-                            LOG_INFO << "[Link " << id << "] TCP Client stopped";
+                            LOG_INFO << "[Link " << id << (targetId.empty() ? "" : "/Target " + targetId)
+                                     << "] TCP Client stopped";
                         }
                     } catch (const std::exception& e) {
                         LOG_ERROR << "[Link " << id << "] stopAll callback failed: " << e.what();
@@ -501,7 +504,11 @@ public:
 
     bool isRunning(int linkId) {
         std::shared_lock lock(mutex_);
-        return runtimes_.count(linkId) > 0;
+        if (runtimes_.count(linkId) > 0) return true;
+        return std::any_of(clientRuntimes_.begin(), clientRuntimes_.end(),
+                           [linkId](const auto& item) {
+                               return item.second->info.linkId == linkId;
+                           });
     }
 
     /**
@@ -509,40 +516,41 @@ public:
      */
     Json::Value getStatus(int linkId) {
         std::shared_ptr<LinkRuntime> runtime;
+        std::vector<std::shared_ptr<LinkRuntime>> clientRuntimes;
         {
             std::shared_lock lock(mutex_);
             auto it = runtimes_.find(linkId);
-            if (it == runtimes_.end()) {
-                Json::Value empty;
-                empty["link_id"] = linkId;
-                empty["conn_status"] = "stopped";
-                return empty;
+            if (it != runtimes_.end()) {
+                runtime = it->second;
+            } else {
+                for (const auto& [key, candidate] : clientRuntimes_) {
+                    if (candidate->info.linkId == linkId) clientRuntimes.push_back(candidate);
+                }
             }
-            runtime = it->second;
         }
-        std::lock_guard<std::mutex> connLock(runtime->connMutex);
-        return runtime->info.toJson(runtime->fsm);
+        if (runtime) {
+            std::lock_guard<std::mutex> connLock(runtime->connMutex);
+            return runtime->info.toJson(runtime->fsm);
+        }
+        return aggregateClientStatus(linkId, clientRuntimes);
     }
 
     /**
      * @brief 获取所有链路状态
      */
     Json::Value getAllStatus() {
-        std::vector<std::shared_ptr<LinkRuntime>> runtimesCopy;
+        std::vector<int> linkIds;
         {
             std::shared_lock lock(mutex_);
-            for (const auto& [id, runtime] : runtimes_) {
-                runtimesCopy.push_back(runtime);
+            for (const auto& [id, runtime] : runtimes_) linkIds.push_back(id);
+            for (const auto& [key, runtime] : clientRuntimes_) {
+                linkIds.push_back(runtime->info.linkId);
             }
         }
+        std::sort(linkIds.begin(), linkIds.end());
+        linkIds.erase(std::unique(linkIds.begin(), linkIds.end()), linkIds.end());
         Json::Value result(Json::arrayValue);
-        for (const auto& runtime : runtimesCopy) {
-            std::lock_guard<std::mutex> connLock(runtime->connMutex);
-            // 同步原子时间戳到 info（低频展示路径才做字符串格式化）
-            auto atomicTime = runtime->getLastActivityString();
-            if (!atomicTime.empty()) runtime->info.lastActivity = atomicTime;
-            result.append(runtime->info.toJson(runtime->fsm));
-        }
+        for (const auto linkId : linkIds) result.append(getStatus(linkId));
         return result;
     }
 
@@ -550,8 +558,7 @@ public:
      * @brief 重载链路
      */
     void reload(int linkId, const std::string& name, const std::string& mode,
-                const std::string& ip, uint16_t port, bool enabled,
-                const std::string& localBindIp = "") {
+                const std::string& ip, uint16_t port, bool enabled) {
         if (!enabled) {
             stop(linkId);
             return;
@@ -560,7 +567,7 @@ public:
         if (mode == Constants::LINK_MODE_TCP_SERVER) {
             startServer(linkId, name, ip, port);
         } else if (mode == Constants::LINK_MODE_TCP_CLIENT) {
-            startClient(linkId, name, ip, port, localBindIp);
+            startClient(linkId, name, ip, port);
         }
     }
 
@@ -588,8 +595,16 @@ public:
         {
             std::shared_lock lock(mutex_);
             auto it = runtimes_.find(linkId);
-            if (it == runtimes_.end()) return false;
-            runtime = it->second;
+            if (it != runtimes_.end()) {
+                runtime = it->second;
+            } else {
+                for (const auto& [key, candidate] : clientRuntimes_) {
+                    if (candidate->info.linkId != linkId) continue;
+                    if (runtime) return false; // 多目标链路必须显式指定 target_id
+                    runtime = candidate;
+                }
+                if (!runtime) return false;
+            }
         }
 
         std::lock_guard<std::mutex> connLock(runtime->connMutex);
@@ -615,6 +630,22 @@ public:
         }
 
         return false;
+    }
+
+    bool sendToTarget(int linkId, const std::string& targetId, const std::string& data) {
+        std::shared_ptr<LinkRuntime> runtime;
+        {
+            std::shared_lock lock(mutex_);
+            auto it = clientRuntimes_.find(clientRuntimeKey(linkId, targetId));
+            if (it == clientRuntimes_.end()) return false;
+            runtime = it->second;
+        }
+        std::lock_guard<std::mutex> connLock(runtime->connMutex);
+        if (!runtime->clientConn || !runtime->clientConn->connected()) return false;
+        runtime->clientConn->send(data);
+        totalBytesTx_.fetch_add(static_cast<int64_t>(data.size()), std::memory_order_relaxed);
+        totalPacketsTx_.fetch_add(1, std::memory_order_relaxed);
+        return true;
     }
 
     /**
@@ -719,27 +750,25 @@ public:
      * client 模式只有一个远端地址，因此按 linkId 即可定位。
      */
     void forceDisconnectClient(int linkId) {
-        std::shared_ptr<LinkRuntime> runtime;
-        std::string remoteAddr;
+        std::vector<std::shared_ptr<LinkRuntime>> runtimes;
         {
             std::shared_lock lock(mutex_);
-            auto it = runtimes_.find(linkId);
-            if (it == runtimes_.end()) return;
-            runtime = it->second;
-        }
-
-        {
-            std::lock_guard<std::mutex> connLock(runtime->connMutex);
-            if (runtime->clientConn) {
-                remoteAddr = runtime->clientConn->peerAddr().toIpPort();
-            } else if (!runtime->info.ip.empty() && runtime->info.port > 0) {
-                remoteAddr = runtime->info.ip + ":" + std::to_string(runtime->info.port);
+            for (const auto& [key, runtime] : clientRuntimes_) {
+                if (runtime->info.linkId == linkId) runtimes.push_back(runtime);
             }
         }
+        for (const auto& runtime : runtimes) notifyClientDisconnected(runtime);
+    }
 
-        if (!remoteAddr.empty() && connectionCallback_) {
-            connectionCallback_(linkId, remoteAddr, false);
+    void forceDisconnectTarget(int linkId, const std::string& targetId) {
+        std::shared_ptr<LinkRuntime> runtime;
+        {
+            std::shared_lock lock(mutex_);
+            auto it = clientRuntimes_.find(clientRuntimeKey(linkId, targetId));
+            if (it == clientRuntimes_.end()) return;
+            runtime = it->second;
         }
+        notifyClientDisconnected(runtime);
     }
 
     /**
@@ -801,6 +830,9 @@ public:
         if (it != runtimes_.end()) {
             return it->second->loop;
         }
+        for (const auto& [key, runtime] : clientRuntimes_) {
+            if (runtime->info.linkId == linkId) return runtime->loop;
+        }
         return nullptr;
     }
 
@@ -821,14 +853,97 @@ private:
         return drogon::app().getLoop();
     }
 
+    static std::string clientRuntimeKey(int linkId, const std::string& targetId) {
+        return std::to_string(linkId) + ":" + targetId;
+    }
+
+    void stopRuntime(const std::shared_ptr<LinkRuntime>& runtime) {
+        if (!runtime) return;
+        {
+            std::lock_guard<std::mutex> lock(runtime->connMutex);
+            runtime->fsm.onStop();
+        }
+        if (!runtime->loop) return;
+        const auto linkId = runtime->info.linkId;
+        const auto targetId = runtime->info.targetId;
+        runtime->loop->runInLoop([runtime, linkId, targetId]() {
+            if (runtime->server) {
+                runtime->server->stop();
+                LOG_INFO << "[Link " << linkId << "] TCP Server stopped";
+            }
+            if (runtime->client) {
+                runtime->client->disconnect();
+                LOG_INFO << "[Link " << linkId << "/Target " << targetId
+                         << "] TCP Client stopped";
+            }
+        });
+    }
+
+    Json::Value aggregateClientStatus(
+        int linkId, const std::vector<std::shared_ptr<LinkRuntime>>& runtimes) const {
+        Json::Value result(Json::objectValue);
+        result["link_id"] = linkId;
+        result["mode"] = Constants::LINK_MODE_TCP_CLIENT;
+        result["targets"] = Json::Value(Json::arrayValue);
+        result["clients"] = Json::Value(Json::arrayValue);
+
+        int connected = 0;
+        std::string lastActivity;
+        for (const auto& runtime : runtimes) {
+            std::lock_guard<std::mutex> lock(runtime->connMutex);
+            auto target = runtime->info.toJson(runtime->fsm);
+            const auto activity = runtime->getLastActivityString();
+            if (!activity.empty()) {
+                target["last_activity"] = activity;
+                if (activity > lastActivity) lastActivity = activity;
+            }
+            result["targets"].append(target);
+            if (runtime->fsm.state() == LinkState::Connected) {
+                ++connected;
+                if (runtime->clientConn) {
+                    result["clients"].append(runtime->clientConn->peerAddr().toIpPort());
+                }
+            }
+        }
+        result["client_count"] = connected;
+        result["last_activity"] = lastActivity;
+        if (runtimes.empty()) result["conn_status"] = "stopped";
+        else if (connected == static_cast<int>(runtimes.size())) result["conn_status"] = "connected";
+        else if (connected > 0) result["conn_status"] = "partial";
+        else result["conn_status"] = "connecting";
+        return result;
+    }
+
+    void notifyClientDisconnected(const std::shared_ptr<LinkRuntime>& runtime) {
+        std::string remoteAddr;
+        {
+            std::lock_guard<std::mutex> lock(runtime->connMutex);
+            if (runtime->clientConn) {
+                remoteAddr = runtime->clientConn->peerAddr().toIpPort();
+                runtime->clientConn->shutdown();
+            } else if (!runtime->info.ip.empty() && runtime->info.port > 0) {
+                remoteAddr = runtime->info.ip + ":" + std::to_string(runtime->info.port);
+            }
+        }
+        if (!remoteAddr.empty() && connectionCallback_) {
+            connectionCallback_(runtime->info.linkId, remoteAddr, false);
+        }
+    }
+
     /**
      * @brief 调度 TCP Client 断线重连（指数退避）
      *
      * 安全检查：runtime 已销毁、链路已被替换、已重连成功 → 均放弃重连
      */
-    void scheduleReconnect(int linkId, const std::weak_ptr<LinkRuntime>& runtimeWeak) {
+    void scheduleTargetReconnect(int linkId, const std::string& targetId,
+                                 const std::weak_ptr<LinkRuntime>& runtimeWeak) {
         auto rt = runtimeWeak.lock();
         if (!rt || !rt->loop) return;
+        bool expected = false;
+        if (!rt->reconnectScheduled.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel)) {
+            return;
+        }
 
         double delay;
         {
@@ -836,33 +951,33 @@ private:
             delay = rt->fsm.getReconnectDelay();
         }
 
-        rt->loop->runAfter(delay, [this, linkId, runtimeWeak]() {
+        rt->loop->runAfter(delay, [this, linkId, targetId, runtimeWeak]() {
           try {
             auto rt2 = runtimeWeak.lock();
             if (!rt2) return;
+            rt2->reconnectScheduled.store(false, std::memory_order_release);
 
             // 确认该 runtime 仍是当前链路的实例（未被 stop/reload 替换）
             {
                 std::shared_lock lock(mutex_);
-                auto it = runtimes_.find(linkId);
-                if (it == runtimes_.end() || it->second != rt2) return;
+                auto it = clientRuntimes_.find(clientRuntimeKey(linkId, targetId));
+                if (it == clientRuntimes_.end() || it->second != rt2) return;
             }
 
-            std::string name, ip, localBindIp;
+            std::string ip;
             uint16_t port;
             {
                 std::lock_guard<std::mutex> lock(rt2->connMutex);
                 if (rt2->fsm.state() == LinkState::Connected) return;
                 rt2->fsm.onReconnecting();
-                name = rt2->info.name;
                 ip = rt2->info.ip;
                 port = rt2->info.port;
-                localBindIp = rt2->localBindIp;
             }
 
-            LOG_INFO << "[Link " << linkId << "] Attempting reconnection (attempt "
+            LOG_INFO << "[Link " << linkId << "/Target " << targetId
+                     << "] Attempting reconnection (attempt "
                      << rt2->fsm.reconnectAttempts() << ") to " << ip << ":" << port;
-            startClient(linkId, name, ip, port, localBindIp);
+            if (rt2->client) rt2->client->connect();
           } catch (const std::exception& e) {
             LOG_ERROR << "[Link " << linkId << "] Reconnect exception: " << e.what();
           } catch (...) {
@@ -884,67 +999,10 @@ private:
         return trantor::Date::now().toDbString();
     }
 
-    static void bindClientSocket(int fd, int linkId, const std::string& localBindIp) {
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(0);
-        if (::inet_pton(AF_INET, localBindIp.c_str(), &addr.sin_addr) != 1) {
-            LOG_WARN << "[Link " << linkId << "] Invalid local bind IP: " << localBindIp;
-            return;
-        }
-
-        const auto result = ::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
-        if (result != 0) {
-#ifdef _WIN32
-            LOG_WARN << "[Link " << linkId << "] Failed to bind local IP " << localBindIp
-                     << ", error=" << WSAGetLastError();
-#else
-            LOG_WARN << "[Link " << linkId << "] Failed to bind local IP " << localBindIp
-                     << ", errno=" << errno;
-#endif
-        }
-    }
-
-#ifdef _WIN32
-    using NativeSocket = SOCKET;
-#else
-    using NativeSocket = int;
-#endif
-
-    static NativeSocket createSocket() {
-        return ::socket(AF_INET, SOCK_STREAM, 0);
-    }
-
-    static bool isInvalidSocket(NativeSocket fd) {
-#ifdef _WIN32
-        return fd == INVALID_SOCKET;
-#else
-        return fd < 0;
-#endif
-    }
-
-    static void closeSocket(NativeSocket fd) {
-        if (isInvalidSocket(fd)) {
-            return;
-        }
-#ifdef _WIN32
-        ::closesocket(fd);
-#else
-        ::close(fd);
-#endif
-    }
-
-    static std::string buildBindError(const std::string& ip) {
-#ifdef _WIN32
-        return "无法绑定本地IP " + ip + ", error=" + std::to_string(WSAGetLastError());
-#else
-        return "无法绑定本地IP " + ip + ", errno=" + std::to_string(errno);
-#endif
-    }
-
 private:
     mutable std::shared_mutex mutex_;
     std::map<int, std::shared_ptr<LinkRuntime>> runtimes_;
+    std::map<std::string, std::shared_ptr<LinkRuntime>> clientRuntimes_;
     DataCallback dataCallback_;
     DataCallbackWithClient dataCallbackWithClient_;
     ConnectionCallback connectionCallback_;

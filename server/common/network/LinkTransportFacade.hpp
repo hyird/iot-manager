@@ -21,6 +21,7 @@ public:
         std::string mode;
         std::string ip;
         uint16_t port = 0;
+        Json::Value targets{Json::arrayValue};
     };
 
     static LinkTransportFacade& instance() {
@@ -34,6 +35,7 @@ public:
                 const std::string& protocol,
                 const std::string& ip,
                 uint16_t port,
+                const Json::Value& targets,
                 bool enabled,
                 int agentId = 0,
                 const std::string& agentInterface = "",
@@ -57,6 +59,7 @@ public:
         route.mode = mode;
         route.ip = ip;
         route.port = port;
+        route.targets = targets;
 
         {
             std::unique_lock lock(mutex_);
@@ -71,7 +74,7 @@ public:
         if (mode == Constants::LINK_MODE_TCP_SERVER) {
             TcpLinkManager::instance().startServer(linkId, name, ip, port);
         } else if (mode == Constants::LINK_MODE_TCP_CLIENT) {
-            TcpLinkManager::instance().startClient(linkId, name, ip, port);
+            TcpLinkManager::instance().reloadClientTargets(linkId, name, targets, true);
         }
     }
 
@@ -93,9 +96,17 @@ public:
     }
 
     Json::Value getStatus(int linkId) const {
-        std::shared_lock lock(mutex_);
-        auto it = routes_.find(linkId);
-        if (it != routes_.end() && it->second.managedByAgent) {
+        Route route;
+        bool hasRoute = false;
+        {
+            std::shared_lock lock(mutex_);
+            auto it = routes_.find(linkId);
+            if (it != routes_.end()) {
+                route = it->second;
+                hasRoute = true;
+            }
+        }
+        if (hasRoute && route.managedByAgent) {
             // Agent 管理的链路返回占位状态
             Json::Value status(Json::objectValue);
             status["link_id"] = linkId;
@@ -104,7 +115,36 @@ public:
             status["clients"] = Json::Value(Json::arrayValue);
             return status;
         }
-        return TcpLinkManager::instance().getStatus(linkId);
+        auto status = TcpLinkManager::instance().getStatus(linkId);
+        if (!hasRoute || route.mode != Constants::LINK_MODE_TCP_CLIENT || !route.targets.isArray()) {
+            return status;
+        }
+
+        std::unordered_map<std::string, Json::Value> runtimeByTarget;
+        const auto& runtimeTargets = status["targets"];
+        if (runtimeTargets.isArray()) {
+            for (const auto& target : runtimeTargets) {
+                runtimeByTarget[target.get("target_id", "").asString()] = target;
+            }
+        }
+        Json::Value merged(Json::arrayValue);
+        for (const auto& configured : route.targets) {
+            auto target = configured;
+            const auto targetId = configured.get("id", "").asString();
+            auto it = runtimeByTarget.find(targetId);
+            if (it != runtimeByTarget.end()) {
+                target["conn_status"] = it->second.get("conn_status", "stopped");
+                target["error_msg"] = it->second.get("error_msg", "");
+                target["last_activity"] = it->second.get("last_activity", "");
+            } else {
+                target["conn_status"] = "stopped";
+                target["error_msg"] = "";
+                target["last_activity"] = "";
+            }
+            merged.append(target);
+        }
+        status["targets"] = merged;
+        return status;
     }
 
     bool sendData(int linkId, const std::string& data) const {
@@ -112,6 +152,17 @@ public:
             return false;  // Agent 设备使用 deviceId 路由，不经过 linkId
         }
         return TcpLinkManager::instance().sendData(linkId, data);
+    }
+
+    bool isTcpClient(int linkId) const {
+        std::shared_lock lock(mutex_);
+        auto it = routes_.find(linkId);
+        return it != routes_.end() && it->second.mode == Constants::LINK_MODE_TCP_CLIENT;
+    }
+
+    bool sendToTarget(int linkId, const std::string& targetId, const std::string& data) const {
+        if (isAgentManaged(linkId)) return false;
+        return TcpLinkManager::instance().sendToTarget(linkId, targetId, data);
     }
 
     bool sendDataExcluding(int linkId, const std::string& data, const std::set<std::string>& excludeAddrs) const {
@@ -147,6 +198,11 @@ public:
             return;
         }
         TcpLinkManager::instance().forceDisconnectClient(linkId);
+    }
+
+    void forceDisconnectTarget(int linkId, const std::string& targetId) const {
+        if (isAgentManaged(linkId)) return;
+        TcpLinkManager::instance().forceDisconnectTarget(linkId, targetId);
     }
 
     void disconnectServerClients(int linkId) const {

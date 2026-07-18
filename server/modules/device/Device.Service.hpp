@@ -751,6 +751,7 @@ public:
 
         device.require(Device::nameUnique)
               .require(Device::linkExists)
+              .require(Device::targetValid)
               .require(Device::agentExists)
               .require(Device::protocolConfigExists);
 
@@ -780,8 +781,9 @@ public:
         if (payload.isMember("device_code")) {
             device.require(Device::codeUnique);
         }
-        if (payload.isMember("link_id")) {
-            device.require(Device::linkExists);
+        if (payload.isMember("link_id") || payload.isMember("target_id")) {
+            device.require(Device::linkExists)
+                  .require(Device::targetValid);
         }
         if (payload.isMember("protocol_config_id")) {
             device.require(Device::protocolConfigExists);

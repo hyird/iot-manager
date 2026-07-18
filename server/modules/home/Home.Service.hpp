@@ -309,7 +309,7 @@ public:
         int totalConnections = 0;
         for (const auto& link : allStatus) {
             auto connStatus = link["conn_status"].asString();
-            if (connStatus == "listening" || connStatus == "connected") {
+            if (connStatus == "listening" || connStatus == "connected" || connStatus == "partial") {
                 activeLinks++;
             }
             totalConnections += link["client_count"].asInt();

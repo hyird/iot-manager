@@ -9,6 +9,8 @@
 #include "common/utils/TimestampHelper.hpp"
 #include "common/utils/Pagination.hpp"
 
+#include <unordered_set>
+
 /**
  * @brief 链路聚合根
  *
@@ -70,7 +72,7 @@ public:
 
         QueryBuilder qb;
         qb.notDeleted("l.deleted_at");
-        if (!page.keyword.empty()) qb.likeAny({"l.name", "l.ip"}, page.keyword);
+        if (!page.keyword.empty()) qb.likeAny({"l.name", "l.ip", "l.targets::text"}, page.keyword);
         if (!mode.empty()) qb.eq("l.mode", mode);
 
         // 计数
@@ -109,7 +111,7 @@ public:
         DatabaseService db;
         auto result = co_await db.execSqlCoro(
             R"(
-                SELECT l.id, l.name, l.mode, l.protocol, l.ip, l.port, l.usage,
+                SELECT l.id, l.name, l.mode, l.protocol, l.ip, l.port, l.targets, l.usage,
                        l.agent_id, l.agent_interface, l.agent_bind_ip,
                        l.agent_prefix_length, l.agent_gateway,
                        a.name as agent_name, a.code as agent_code, a.is_online as agent_online
@@ -135,6 +137,7 @@ public:
             item["protocol"] = FieldHelper::getString(row["protocol"], Constants::PROTOCOL_SL651);
             item["ip"] = FieldHelper::getString(row["ip"]);
             item["port"] = FieldHelper::getInt(row["port"]);
+            item["targets"] = parseJsonArrayField(row["targets"]);
             item["usage"] = usage;
             item["agent_id"] = FieldHelper::getInt(row["agent_id"]);
             item["agent_interface"] = FieldHelper::getString(row["agent_interface"]);
@@ -203,6 +206,11 @@ public:
      * @brief 约束：端点（mode + ip + port）唯一
      */
     static Task<void> endpointUnique(const Link& link) {
+        // TCP Client 的远端地址存放在 targets JSONB 中，由 targetsValid 校验。
+        if (link.mode_ == Constants::LINK_MODE_TCP_CLIENT) {
+            co_return;
+        }
+
         DatabaseService db;
         std::string sql = R"(
             SELECT 1
@@ -229,6 +237,78 @@ public:
         if (!result.empty()) {
             throw ConflictException("相同模式、IP和端口的链路已存在");
         }
+    }
+
+    /** TCP Client 目标配置结构与同链路唯一性校验。 */
+    static Task<void> targetsValid(const Link& link) {
+        if (link.mode_ != Constants::LINK_MODE_TCP_CLIENT) {
+            if (link.targets_.isArray() && !link.targets_.empty()) {
+                throw ValidationException("TCP Server 模式不能配置目标地址");
+            }
+            co_return;
+        }
+
+        if (!link.targets_.isArray() || link.targets_.empty()) {
+            throw ValidationException("TCP Client 模式至少需要配置一个目标地址");
+        }
+
+        std::unordered_set<std::string> ids;
+        std::unordered_set<std::string> endpoints;
+        for (const auto& target : link.targets_) {
+            if (!target.isObject()) {
+                throw ValidationException("目标地址格式错误");
+            }
+            const auto id = target.get("id", "").asString();
+            const auto name = target.get("name", "").asString();
+            const auto ip = target.get("ip", "").asString();
+            const int port = target.get("port", 0).asInt();
+            const auto status = target.get("status", Constants::USER_STATUS_ENABLED).asString();
+            if (id.empty() || name.empty()) {
+                throw ValidationException("目标名称和目标ID不能为空");
+            }
+            if (!isValidIpv4(ip)) {
+                throw ValidationException("目标IP格式错误: " + ip);
+            }
+            if (port <= 0 || port > 65535) {
+                throw ValidationException("目标端口范围必须为 1-65535");
+            }
+            if (status != Constants::USER_STATUS_ENABLED && status != Constants::USER_STATUS_DISABLED) {
+                throw ValidationException("目标状态只能为 enabled 或 disabled");
+            }
+            if (!ids.insert(id).second) {
+                throw ConflictException("目标ID重复: " + id);
+            }
+            const auto endpoint = ip + ":" + std::to_string(port);
+            if (!endpoints.insert(endpoint).second) {
+                throw ConflictException("同一链路下目标地址重复: " + endpoint);
+            }
+        }
+        co_return;
+    }
+
+    /** 更新 targets 时禁止移除仍被设备引用的目标。 */
+    static Task<void> assignedTargetsRetained(const Link& link) {
+        if (link.id() <= 0 || link.mode_ != Constants::LINK_MODE_TCP_CLIENT) co_return;
+
+        std::unordered_set<std::string> targetIds;
+        for (const auto& target : link.targets_) {
+            targetIds.insert(target.get("id", "").asString());
+        }
+
+        DatabaseService db;
+        auto rows = co_await db.execSqlCoro(R"(
+            SELECT DISTINCT protocol_params->>'target_id' AS target_id
+            FROM device
+            WHERE link_id = ? AND deleted_at IS NULL
+              AND COALESCE(protocol_params->>'target_id', '') != ''
+        )", {std::to_string(link.id())});
+        for (const auto& row : rows) {
+            const auto targetId = FieldHelper::getString(row["target_id"], "");
+            if (!targetId.empty() && !targetIds.contains(targetId)) {
+                throw ConflictException("目标仍有关联设备，无法删除: " + targetId);
+            }
+        }
+        co_return;
     }
 
     static Task<void> agentExists(const Link& link) {
@@ -373,6 +453,11 @@ public:
             markDirty();
             needReload_ = true;
         }
+        if (data.isMember("targets")) {
+            targets_ = normalizeTargets(data["targets"]);
+            markDirty();
+            needReload_ = true;
+        }
         if (data.isMember("status")) {
             status_ = data["status"].asString();
             markDirty();
@@ -427,6 +512,7 @@ public:
     const std::string& protocol() const { return protocol_; }
     const std::string& ip() const { return ip_; }
     int port() const { return port_; }
+    const Json::Value& targets() const { return targets_; }
     const std::string& usage() const { return usage_; }
     const std::string& status() const { return status_; }
     int createdBy() const { return createdBy_; }
@@ -454,6 +540,7 @@ public:
         connStatus_ = connStatus.get("conn_status", "stopped").asString();
         clientCount_ = connStatus.get("client_count", 0).asInt();
         clients_ = connStatus.get("clients", Json::arrayValue);
+        runtimeTargets_ = connStatus.get("targets", Json::arrayValue);
         runtimeError_ = connStatus.get("error_msg", "").asString();
         agentOnline_ = connStatus.get("agent_online", agentOnline_).asBool();
     }
@@ -469,6 +556,20 @@ public:
         json["protocol"] = protocol_;
         json["ip"] = ip_;
         json["port"] = port_;
+        Json::Value targets = targets_;
+        if (targets.isArray() && runtimeTargets_.isArray()) {
+            for (auto& target : targets) {
+                const auto targetId = target.get("id", "").asString();
+                for (const auto& runtimeTarget : runtimeTargets_) {
+                    if (runtimeTarget.get("id", "").asString() != targetId) continue;
+                    target["conn_status"] = runtimeTarget.get("conn_status", "stopped");
+                    target["error_msg"] = runtimeTarget.get("error_msg", "");
+                    target["last_activity"] = runtimeTarget.get("last_activity", "");
+                    break;
+                }
+            }
+        }
+        json["targets"] = std::move(targets);
         json["usage"] = usage_;
         json["is_reserved"] = isReserved();
         json["status"] = status_;
@@ -515,6 +616,7 @@ private:
     std::string protocol_ = Constants::PROTOCOL_SL651;
     std::string ip_;
     int port_ = 0;
+    Json::Value targets_{Json::arrayValue};
     std::string usage_ = Constants::LINK_USAGE_DEVICE;
     std::string status_ = Constants::USER_STATUS_ENABLED;
     int createdBy_ = 0;
@@ -533,6 +635,7 @@ private:
     std::string connStatus_ = "stopped";
     int clientCount_ = 0;
     Json::Value clients_{Json::arrayValue};
+    Json::Value runtimeTargets_{Json::arrayValue};
     std::string runtimeError_;
 
     // 更新标记
@@ -544,6 +647,7 @@ private:
         protocol_ = data.get("protocol", Constants::PROTOCOL_SL651).asString();
         ip_ = data.get("ip", "").asString();
         port_ = data.get("port", 0).asInt();
+        targets_ = normalizeTargets(data.get("targets", Json::Value(Json::arrayValue)));
         usage_ = data.get("usage", Constants::LINK_USAGE_DEVICE).asString();
         status_ = data.get("status", Constants::USER_STATUS_ENABLED).asString();
         createdBy_ = data.get("created_by", 0).asInt();
@@ -584,6 +688,7 @@ private:
         protocol_ = FieldHelper::getString(row["protocol"], Constants::PROTOCOL_SL651);
         ip_ = FieldHelper::getString(row["ip"]);
         port_ = FieldHelper::getInt(row["port"]);
+        targets_ = parseJsonArrayField(row["targets"]);
         usage_ = FieldHelper::getString(row["usage"], Constants::LINK_USAGE_DEVICE);
         status_ = FieldHelper::getString(row["status"], Constants::USER_STATUS_ENABLED);
         createdBy_ = row["created_by"].isNull() ? 0 : FieldHelper::getInt(row["created_by"]);
@@ -607,16 +712,17 @@ private:
     Task<void> persistCreate(TransactionGuard& tx) {
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO link (
-                name, mode, protocol, ip, port, usage, status,
+                name, mode, protocol, ip, port, targets, usage, status,
                 created_by, agent_id, agent_interface, agent_bind_ip, agent_prefix_length, agent_gateway, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, '0')::INT, NULLIF(?, '0')::INT, ?, ?, NULLIF(?, '0')::INT, ?, ?) RETURNING id
+            VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, NULLIF(?, '0')::INT, NULLIF(?, '0')::INT, ?, ?, NULLIF(?, '0')::INT, ?, ?) RETURNING id
         )", {
             name_,
             mode_,
             protocol_,
             ip_,
             std::to_string(port_),
+            JsonHelper::serialize(targets_),
             usage_,
             status_,
             std::to_string(createdBy_),
@@ -639,6 +745,7 @@ private:
                 protocol_,
                 ip_,
                 port_,
+                targets_,
                 agentId_,
                 agentInterface_,
                 agentBindIp_,
@@ -651,7 +758,7 @@ private:
     Task<void> persistUpdate(TransactionGuard& tx) {
         co_await tx.execSqlCoro(R"(
             UPDATE link
-            SET name = ?, mode = ?, protocol = ?, ip = ?, port = ?, usage = ?, status = ?,
+            SET name = ?, mode = ?, protocol = ?, ip = ?, port = ?, targets = ?::jsonb, usage = ?, status = ?,
                 agent_id = NULLIF(?, '0')::INT, agent_interface = ?, agent_bind_ip = ?,
                 agent_prefix_length = NULLIF(?, '0')::INT, agent_gateway = ?, updated_at = ?
             WHERE id = ?
@@ -661,6 +768,7 @@ private:
             protocol_,
             ip_,
             std::to_string(port_),
+            JsonHelper::serialize(targets_),
             usage_,
             status_,
             std::to_string(agentId_),
@@ -680,6 +788,7 @@ private:
             protocol_,
             ip_,
             port_,
+            targets_,
             isEnabled(),
             needReload_,
             agentId_,
@@ -711,6 +820,43 @@ private:
         } catch (...) {
             return Json::Value(Json::objectValue);
         }
+    }
+
+    static Json::Value parseJsonArrayField(const drogon::orm::Field& field) {
+        if (field.isNull()) {
+            return Json::Value(Json::arrayValue);
+        }
+        try {
+            auto parsed = JsonHelper::parse(field.as<std::string>());
+            return parsed.isArray() ? parsed : Json::Value(Json::arrayValue);
+        } catch (...) {
+            return Json::Value(Json::arrayValue);
+        }
+    }
+
+    static Json::Value normalizeTargets(const Json::Value& input) {
+        Json::Value normalized(Json::arrayValue);
+        if (!input.isArray()) {
+            return normalized;
+        }
+        for (const auto& source : input) {
+            if (!source.isObject()) {
+                normalized.append(source);
+                continue;
+            }
+            Json::Value target(Json::objectValue);
+            auto id = source.get("id", "").asString();
+            if (id.empty()) {
+                id = drogon::utils::getUuid();
+            }
+            target["id"] = id;
+            target["name"] = source.get("name", "").asString();
+            target["ip"] = source.get("ip", "").asString();
+            target["port"] = source.get("port", 0).asInt();
+            target["status"] = source.get("status", Constants::USER_STATUS_ENABLED).asString();
+            normalized.append(std::move(target));
+        }
+        return normalized;
     }
 
     static std::optional<Json::Value> findAgentInterfaceByName(const Json::Value& interfaces,

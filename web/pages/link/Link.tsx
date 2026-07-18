@@ -27,6 +27,7 @@ const connStatusConfig: Record<string, { label: string; color: string }> = {
   stopped: { label: "已停止", color: "default" },
   listening: { label: "监听中", color: "processing" },
   connected: { label: "已连接", color: "success" },
+  partial: { label: "部分连接", color: "warning" },
   connecting: { label: "连接中", color: "warning" },
   error: { label: "错误", color: "error" },
 };
@@ -40,8 +41,17 @@ interface LinkFormValues {
   protocol: Link.Protocol;
   ip: string;
   port: number;
+  targets: Link.Target[];
   status: Link.Status;
 }
+
+const createTarget = (): Link.Target => ({
+  id: `target-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  name: "目标1",
+  ip: "",
+  port: 502,
+  status: "enabled",
+});
 
 const LinkPage = () => {
   const [keyword, setKeyword] = useState("");
@@ -83,18 +93,17 @@ const LinkPage = () => {
       mode: "TCP Client",
       protocol: "SL651",
       ip: "",
+      port: 0,
+      targets: [createTarget()],
     });
     setModalVisible(true);
   };
 
   const handleModeChange = (mode: Link.Mode) => {
     if (mode === "TCP Server") {
-      form.setFieldValue("ip", "0.0.0.0");
+      form.setFieldsValue({ ip: "0.0.0.0", targets: [] });
     } else {
-      const currentIp = form.getFieldValue("ip");
-      if (currentIp === "0.0.0.0") {
-        form.setFieldValue("ip", "");
-      }
+      form.setFieldsValue({ ip: "", port: 0, targets: [createTarget()] });
     }
   };
 
@@ -107,6 +116,7 @@ const LinkPage = () => {
       protocol: record.protocol,
       ip: record.mode === "TCP Server" ? "0.0.0.0" : record.ip,
       port: record.port,
+      targets: record.targets || [],
       status: record.status,
     });
     setModalVisible(true);
@@ -128,8 +138,9 @@ const LinkPage = () => {
       name: values.name,
       mode: values.mode,
       protocol: values.protocol,
-      ip: values.ip,
-      port: values.port,
+      ip: values.mode === "TCP Server" ? values.ip : "",
+      port: values.mode === "TCP Server" ? values.port : 0,
+      targets: values.mode === "TCP Client" ? values.targets : [],
       status: values.status,
     };
 
@@ -160,8 +171,24 @@ const LinkPage = () => {
     { title: "链路名称", dataIndex: "name" },
     { title: "模式", dataIndex: "mode" },
     { title: "协议", dataIndex: "protocol" },
-    { title: "IP地址", dataIndex: "ip" },
-    { title: "端口", dataIndex: "port" },
+    {
+      title: "监听 / 目标地址",
+      key: "endpoint",
+      render: (_, record) =>
+        record.mode === "TCP Server" ? (
+          `${record.ip}:${record.port}`
+        ) : (
+          <Tooltip
+            title={(record.targets || []).map((target) => (
+              <div key={target.id}>
+                {target.name}: {target.ip}:{target.port}
+              </div>
+            ))}
+          >
+            <Tag color="blue">{record.targets?.length || 0} 个目标</Tag>
+          </Tooltip>
+        ),
+    },
     {
       title: "启用",
       dataIndex: "status",
@@ -203,6 +230,23 @@ const LinkPage = () => {
               ) : (
                 clientTag
               )}
+            </Space>
+          );
+        }
+
+        if (record.mode === "TCP Client") {
+          const enabledTargets = (record.targets || []).filter(
+            (target) => target.status === "enabled"
+          );
+          const connectedTargets = enabledTargets.filter(
+            (target) => target.conn_status === "connected"
+          ).length;
+          return (
+            <Space size={4}>
+              <Tag color={config.color}>{config.label}</Tag>
+              <Tag color="blue">
+                {connectedTargets}/{enabledTargets.length} 目标
+              </Tag>
             </Space>
           );
         }
@@ -300,7 +344,7 @@ const LinkPage = () => {
           if (!open) form.resetFields();
         }}
         destroyOnHidden
-        width={480}
+        width={760}
       >
         <Form<LinkFormValues> form={form} layout="vertical" onFinish={onFinish}>
           <Form.Item name="id" hidden>
@@ -330,10 +374,7 @@ const LinkPage = () => {
             </Select>
           </Form.Item>
 
-          <Form.Item
-            label="协议"
-            extra={editing ? "链路创建后协议不可修改" : undefined}
-          >
+          <Form.Item label="协议" extra={editing ? "链路创建后协议不可修改" : undefined}>
             <Form.Item noStyle dependencies={["mode"]}>
               {({ getFieldValue }) => {
                 const mode = getFieldValue("mode") as Link.Mode | undefined;
@@ -356,45 +397,110 @@ const LinkPage = () => {
             </Form.Item>
           </Form.Item>
 
-          <Form.Item noStyle dependencies={["mode"]}>
-            {({ getFieldValue }) => {
-              const isServer = getFieldValue("mode") === "TCP Server";
-              const ipLabel = isServer ? "监听IP" : "设备IP";
-              const ipPlaceholder = isServer ? "0.0.0.0" : "如: 192.168.1.100";
-              return (
-                <Form.Item
-                  label={ipLabel}
-                  name="ip"
+          <Form.Item noStyle shouldUpdate={(prev, next) => prev.mode !== next.mode}>
+            {({ getFieldValue }) =>
+              getFieldValue("mode") === "TCP Server" ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <Form.Item
+                    label="监听IP"
+                    name="ip"
+                    rules={[
+                      { required: true, message: "请输入监听IP" },
+                      {
+                        pattern: /^(\d{1,3}\.){3}\d{1,3}$/,
+                        message: "请输入正确的IPv4地址格式",
+                      },
+                    ]}
+                  >
+                    <Input placeholder="0.0.0.0" disabled />
+                  </Form.Item>
+                  <Form.Item
+                    label="监听端口"
+                    name="port"
+                    rules={[
+                      { required: true, message: "请输入监听端口" },
+                      { type: "number", min: 1, max: 65535, message: "端口范围 1-65535" },
+                    ]}
+                  >
+                    <InputNumber placeholder="如: 8080" className="!w-full" min={1} max={65535} />
+                  </Form.Item>
+                </div>
+              ) : (
+                <Form.List
+                  name="targets"
                   rules={[
-                    { required: true, message: `请输入${ipLabel}` },
                     {
-                      pattern: /^(\d{1,3}\.){3}\d{1,3}$/,
-                      message: "请输入正确的IPv4地址格式",
+                      validator: async (_, targets) => {
+                        if (!targets?.length) throw new Error("至少配置一个目标地址");
+                      },
                     },
                   ]}
                 >
-                  <Input placeholder={ipPlaceholder} disabled={isServer} />
-                </Form.Item>
-              );
-            }}
-          </Form.Item>
-
-          <Form.Item noStyle dependencies={["mode"]}>
-            {({ getFieldValue }) => {
-              const isServer = getFieldValue("mode") === "TCP Server";
-              return (
-                <Form.Item
-                  label={isServer ? "监听端口" : "设备端口"}
-                  name="port"
-                  rules={[
-                    { required: true, message: "请输入端口" },
-                    { type: "number", min: 1, max: 65535, message: "端口范围 1-65535" },
-                  ]}
-                >
-                  <InputNumber placeholder="如: 8080" className="!w-full" min={1} max={65535} />
-                </Form.Item>
-              );
-            }}
+                  {(fields, { add, remove }, { errors }) => (
+                    <div>
+                      <div className="mb-2 flex items-center justify-between">
+                        <span>目标地址</span>
+                        <Button
+                          type="dashed"
+                          onClick={() =>
+                            add({ ...createTarget(), name: `目标${fields.length + 1}` })
+                          }
+                        >
+                          添加目标
+                        </Button>
+                      </div>
+                      {fields.map((field) => (
+                        <div
+                          key={field.key}
+                          className="mb-3 grid grid-cols-[1fr_1.25fr_110px_100px_auto] items-start gap-2 rounded-lg border border-gray-200 p-3"
+                        >
+                          <Form.Item name={[field.name, "id"]} hidden>
+                            <Input />
+                          </Form.Item>
+                          <Form.Item
+                            name={[field.name, "name"]}
+                            rules={[{ required: true, message: "请输入名称" }]}
+                          >
+                            <Input placeholder="目标名称" />
+                          </Form.Item>
+                          <Form.Item
+                            name={[field.name, "ip"]}
+                            rules={[
+                              { required: true, message: "请输入目标IP" },
+                              {
+                                pattern: /^(\d{1,3}\.){3}\d{1,3}$/,
+                                message: "IPv4格式错误",
+                              },
+                            ]}
+                          >
+                            <Input placeholder="192.168.1.100" />
+                          </Form.Item>
+                          <Form.Item
+                            name={[field.name, "port"]}
+                            rules={[
+                              { required: true, message: "请输入端口" },
+                              { type: "number", min: 1, max: 65535, message: "1-65535" },
+                            ]}
+                          >
+                            <InputNumber className="!w-full" min={1} max={65535} />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "status"]}>
+                            <Select>
+                              <Select.Option value="enabled">启用</Select.Option>
+                              <Select.Option value="disabled">禁用</Select.Option>
+                            </Select>
+                          </Form.Item>
+                          <Button danger type="text" onClick={() => remove(field.name)}>
+                            删除
+                          </Button>
+                        </div>
+                      ))}
+                      <Form.ErrorList errors={errors} />
+                    </div>
+                  )}
+                </Form.List>
+              )
+            }
           </Form.Item>
 
           <Form.Item label="状态" name="status" rules={[{ required: true }]}>

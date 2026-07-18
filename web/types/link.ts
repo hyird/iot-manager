@@ -17,7 +17,19 @@ export type LinkMode = "TCP Server" | "TCP Client";
 export type LinkProtocol = "SL651" | "Modbus" | "Modbus TCP" | "Modbus RTU" | "S7";
 
 /** 连接状态 */
-export type ConnStatus = "stopped" | "listening" | "connected" | "connecting" | "error";
+export type ConnStatus = "stopped" | "listening" | "connected" | "partial" | "connecting" | "error";
+
+/** TCP Client 远端目标（持久化于 link.targets JSONB） */
+export interface LinkTarget {
+  id: string;
+  name: string;
+  ip: string;
+  port: number;
+  status: LinkStatus;
+  conn_status?: ConnStatus;
+  error_msg?: string;
+  last_activity?: string;
+}
 
 /** 链路列表项 */
 export interface LinkItem {
@@ -27,6 +39,7 @@ export interface LinkItem {
   protocol: LinkProtocol;
   ip: string;
   port: number;
+  targets: LinkTarget[];
   status: LinkStatus;
   /** 连接状态 */
   conn_status?: ConnStatus;
@@ -46,6 +59,7 @@ export interface LinkOption {
   protocol: LinkProtocol;
   ip: string;
   port: number;
+  targets: LinkTarget[];
 }
 
 /** 链路查询参数 */
@@ -60,6 +74,7 @@ export interface CreateLinkDto {
   protocol: LinkProtocol;
   ip: string;
   port: number;
+  targets?: LinkTarget[];
   status?: LinkStatus;
 }
 
@@ -70,6 +85,7 @@ export interface UpdateLinkDto {
   protocol?: LinkProtocol;
   ip?: string;
   port?: number;
+  targets?: LinkTarget[];
   status?: LinkStatus;
 }
 
@@ -84,6 +100,7 @@ export namespace Link {
   export type Status = LinkStatus;
   export type Mode = LinkMode;
   export type Protocol = LinkProtocol;
+  export type Target = LinkTarget;
   export type Item = LinkItem;
   export type Option = LinkOption;
   export type Query = LinkQuery;

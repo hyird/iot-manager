@@ -52,6 +52,7 @@ public:
         std::string createdAt;
         std::string linkName;
         std::string linkMode;
+        std::string targetId;
         std::string linkIp;
         int linkPort = 0;
         std::string protocolName;
@@ -467,7 +468,8 @@ private:
             SELECT d.id, d.name, d.created_by, d.link_id, d.protocol_config_id, d.group_id,
                    d.status, d.protocol_params, d.remark, d.created_at,
                    p.name as protocol_name, p.protocol as protocol_type, p.config as protocol_config,
-                   l.name as link_name, l.mode as link_mode, l.ip as link_ip, l.port as link_port
+                   l.name as link_name, l.mode as link_mode, l.ip as link_ip, l.port as link_port,
+                   l.targets as link_targets
             FROM device d
             LEFT JOIN protocol_config p ON d.protocol_config_id = p.id AND p.deleted_at IS NULL
             LEFT JOIN link l ON d.link_id = l.id AND l.deleted_at IS NULL
@@ -545,6 +547,7 @@ private:
                 device.slaveId = static_cast<uint8_t>(pp.get("slave_id", 1).asInt());
                 device.modbusMode = pp.get("modbus_mode", "").asString();
                 device.agentId = pp.get("agent_id", 0).asInt();
+                device.targetId = pp.get("target_id", "").asString();
 
                 if (pp.isMember("heartbeat") && pp["heartbeat"].isObject()) {
                     const auto& hb = pp["heartbeat"];
@@ -568,6 +571,21 @@ private:
                             device.registrationContent
                         );
                     }
+                }
+            }
+        }
+
+        if (device.linkMode == Constants::LINK_MODE_TCP_CLIENT && !device.targetId.empty()) {
+            const auto targetsStr = FieldHelper::getString(row["link_targets"], "[]");
+            Json::Value targets;
+            std::string errs;
+            std::istringstream targetsIss(targetsStr);
+            if (Json::parseFromStream(readerBuilder, targetsIss, &targets, &errs) && targets.isArray()) {
+                for (const auto& target : targets) {
+                    if (target.get("id", "").asString() != device.targetId) continue;
+                    device.linkIp = target.get("ip", "").asString();
+                    device.linkPort = target.get("port", 0).asInt();
+                    break;
                 }
             }
         }

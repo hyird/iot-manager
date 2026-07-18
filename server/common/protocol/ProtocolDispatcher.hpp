@@ -18,6 +18,7 @@
 #include "common/utils/DrogonLoopSelector.hpp"
 #include "modules/device/domain/CommandRepository.hpp"
 #include "modules/device/domain/Events.hpp"
+#include "modules/link/domain/Events.hpp"
 #include "modules/protocol/domain/Events.hpp"
 
 #include <atomic>
@@ -451,6 +452,21 @@ private:
                 0,
                 e.protocol,
                 e.deviceCode,
+                false
+            });
+            co_return;
+        });
+
+        bus.subscribe<LinkUpdated>([this](const LinkUpdated& e) -> Task<void> {
+            if (!e.needReload) co_return;
+            LOG_INFO << "[ProtocolDispatcher] LinkUpdated event, reloading link-bound adapters: linkId="
+                     << e.aggregateId;
+            dispatchDeviceLifecycleEvent({
+                DeviceLifecycleAction::Updated,
+                0,
+                e.aggregateId,
+                "",
+                "",
                 false
             });
             co_return;

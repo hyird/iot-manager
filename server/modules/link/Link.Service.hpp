@@ -60,6 +60,7 @@ public:
         link.require(Link::notReserved)
             .require(Link::nameUnique)
             .require(Link::endpointUnique)
+            .require(Link::targetsValid)
             .require(Link::agentExists)
             .require(Link::agentBindingValid);
 
@@ -83,6 +84,10 @@ public:
             data.isMember("agent_id") ||
             data.isMember("agent_bind_ip")) {
             link.require(Link::endpointUnique);
+        }
+        if (data.isMember("targets")) {
+            link.require(Link::targetsValid)
+                .require(Link::assignedTargetsRetained);
         }
         if (data.isMember("agent_id")) {
             link.require(Link::agentExists)
@@ -126,6 +131,7 @@ public:
                     link.protocol(),
                     link.ip(),
                     static_cast<uint16_t>(link.port()),
+                    link.targets(),
                     true,
                     link.agentId(),
                     link.agentInterface(),
