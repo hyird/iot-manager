@@ -271,16 +271,29 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ env.VCPKG_BINARY_CACHE_DIR }}
-          key: vcpkg-binary-windows-x64-static-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-binary-windows-x64-mingw-static-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
-            vcpkg-binary-windows-x64-static-
+            vcpkg-binary-windows-x64-mingw-static-
 
       - name: Restore vcpkg cache
         id: vcpkg-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.VCPKG_INSTALLED_DIR }}
-          key: vcpkg-installed-windows-x64-static-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-installed-windows-x64-mingw-static-${{ hashFiles('vcpkg.json') }}
+
+      - name: Setup MinGW UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ninja
+
+      - name: Add MinGW to PATH
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH 'C:\msys64\ucrt64\bin'
 
       - name: Setup vcpkg
         shell: pwsh
@@ -301,10 +314,13 @@ jobs:
 
       - name: Configure CMake
         run: >
-          cmake -B build
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=gcc
+          -DCMAKE_CXX_COMPILER=g++
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
-          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DVCPKG_TARGET_TRIPLET=x64-mingw-static
           -DBUILD_FRONTEND=OFF
           -DBUILD_L2CONFIG=ON
 
@@ -313,7 +329,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.VCPKG_INSTALLED_DIR }}
-          key: vcpkg-installed-windows-x64-static-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-installed-windows-x64-mingw-static-${{ hashFiles('vcpkg.json') }}
 
       - name: Build l2config
         run: cmake --build build --config Release --target l2config --parallel

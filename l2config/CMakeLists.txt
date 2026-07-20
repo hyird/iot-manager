@@ -27,7 +27,7 @@ find_package(imgui CONFIG REQUIRED)
 file(GLOB_RECURSE L2CONFIG_HEADERS "*.hpp")
 file(GLOB_RECURSE L2CONFIG_COMMON "${CMAKE_SOURCE_DIR}/server/common/l2config/*.hpp")
 
-add_executable(l2config WIN32
+add_executable(l2config
     main.cpp
     ${L2CONFIG_HEADERS}
     ${L2CONFIG_COMMON}
@@ -67,12 +67,6 @@ target_link_libraries(l2config PRIVATE
     d3d11 dxgi d3dcompiler
 )
 
-if(MSVC)
-    target_compile_options(l2config PRIVATE /W4 /EHsc /wd4068 /wd4996 /wd4244 /wd4267)
-endif()
-
-# WIN32 子系统需要 WinMain 入口点，但我们用 main()，需要设置链接选项
 set_target_properties(l2config PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/$<LOWER_CASE:$<CONFIG>>"
-    LINK_FLAGS "/ENTRY:mainCRTStartup"
 )
