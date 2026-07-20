@@ -151,6 +151,19 @@ inline void validateModbusRegister(const Json::Value& reg) {
 
     const std::string regName = reg.get("name", "未命名").asString();
 
+    if (reg.isMember("byteOrder") && !reg["byteOrder"].isNull()) {
+        if (!reg["byteOrder"].isString()) {
+            throw ValidationException("寄存器「" + regName + "」的字节序必须为字符串");
+        }
+        const std::string byteOrder = reg["byteOrder"].asString();
+        if (byteOrder != "BIG_ENDIAN"
+            && byteOrder != "LITTLE_ENDIAN"
+            && byteOrder != "BIG_ENDIAN_BYTE_SWAP"
+            && byteOrder != "LITTLE_ENDIAN_BYTE_SWAP") {
+            throw ValidationException("寄存器「" + regName + "」的字节序配置无效");
+        }
+    }
+
     const int address = ValidatorHelper::optionalIntRangeField(
         reg,
         "address",

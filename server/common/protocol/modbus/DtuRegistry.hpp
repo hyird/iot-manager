@@ -173,6 +173,10 @@ inline ModbusDeviceDef buildDeviceDef(const DeviceCache::CachedDevice& device, c
             item.registerType = parseRegisterType(reg.get("registerType", "HOLDING_REGISTER").asString());
             item.address = static_cast<uint16_t>(reg.get("address", 0).asUInt());
             item.dataType = parseDataType(reg.get("dataType", "UINT16").asString());
+            if (reg.isMember("byteOrder") && reg["byteOrder"].isString()
+                && !reg["byteOrder"].asString().empty()) {
+                item.byteOrder = parseByteOrder(reg["byteOrder"].asString());
+            }
             item.quantity = static_cast<uint16_t>(reg.get("quantity", 1).asUInt());
             item.unit = reg.get("unit", "").asString();
             item.scale = reg.get("scale", 1.0).asDouble();

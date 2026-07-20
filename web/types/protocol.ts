@@ -158,6 +158,8 @@ export interface ModbusRegister {
   address: number;
   /** 数据类型 */
   dataType: ModbusDataType;
+  /** 字节序；未配置时继承设备配置 */
+  byteOrder?: ModbusByteOrder;
   /** 寄存器数量（根据数据类型自动计算） */
   quantity: number;
   /** 单位 */

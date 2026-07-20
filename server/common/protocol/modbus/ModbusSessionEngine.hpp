@@ -661,7 +661,8 @@ inline std::vector<ModbusJob> ModbusSessionEngine::buildWriteJobs(
             request.quantity = 1;
             request.data = {static_cast<uint8_t>(value != 0.0 ? 0xFF : 0x00), 0x00};
         } else {
-            request.data = ModbusUtils::encodeValue(value, reg.dataType, device.byteOrder);
+            request.data = ModbusUtils::encodeValue(
+                value, reg.dataType, reg.byteOrder.value_or(device.byteOrder));
             request.quantity = dataTypeToQuantity(reg.dataType);
             request.functionCode = (request.quantity == 1)
                 ? FuncCodes::WRITE_SINGLE_REGISTER
@@ -718,7 +719,9 @@ inline std::map<std::string, Json::Value> ModbusSessionEngine::extractRegisterVa
             size_t byteSize = dataTypeToByteSize(reg.dataType);
             if (byteOffset + byteSize <= responseData.size()) {
                 double value = ModbusUtils::extractValue(
-                    responseData.data() + byteOffset, reg.dataType, device.byteOrder);
+                    responseData.data() + byteOffset,
+                    reg.dataType,
+                    reg.byteOrder.value_or(device.byteOrder));
                 if (std::isfinite(reg.scale) && reg.scale > 0.0) {
                     value *= reg.scale;
                 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 namespace modbus {
 
 // ==================== 枚举类型 ====================
@@ -92,6 +94,7 @@ struct RegisterDef {
     RegisterType registerType;
     uint16_t address;
     DataType dataType;
+    std::optional<ByteOrder> byteOrder;  // 未配置时继承设备字节序
     uint16_t quantity;     // 占用的寄存器数
     std::string unit;
     double scale = 1.0;    // 缩放系数：入库值 = 原始值 * scale

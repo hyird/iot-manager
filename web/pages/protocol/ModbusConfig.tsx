@@ -94,9 +94,7 @@ const formatScaleValue = (value: number | string | undefined | null) => {
     .replace(/\.$/, "");
 };
 
-const normalizePacketConfig = (
-  packet?: Modbus.PacketConfig
-): Required<Modbus.PacketConfig> => {
+const normalizePacketConfig = (packet?: Modbus.PacketConfig): Required<Modbus.PacketConfig> => {
   const mergeGapRaw = Number(packet?.mergeGap);
   const maxQuantityRaw = Number(packet?.maxQuantity);
 
@@ -369,6 +367,7 @@ const ModbusConfigPage = () => {
     const meta = REGISTER_TYPE_META[register.registerType];
     const typeLabel = RegisterTypeOptions.find((opt) => opt.value === register.registerType)?.label;
     const dataTypeLabel = DataTypeOptions.find((opt) => opt.value === register.dataType)?.label;
+    const byteOrderLabel = ByteOrderOptions.find((opt) => opt.value === register.byteOrder)?.label;
     const isWritableType =
       register.registerType === "COIL" || register.registerType === "HOLDING_REGISTER";
     const addressLabel = `${meta.prefix}${register.address}`;
@@ -411,6 +410,14 @@ const ModbusConfigPage = () => {
           <Tag color={meta.color}>{typeLabel || meta.label}</Tag>
           <Tag>{addressLabel}</Tag>
           <Tag color="geekblue">{dataTypeLabel || register.dataType}</Tag>
+          {register.registerType === "HOLDING_REGISTER" ||
+          register.registerType === "INPUT_REGISTER" ? (
+            byteOrderLabel ? (
+              <Tag color="purple">字节序 {byteOrderLabel}</Tag>
+            ) : (
+              <Tag>字节序 继承设备</Tag>
+            )
+          ) : null}
           {isWritableType ? (
             register.writable ? (
               <Tag color="orange">读写</Tag>
@@ -564,7 +571,10 @@ const ModbusConfigPage = () => {
                   </Tag>
                   <Tag>
                     单包≤
-                    {normalizePacketConfig((activeType.config as Modbus.Config)?.packet).maxQuantity}
+                    {
+                      normalizePacketConfig((activeType.config as Modbus.Config)?.packet)
+                        .maxQuantity
+                    }
                   </Tag>
                   <Tag color="blue">{registers.length} 个寄存器</Tag>
                   <Tag color="geekblue">{registerGroups.length} 个分组</Tag>
@@ -989,6 +999,10 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
         registerType: values.registerType,
         address: values.address,
         dataType: values.dataType,
+        byteOrder:
+          values.registerType === "HOLDING_REGISTER" || values.registerType === "INPUT_REGISTER"
+            ? values.byteOrder || undefined
+            : undefined,
         quantity: actualQuantity,
         writable,
         unit: values.unit,
@@ -1073,6 +1087,7 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
                       decimals: undefined,
                       writable: false,
                       scale: 1,
+                      byteOrder: undefined,
                     });
                   } else if (form.getFieldValue("dataType") === "BOOL") {
                     form.setFieldsValue({
@@ -1122,6 +1137,16 @@ const RegisterModal = forwardRef<RegisterModalRef, RegisterModalProps>(
               }}
             />
           </Form.Item>
+
+          {isWordRegister && (
+            <Form.Item
+              label="字节序"
+              name="byteOrder"
+              extra="留空时继承设备配置；选择后仅覆盖当前寄存器的读写字节序"
+            >
+              <Select allowClear options={ByteOrderOptions} placeholder="继承设备配置" />
+            </Form.Item>
+          )}
 
           {dataType === "BOOL" && (
             <Flex gap={16}>
