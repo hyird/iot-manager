@@ -809,6 +809,13 @@ public:
         const Json::Value& requestPayload = Json::Value(Json::objectValue),
         const Json::Value& responsePayload = Json::Value(Json::objectValue)
     ) {
+        const std::string accessKeyIdValue = accessKeyId > 0 ? std::to_string(accessKeyId) : std::string{};
+        const std::string webhookIdValue = webhookId > 0 ? std::to_string(webhookId) : std::string{};
+        const std::string httpStatusValue = httpStatus > 0 ? std::to_string(httpStatus) : std::string{};
+        const std::string deviceIdValue = deviceId > 0 ? std::to_string(deviceId) : std::string{};
+        const std::string sanitizedMessage = OpenAccess::sanitizeError(message, 1000);
+        const std::string serializedRequest = JsonHelper::serialize(requestPayload);
+        const std::string serializedResponse = JsonHelper::serialize(responsePayload);
         DatabaseService dbService;
         co_await dbService.execSqlCoro(R"(
             INSERT INTO open_access_log (
@@ -846,8 +853,8 @@ public:
                 ?::jsonb
             )
         )", {
-            accessKeyId > 0 ? std::to_string(accessKeyId) : "",
-            webhookId > 0 ? std::to_string(webhookId) : "",
+            accessKeyIdValue,
+            webhookIdValue,
             direction,
             action,
             eventType,
@@ -855,12 +862,12 @@ public:
             httpMethod,
             target,
             requestIp,
-            httpStatus > 0 ? std::to_string(httpStatus) : "",
-            deviceId > 0 ? std::to_string(deviceId) : "",
+            httpStatusValue,
+            deviceIdValue,
             deviceCode,
-            OpenAccess::sanitizeError(message, 1000),
-            JsonHelper::serialize(requestPayload),
-            JsonHelper::serialize(responsePayload)
+            sanitizedMessage,
+            serializedRequest,
+            serializedResponse
         });
     }
 

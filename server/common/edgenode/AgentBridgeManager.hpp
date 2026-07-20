@@ -914,6 +914,15 @@ private:
                                             bool online) {
         const auto normalizedSn = normalizeSn(agentSn);
         const auto generatedName = buildDefaultName(normalizedSn, agentModel);
+        const Json::Value normalizedCapabilities = capabilities.isObject()
+            ? capabilities
+            : Json::Value(Json::objectValue);
+        const Json::Value normalizedRuntime = runtime.isObject()
+            ? runtime
+            : Json::Value(Json::objectValue);
+        const std::string serializedCapabilities = JsonHelper::serialize(normalizedCapabilities);
+        const std::string serializedRuntime = JsonHelper::serialize(normalizedRuntime);
+        const std::string onlineValue = online ? "true" : "false";
 
         DatabaseService db;
         auto result = co_await db.execSqlCoro(R"(
@@ -944,9 +953,9 @@ private:
             agentModel,
             generatedName,
             version,
-            JsonHelper::serialize(capabilities.isObject() ? capabilities : Json::Value(Json::objectValue)),
-            JsonHelper::serialize(runtime.isObject() ? runtime : Json::Value(Json::objectValue)),
-            online ? "true" : "false",
+            serializedCapabilities,
+            serializedRuntime,
+            onlineValue,
             AUTH_STATUS_PENDING
         });
 

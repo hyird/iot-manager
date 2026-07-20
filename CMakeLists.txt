@@ -23,15 +23,19 @@ if(NOT CMAKE_TOOLCHAIN_FILE)
     endforeach()
 endif()
 
-set(VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/triplets" CACHE STRING "")
-if(NOT VCPKG_TARGET_TRIPLET AND WIN32)
-    set(VCPKG_TARGET_TRIPLET "x64-mingw-static" CACHE STRING "")
+# CMake Tools may receive absolute compiler paths without adding their directory
+# to PATH. vcpkg starts separate compiler-detection processes, so expose the
+# selected MinGW toolchain to those child processes before project() runs.
+if(CMAKE_HOST_WIN32 AND CMAKE_CXX_COMPILER)
+    get_filename_component(MINGW_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    if(MINGW_COMPILER_DIR)
+        set(ENV{PATH} "${MINGW_COMPILER_DIR};$ENV{PATH}")
+    endif()
 endif()
 
 project(iot-manager CXX)
 
 option(BUILD_FRONTEND "Build and copy frontend" ON)
-option(BUILD_L2CONFIG "Build L2 config tool (requires Npcap SDK)" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -86,15 +90,24 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     pugixml::pugixml
 )
 
-if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 shell32)
+# vcpkg's static MinGW PostgreSQL target places pgport before pgcommon.
+# Repeat pgport at the end so GNU ld can resolve pgcommon's references.
+if(MINGW AND TARGET PostgreSQL::PostgreSQL)
+    get_target_property(POSTGRESQL_LIBRARY_DEBUG PostgreSQL::PostgreSQL IMPORTED_LOCATION_DEBUG)
+    get_target_property(POSTGRESQL_LIBRARY_RELEASE PostgreSQL::PostgreSQL IMPORTED_LOCATION_RELEASE)
+    get_filename_component(POSTGRESQL_DEBUG_LIB_DIR "${POSTGRESQL_LIBRARY_DEBUG}" DIRECTORY)
+    get_filename_component(POSTGRESQL_RELEASE_LIB_DIR "${POSTGRESQL_LIBRARY_RELEASE}" DIRECTORY)
+    set(POSTGRESQL_PGPORT_LIBRARY
+        "$<$<CONFIG:Debug>:${POSTGRESQL_DEBUG_LIB_DIR}/libpgport.a>"
+        "$<$<NOT:$<CONFIG:Debug>>:${POSTGRESQL_RELEASE_LIB_DIR}/libpgport.a>"
+    )
+    set_property(TARGET PostgreSQL::PostgreSQL APPEND PROPERTY
+        INTERFACE_LINK_LIBRARIES ${POSTGRESQL_PGPORT_LIBRARY}
+    )
 endif()
 
-add_subdirectory(edgenode)
-set_property(TARGET iot-edgenode APPEND PROPERTY COMPILE_DEFINITIONS S7_ENABLE_BLOCKING_CLIENT=1)
-add_subdirectory(tests)
-if(BUILD_L2CONFIG)
-    add_subdirectory(l2config)
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 shell32)
 endif()
 
 if(EXISTS "${PROJECT_SOURCE_DIR}/config/config.local.json")

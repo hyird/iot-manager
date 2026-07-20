@@ -7,11 +7,6 @@
       "name": "drogon",
       "features": ["postgres"]
     },
-    {
-      "name": "imgui",
-      "features": ["dx11-binding", "win32-binding"],
-      "platform": "windows"
-    },
     "libpq",
     "mimalloc",
     "boost-json",

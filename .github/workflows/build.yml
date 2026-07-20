@@ -135,122 +135,6 @@ jobs:
           path: build/symbols/
           retention-days: 3
 
-  agent-armv7l:
-    runs-on: ubuntu-latest
-    name: edgenode - armv7l Release
-
-    env:
-      VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
-      VCPKG_BINARY_CACHE_DIR: ${{ github.workspace }}/vcpkg_binary_cache
-      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg_binary_cache,readwrite
-      MUSL_TOOLCHAIN_URL: https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/x86_64-arm-linux-musleabihf.tar.xz
-      MUSL_TOOLCHAIN_DIR: ${{ github.workspace }}/arm-linux-musleabihf-cross
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
-    steps:
-      - name: Configure git default branch
-        run: git config --global init.defaultBranch main
-
-      - uses: actions/checkout@v6
-
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@v5
-        with:
-          path: ${{ env.VCPKG_BINARY_CACHE_DIR }}
-          key: vcpkg-binary-arm-linux-${{ hashFiles('vcpkg.json') }}
-          restore-keys: |
-            vcpkg-binary-arm-linux-
-
-      - name: Cache musl toolchain
-        id: cache-musl
-        uses: actions/cache@v5
-        with:
-          path: ${{ env.MUSL_TOOLCHAIN_DIR }}
-          key: musl-arm-linux-musleabihf-v2
-
-      - name: Download musl cross-compilation toolchain
-        if: steps.cache-musl.outputs.cache-hit != 'true'
-        run: |
-          wget --retry-connrefused --waitretry=3 --tries=5 -O /tmp/musl-cross.tar.xz ${{ env.MUSL_TOOLCHAIN_URL }}
-          mkdir -p ${{ env.MUSL_TOOLCHAIN_DIR }}
-          tar xf /tmp/musl-cross.tar.xz -C ${{ env.MUSL_TOOLCHAIN_DIR }} --strip-components=1
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y autoconf autoconf-archive automake libtool
-          echo "${{ env.MUSL_TOOLCHAIN_DIR }}/bin" >> $GITHUB_PATH
-
-      - name: Restore vcpkg cache
-        id: vcpkg-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ env.VCPKG_INSTALLED_DIR }}
-          key: vcpkg-installed-arm-linux-${{ hashFiles('vcpkg.json') }}
-
-      - name: Setup vcpkg
-        run: |
-          if [ ! -d "${{ github.workspace }}/vcpkg" ]; then
-            git clone https://github.com/microsoft/vcpkg.git "${{ github.workspace }}/vcpkg"
-          fi
-          cd "${{ github.workspace }}/vcpkg"
-          git fetch --depth 1 origin 66c0373dc7fca549e5803087b9487edfe3aca0a1
-          git checkout --detach 66c0373dc7fca549e5803087b9487edfe3aca0a1
-          ./bootstrap-vcpkg.sh -disableMetrics
-
-      - name: Configure CMake
-        run: >
-          cmake -B build
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
-          -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
-          -DVCPKG_TARGET_TRIPLET=arm-linux
-          -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/triplets
-          -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${{ github.workspace }}/cmake/toolchain-armv7l.cmake
-          -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -g"
-          -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g"
-          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--build-id=sha1"
-          -DBUILD_FRONTEND=OFF
-
-      - name: Save vcpkg cache
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ env.VCPKG_INSTALLED_DIR }}
-          key: vcpkg-installed-arm-linux-${{ hashFiles('vcpkg.json') }}
-
-      - name: Build agent
-        run: cmake --build build --config Release --target iot-edgenode --parallel
-
-      - name: Export Release symbols
-        run: |
-          mkdir -p build/symbols
-          arm-linux-musleabihf-objcopy --only-keep-debug build/release/iot-edgenode build/symbols/iot-edgenode.debug
-          arm-linux-musleabihf-objcopy --add-gnu-debuglink=build/symbols/iot-edgenode.debug build/release/iot-edgenode
-
-      - name: Strip binary
-        run: arm-linux-musleabihf-strip --strip-debug --strip-unneeded build/release/iot-edgenode
-
-      - name: Compress with UPX
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y upx-ucl
-          upx --best --lzma build/release/iot-edgenode
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: iot-edgenode-armv7l-Release
-          path: build/release/
-          retention-days: 3
-
-      - name: Upload Release symbols
-        uses: actions/upload-artifact@v7
-        with:
-          name: iot-edgenode-armv7l-Release-symbols
-          path: build/symbols/
-          retention-days: 3
-
   build-windows:
     runs-on: windows-2022
     name: windows - Release
@@ -306,12 +190,6 @@ jobs:
           git checkout --detach 66c0373dc7fca549e5803087b9487edfe3aca0a1
           .\\bootstrap-vcpkg.bat -disableMetrics
 
-      - name: Download Npcap SDK
-        run: |
-          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.16.zip" -OutFile npcap-sdk.zip
-          Expand-Archive -Path npcap-sdk.zip -DestinationPath third_party/npcap-sdk
-        shell: pwsh
-
       - name: Configure CMake
         run: >
           cmake -S . -B build -G Ninja
@@ -321,8 +199,8 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
           -DVCPKG_TARGET_TRIPLET=x64-mingw-static
+          -DVCPKG_HOST_TRIPLET=x64-mingw-static
           -DBUILD_FRONTEND=OFF
-          -DBUILD_L2CONFIG=ON
 
       - name: Save vcpkg cache
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
