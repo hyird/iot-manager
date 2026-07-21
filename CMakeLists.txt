@@ -73,6 +73,14 @@ add_executable(${PROJECT_NAME}
     ${SERVER_HEADERS}
 )
 
+if(MINGW)
+    # main.cpp pulls the header-only domain coroutines into one very large TU.
+    # GCC 15 MinGW currently ICEs in is_this_parameter even at -O2.
+    set_source_files_properties(server/main.cpp PROPERTIES
+        COMPILE_OPTIONS "$<$<CONFIG:Release>:-O0>"
+    )
+endif()
+
 target_include_directories(${PROJECT_NAME} PRIVATE
     "${PROJECT_SOURCE_DIR}/server"
     "${PROJECT_SOURCE_DIR}/server/modules/gb28181"
