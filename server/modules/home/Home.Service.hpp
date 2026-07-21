@@ -11,9 +11,11 @@
 #include "common/protocol/ProtocolDispatcher.hpp"
 #include "common/utils/Constants.hpp"
 
-#ifdef _WIN32
+#ifdef _MSC_VER
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
+#elif defined(_WIN32)
+#include <psapi.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_host.h>

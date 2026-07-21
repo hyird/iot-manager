@@ -3106,11 +3106,14 @@ private:
                           << " hex=" << bytesToHex(frame);
             });
         client->setTransportHooks({
+            .open = {},
             .close = []() {},
             .connected = [runtime]() {
                 std::lock_guard lock(runtime->mutex);
                 return isSessionReadyLocked(*runtime);
-            }
+            },
+            .send = {},
+            .recv = {}
         });
 
         int rc = kS7Ok;
@@ -3659,7 +3662,12 @@ private:
                 }
             }
 
-            context->writes.push_back(S7PreparedWrite{.area = areaDef, .element = elem});
+            context->writes.push_back(S7PreparedWrite{
+                .area = areaDef,
+                .element = elem,
+                .existingBytes = {},
+                .writeBytes = {}
+            });
         }
 
         std::uint16_t pduLength = 0;

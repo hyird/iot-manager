@@ -1124,7 +1124,7 @@ private:
     }
 
     static void requireWebhookDeviceIds(const Json::Value& accessKey, const std::string& action) {
-        const auto& deviceIds = ValidatorHelper::requireArrayValue(
+        const Json::Value deviceIds = ValidatorHelper::requireArrayValue(
             accessKey["deviceIds"],
             "AccessKey 未配置可访问设备"
         );

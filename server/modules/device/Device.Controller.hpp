@@ -218,7 +218,7 @@ public:
         int deviceId = (*json).get("deviceId", 0).asInt();
 
         ControllerUtils::requireDeviceSelector(deviceCode, deviceId, "设备标识不能为空");
-        const auto& elements = ControllerUtils::requireCommandElements(*json);
+        const Json::Value elements = ControllerUtils::requireCommandElements(*json);
 
         // 通过 Service 层下发指令
         auto result = co_await service_.sendCommand(linkId, deviceCode, elements, userId, deviceId);

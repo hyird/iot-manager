@@ -133,7 +133,7 @@ public:
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:ack"});
 
         auto json = ControllerUtils::requireJson(req);
-        const auto& idsArray = ControllerUtils::requireNonEmptyArrayField(*json, "ids", "请提供 ids 数组");
+        const Json::Value idsArray = ControllerUtils::requireNonEmptyArrayField(*json, "ids", "请提供 ids 数组");
         auto ids = ControllerUtils::toInt64Array(idsArray);
 
         int userId = ControllerUtils::getUserId(req);
@@ -204,7 +204,7 @@ public:
         co_await PermissionChecker::checkPermission(ControllerUtils::getUserId(req), {"iot:alert:delete"});
 
         auto json = ControllerUtils::requireJson(req);
-        const auto& idsArray = ControllerUtils::requireNonEmptyArrayField(*json, "ids", "请提供 ids 数组");
+        const Json::Value idsArray = ControllerUtils::requireNonEmptyArrayField(*json, "ids", "请提供 ids 数组");
         auto ids = ControllerUtils::toIntArray(idsArray);
 
         co_await service_.batchDeleteRules(ids);
@@ -217,7 +217,7 @@ public:
         auto json = ControllerUtils::requireJson(req);
 
         ValidatorHelper::requirePositiveInt(*json, "template_id", "模板ID").throwIfInvalid();
-        const auto& deviceIdsArray = ControllerUtils::requireNonEmptyArrayField(*json, "device_ids", "请提供 device_ids 数组");
+        const Json::Value deviceIdsArray = ControllerUtils::requireNonEmptyArrayField(*json, "device_ids", "请提供 device_ids 数组");
 
         int templateId = (*json)["template_id"].asInt();
         auto deviceIds = ControllerUtils::toIntArray(deviceIdsArray);

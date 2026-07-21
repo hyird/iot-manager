@@ -710,13 +710,9 @@ private:
     // ==================== 持久化操作 ====================
 
     Task<void> persistCreate(TransactionGuard& tx) {
-        auto result = co_await tx.execSqlCoro(R"(
-            INSERT INTO link (
-                name, mode, protocol, ip, port, targets, usage, status,
-                created_by, agent_id, agent_interface, agent_bind_ip, agent_prefix_length, agent_gateway, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, NULLIF(?, '0')::INT, NULLIF(?, '0')::INT, ?, ?, NULLIF(?, '0')::INT, ?, ?) RETURNING id
-        )", {
+        // Materialize coroutine arguments before co_await. GCC/MinGW can ICE when
+        // lowering the temporary initializer_list directly at the suspension point.
+        std::vector<std::string> params{
             name_,
             mode_,
             protocol_,
@@ -732,7 +728,14 @@ private:
             std::to_string(agentPrefixLength_),
             agentGateway_,
             TimestampHelper::now()
-        });
+        };
+        auto result = co_await tx.execSqlCoro(R"(
+            INSERT INTO link (
+                name, mode, protocol, ip, port, targets, usage, status,
+                created_by, agent_id, agent_interface, agent_bind_ip, agent_prefix_length, agent_gateway, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, NULLIF(?, '0')::INT, NULLIF(?, '0')::INT, ?, ?, NULLIF(?, '0')::INT, ?, ?) RETURNING id
+        )", params);
 
         setId(FieldHelper::getInt(result[0]["id"]));
 

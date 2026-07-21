@@ -676,7 +676,7 @@ public:
             return setError(ErrorDomain::Pdu, static_cast<int>(error), "s7.setup-comm.resp");
         }
         const std::uint16_t parLen = readBe16(response.data() + 6);
-        if (12 + parLen > response.size() || parLen < 8) {
+        if (static_cast<std::size_t>(12 + parLen) > response.size() || parLen < 8) {
             return setError(ErrorDomain::Pdu, kS7ErrPduNegotiation, "s7.setup-comm.resp");
         }
 
@@ -1180,7 +1180,7 @@ inline int Client::negotiatePduLength() {
         return lastError_ = static_cast<int>(error);
     }
     const std::uint16_t parLen = readBe16(response.data() + 6);
-    if (12 + parLen > response.size() || parLen < 8) {
+    if (static_cast<std::size_t>(12 + parLen) > response.size() || parLen < 8) {
         return lastError_ = kS7ErrPduNegotiation;
     }
 

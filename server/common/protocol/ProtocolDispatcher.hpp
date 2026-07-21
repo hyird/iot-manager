@@ -142,52 +142,9 @@ public:
         // 后台任务使用独立 IO 线程，避免占用攒批写入线程
         backgroundLoop_ = DrogonLoopSelector::getNext();
 
-        // 定期刷新物化视图（5 分钟周期）
-        backgroundLoop_->runEvery(300.0, [this]() {
-            auto now = std::chrono::steady_clock::now();
-            auto cooldownUntil = viewRefreshCooldownUntil_.load(std::memory_order_acquire);
-            if (cooldownUntil > 0 && now.time_since_epoch().count() < cooldownUntil) {
-                LOG_DEBUG << "[BackgroundTasks] Skipping view refresh (backoff active)";
-                return;
-            }
-
-            bool expected = false;
-            if (!viewRefreshing_.compare_exchange_strong(expected, true)) {
-                LOG_DEBUG << "[BackgroundTasks] Skipping view refresh (previous still running)";
-                return;
-            }
-            try {
-                drogon::async_run([this]() -> Task<> {
-                    bool success = false;
-                    try {
-                        DatabaseService dbService;
-                        co_await dbService.execSqlCoro("SELECT refresh_device_data_views()");
-                        LOG_DEBUG << "[BackgroundTasks] Materialized views refreshed";
-                        success = true;
-                    } catch (const std::exception& e) {
-                        auto failures = viewRefreshFailureCount_.fetch_add(1, std::memory_order_relaxed) + 1;
-                        auto retryAfter = std::chrono::steady_clock::now() + std::chrono::minutes(30);
-                        viewRefreshCooldownUntil_.store(
-                            retryAfter.time_since_epoch().count(),
-                            std::memory_order_release);
-                        LOG_WARN << "[BackgroundTasks] Failed to refresh materialized views: "
-                                 << e.what() << ", failureCount=" << failures
-                                 << ", retryIn=30min";
-                    }
-                    if (success) {
-                        viewRefreshFailureCount_.store(0, std::memory_order_release);
-                        viewRefreshCooldownUntil_.store(0, std::memory_order_release);
-                    }
-                    viewRefreshing_.store(false, std::memory_order_release);
-                });
-            } catch (const std::exception& e) {
-                viewRefreshing_.store(false, std::memory_order_release);
-                LOG_ERROR << "[BackgroundTasks] runEvery(refresh views) exception: " << e.what();
-            } catch (...) {
-                viewRefreshing_.store(false, std::memory_order_release);
-                LOG_ERROR << "[BackgroundTasks] runEvery(refresh views) unknown exception";
-            }
-        });
+        // mv_device_data_latest_* currently has no readers. Refreshing it scans the
+        // complete compressed hypertable and can starve real-time writes, so do not
+        // schedule refreshes until an incremental consumer is introduced.
     }
 
     Task<> initializeProtocolAsync(const std::string& protocol) {
@@ -737,7 +694,4 @@ private:
     std::map<std::string, std::shared_ptr<std::atomic<uint64_t>>> adapterReloadPending_;  // 防抖 generation 计数器
     std::mutex reloadPendingMutex_;  // 保护 adapterReloadPending_ 的并发访问
 
-    std::atomic<bool> viewRefreshing_{false};
-    std::atomic<int> viewRefreshFailureCount_{0};
-    std::atomic<int64_t> viewRefreshCooldownUntil_{0};
 };

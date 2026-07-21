@@ -636,7 +636,7 @@ public:
 
             std::string deviceCode = (*json).get("deviceCode", "").asString();
             int requestedDeviceId = (*json).get("deviceId", 0).asInt();
-            const auto& elements = ControllerUtils::requireCommandElements(*json);
+            const Json::Value elements = ControllerUtils::requireCommandElements(*json);
 
             ControllerUtils::requireDeviceSelector(deviceCode, requestedDeviceId, "设备标识不能为空");
 
