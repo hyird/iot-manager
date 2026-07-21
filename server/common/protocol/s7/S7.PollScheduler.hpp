@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -64,6 +66,10 @@ public:
     }
 
     void resetInProgress(int deviceId) {
+        {
+            std::lock_guard lock(failureMutex_);
+            failureCounts_.erase(deviceId);
+        }
         scheduler_.resetInProgress(deviceId);
     }
 
@@ -76,12 +82,32 @@ public:
     }
 
     void onPollCompleted(int deviceId, bool success) {
-        scheduler_.onStepCompleted(deviceId, 0, success);
+        if (success) {
+            {
+                std::lock_guard lock(failureMutex_);
+                failureCounts_.erase(deviceId);
+            }
+            scheduler_.onStepCompleted(deviceId, 0, true);
+            return;
+        }
+
+        int failures = 0;
+        {
+            std::lock_guard lock(failureMutex_);
+            failures = ++failureCounts_[deviceId];
+        }
+        static constexpr int kRetryBackoffSec[] = {30, 60, 120, 300};
+        const auto index = std::min<std::size_t>(
+            static_cast<std::size_t>(std::max(1, failures) - 1),
+            std::size(kRetryBackoffSec) - 1);
+        scheduler_.defer(deviceId, kRetryBackoffSec[index]);
     }
 
 private:
     EnqueuePollCallback enqueuePollCallback_;
     ProtocolPollScheduler scheduler_;
+    std::mutex failureMutex_;
+    std::map<int, int> failureCounts_;
 };
 
 }  // namespace s7
