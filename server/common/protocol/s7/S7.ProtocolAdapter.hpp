@@ -662,6 +662,8 @@ private:
         std::vector<int> results;
         std::vector<std::pair<std::size_t, std::size_t>> batches;
         std::size_t nextBatch = 0;
+        bool finishSession = true;
+        bool notifyScheduler = true;
     };
 
     struct AsyncCommandWriteContext {
@@ -3484,6 +3486,43 @@ private:
         }
     }
 
+    static std::string verifyAsyncWriteReadback(
+        const std::shared_ptr<AsyncCommandWriteContext>& context,
+        const Json::Value& readbackData) {
+
+        for (const auto& write : context->writes) {
+            if (!write.area || !readbackData.isMember(write.area->id)) {
+                return "S7 写入后未读回要素: " + (write.area ? write.area->name : std::string("<unknown>"));
+            }
+
+            const auto& readback = readbackData[write.area->id];
+            const auto dataType = normalizeDataType(write.area->dataType);
+            const bool hasRawBoolValue = !write.element.get("valueHex", "").asString().empty();
+            if (dataType == "BOOL" && !hasRawBoolValue) {
+                bool expected = false;
+                bool actual = false;
+                if (!parseBoolValue(jsonValueToString(write.element["value"]), expected)
+                    || !parseBoolValue(jsonValueToString(readback["value"]), actual)) {
+                    return "S7 写入读回值格式错误: " + write.area->name;
+                }
+                if (actual != expected) {
+                    return "S7 写入读回不一致: " + write.area->name
+                        + "，期望=" + (expected ? "1" : "0")
+                        + "，实际=" + (actual ? "1" : "0");
+                }
+                continue;
+            }
+
+            const std::string expectedHex = bytesToHex(write.writeBytes);
+            const std::string actualHex = toUpper(readback.get("hex", "").asString());
+            if (actualHex != expectedHex) {
+                return "S7 写入读回不一致: " + write.area->name
+                    + "，期望=" + expectedHex + "，实际=" + actualHex;
+            }
+        }
+        return {};
+    }
+
     void startAsyncWriteNext(
         const std::shared_ptr<S7DeviceRuntime>& runtime,
         const std::shared_ptr<AsyncCommandWriteContext>& context,
@@ -3495,7 +3534,38 @@ private:
             ++context->nextWrite;
         }
         if (context->nextWrite >= context->writes.size()) {
-            completeAsyncWriteCommand(runtime, context, std::move(complete), {});
+            auto completePtr = std::make_shared<std::function<void(std::string)>>(std::move(complete));
+            auto finish = [this, runtime, context, completePtr](std::string failure) mutable {
+                if (!completePtr || !*completePtr) {
+                    return;
+                }
+                auto callback = std::move(*completePtr);
+                *completePtr = nullptr;
+                completeAsyncWriteCommand(runtime, context, std::move(callback), std::move(failure));
+            };
+            if (!startAsyncPollDevice(
+                    runtime,
+                    [context, finish = std::move(finish)](
+                        bool allBlocksSucceeded,
+                        Json::Value readbackData) mutable {
+                        if (!allBlocksSucceeded) {
+                            finish("S7 写入已应答，但同一会话全量读回失败");
+                            return;
+                        }
+                        finish(verifyAsyncWriteReadback(context, readbackData));
+                    },
+                    false,
+                    false)) {
+                if (completePtr && *completePtr) {
+                    auto callback = std::move(*completePtr);
+                    *completePtr = nullptr;
+                    completeAsyncWriteCommand(
+                        runtime,
+                        context,
+                        std::move(callback),
+                        "S7 写入已应答，但同一会话全量读回无法启动");
+                }
+            }
             return;
         }
 
@@ -3735,17 +3805,19 @@ private:
     void finalizeAsyncPoll(
         const std::shared_ptr<S7DeviceRuntime>& runtime,
         const std::shared_ptr<AsyncPollContext>& context,
-        std::function<void()> done) {
+        std::function<void(bool, Json::Value)> done) {
 
         std::vector<ParsedFrameResult> parsedResults;
         Json::Value aggregatedData(Json::objectValue);
         bool anyBlockSucceeded = false;
+        bool allBlocksSucceeded = !context->plans.empty();
 
         for (std::size_t blockIndex = 0; blockIndex < context->plans.size(); ++blockIndex) {
             const auto& block = context->plans[blockIndex];
             auto& buffer = context->buffers[blockIndex];
             const int blockRc = context->results[blockIndex];
             if (blockRc != kS7Ok) {
+                allBlocksSucceeded = false;
                 LOG_WARN << "[S7][Adapter] Async RX block failed: "
                          << deviceLabel(*runtime) << "(id=" << context->deviceId << ")"
                          << ", area=" << block.area
@@ -3780,6 +3852,7 @@ private:
             }
         }
 
+        Json::Value readbackData = aggregatedData;
         if (aggregatedData.isObject() && !aggregatedData.empty()) {
             parsedResults.push_back(buildPollReadResult(
                 context->deviceId,
@@ -3791,12 +3864,14 @@ private:
         if (!parsedResults.empty() && runtimeContext_.submitParsedResults) {
             runtimeContext_.submitParsedResults(std::move(parsedResults));
         }
-        finishAsyncOperationSession(runtime);
-        if (pollScheduler_) {
+        if (context->finishSession) {
+            finishAsyncOperationSession(runtime);
+        }
+        if (context->notifyScheduler && pollScheduler_) {
             pollScheduler_->onPollCompleted(context->deviceId, anyBlockSucceeded);
         }
         if (done) {
-            done();
+            done(allBlocksSucceeded, std::move(readbackData));
         }
     }
 
@@ -3804,7 +3879,7 @@ private:
         const std::shared_ptr<S7DeviceRuntime>& runtime,
         const std::shared_ptr<AsyncPollContext>& context,
         int recvTimeoutMs,
-        std::function<void()> done) {
+        std::function<void(bool, Json::Value)> done) {
 
         if (context->nextBatch >= context->batches.size()) {
             finalizeAsyncPoll(runtime, context, std::move(done));
@@ -3860,7 +3935,11 @@ private:
         }
     }
 
-    bool startAsyncPollDevice(const std::shared_ptr<S7DeviceRuntime>& runtime, std::function<void()> done) {
+    bool startAsyncPollDevice(
+        const std::shared_ptr<S7DeviceRuntime>& runtime,
+        std::function<void(bool, Json::Value)> done,
+        bool finishSession = true,
+        bool notifyScheduler = true) {
         if (!runtime) {
             return false;
         }
@@ -3897,6 +3976,8 @@ private:
         context->buffers.reserve(readPlans.size());
         context->items.reserve(readPlans.size());
         context->results.assign(readPlans.size(), kS7ErrTimeout);
+        context->finishSession = finishSession;
+        context->notifyScheduler = notifyScheduler;
 
         for (std::size_t index = 0; index < readPlans.size(); ++index) {
             const auto& block = readPlans[index];
@@ -4010,7 +4091,7 @@ private:
                                         return;
                                     }
                                     if (donePtr && *donePtr) {
-                                        auto pollDone = [donePtr]() mutable {
+                                        auto pollDone = [donePtr](bool, Json::Value) mutable {
                                             if (donePtr && *donePtr) {
                                                 auto fn = std::move(*donePtr);
                                                 *donePtr = nullptr;
