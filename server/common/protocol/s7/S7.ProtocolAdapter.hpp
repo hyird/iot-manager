@@ -52,12 +52,6 @@ struct S7AreaDefinition {
 };
 
 struct S7ConnectionConfig {
-    enum class ProbeMode {
-        Standard,
-        Compatible,
-        Auto
-    };
-
     std::string host;  // 解析后的连接目标，优先取链路 IP，兼容旧配置
     std::string mode = "RACK_SLOT";
     int rack = 0;
@@ -67,13 +61,10 @@ struct S7ConnectionConfig {
     int pingTimeoutMs = kDefaultS7RecvTimeoutMs;
     int sendTimeoutMs = kDefaultS7SendTimeoutMs;
     int recvTimeoutMs = kDefaultS7RecvTimeoutMs;
-    int handshakeTimeoutMs = 5000;
-    int directProbeTimeoutMs = 5000;
     int retryDelayMs = 1000;
     int pollIntervalSec = 5;
     std::uint16_t pduRequestLength = kDefaultS7PduRequest;
     std::string connectionType = "PG";
-    ProbeMode probeMode = ProbeMode::Standard;
 };
 
 inline bool sameS7Connection(const S7ConnectionConfig& lhs, const S7ConnectionConfig& rhs) {
@@ -86,13 +77,10 @@ inline bool sameS7Connection(const S7ConnectionConfig& lhs, const S7ConnectionCo
         && lhs.pingTimeoutMs == rhs.pingTimeoutMs
         && lhs.sendTimeoutMs == rhs.sendTimeoutMs
         && lhs.recvTimeoutMs == rhs.recvTimeoutMs
-        && lhs.handshakeTimeoutMs == rhs.handshakeTimeoutMs
-        && lhs.directProbeTimeoutMs == rhs.directProbeTimeoutMs
         && lhs.retryDelayMs == rhs.retryDelayMs
         && lhs.pollIntervalSec == rhs.pollIntervalSec
         && lhs.pduRequestLength == rhs.pduRequestLength
-        && lhs.connectionType == rhs.connectionType
-        && lhs.probeMode == rhs.probeMode;
+        && lhs.connectionType == rhs.connectionType;
 }
 
 struct S7ConnectionPreset {
@@ -422,14 +410,10 @@ public:
         Json::Int64 areaCount = 0;
         Json::Int64 sessionDeviceCount = 0;
         Json::Int64 sessionReadyCount = 0;
-        Json::Int64 dtuOnlineCount = 0;
         for (const auto& runtime : runtimes) {
             std::lock_guard runtimeLock(runtime->mutex);
             if (runtime->tcpServerMode) {
                 ++sessionDeviceCount;
-                if (runtime->sessionBound) {
-                    ++dtuOnlineCount;
-                }
             }
             if (runtime->connected && (!runtime->tcpServerMode || isSessionReadyLocked(*runtime))) {
                 ++connectedCount;
@@ -443,8 +427,6 @@ public:
         metrics.stats["areaCount"] = areaCount;
         metrics.stats["sessionDeviceCount"] = sessionDeviceCount;
         metrics.stats["sessionReadyCount"] = sessionReadyCount;
-        metrics.stats["dtuOnlineCount"] = dtuOnlineCount;
-        metrics.stats["plcOnlineCount"] = sessionReadyCount;
         return metrics;
     }
 
@@ -539,8 +521,7 @@ public:
                                         startAsyncWriteCommand(
                                             runtime,
                                             std::move(*elementsPtr),
-                                            [this, runtime, done = std::move(done), completePtr](std::string failure) mutable {
-                                                finishAsyncOperationSession(runtime);
+                                            [done = std::move(done), completePtr](std::string failure) mutable {
                                                 if (completePtr && *completePtr) {
                                                     (*completePtr)(std::move(failure));
                                                 }
@@ -662,6 +643,7 @@ private:
         std::vector<int> results;
         std::vector<std::pair<std::size_t, std::size_t>> batches;
         std::size_t nextBatch = 0;
+        bool pollFailed = false;
     };
 
     struct AsyncCommandWriteContext {
@@ -813,17 +795,6 @@ private:
             return "TSAP";
         }
         return "RACK_SLOT";
-    }
-
-    static S7ConnectionConfig::ProbeMode normalizeProbeMode(std::string value) {
-        value = toUpper(std::move(value));
-        if (value == "COMPATIBLE" || value == "DIRECT") {
-            return S7ConnectionConfig::ProbeMode::Compatible;
-        }
-        if (value == "AUTO") {
-            return S7ConnectionConfig::ProbeMode::Auto;
-        }
-        return S7ConnectionConfig::ProbeMode::Standard;
     }
 
     static std::uint16_t connectionTypeToCode(std::string value) {
@@ -1847,10 +1818,7 @@ private:
             connection.pingTimeoutMs = conn.get("pingTimeout", connection.pingTimeoutMs).asInt();
             connection.sendTimeoutMs = conn.get("sendTimeout", connection.sendTimeoutMs).asInt();
             connection.recvTimeoutMs = conn.get("recvTimeout", connection.recvTimeoutMs).asInt();
-            connection.handshakeTimeoutMs = conn.get("handshakeTimeout", connection.handshakeTimeoutMs).asInt();
-            connection.directProbeTimeoutMs = conn.get("directProbeTimeout", connection.directProbeTimeoutMs).asInt();
             connection.retryDelayMs = conn.get("retryDelay", connection.retryDelayMs).asInt();
-            connection.probeMode = normalizeProbeMode(conn.get("probeMode", "STANDARD").asString());
             if (conn.isMember("pduRequestLength")) {
                 connection.pduRequestLength = static_cast<std::uint16_t>(
                     std::clamp(conn.get("pduRequestLength", static_cast<int>(connection.pduRequestLength)).asInt(),
@@ -1865,8 +1833,6 @@ private:
             if (connection.pingTimeoutMs <= 0) connection.pingTimeoutMs = kDefaultS7RecvTimeoutMs;
             if (connection.sendTimeoutMs <= 0) connection.sendTimeoutMs = kDefaultS7SendTimeoutMs;
             if (connection.recvTimeoutMs <= 0) connection.recvTimeoutMs = kDefaultS7RecvTimeoutMs;
-            connection.handshakeTimeoutMs = std::clamp(connection.handshakeTimeoutMs, 1000, 30000);
-            connection.directProbeTimeoutMs = std::clamp(connection.directProbeTimeoutMs, 1000, 30000);
             if (connection.retryDelayMs < 0) connection.retryDelayMs = 1000;
             if (connection.recvTimeoutMs < connection.sendTimeoutMs) {
                 connection.recvTimeoutMs = connection.sendTimeoutMs;
@@ -1886,9 +1852,6 @@ private:
             }
             connection.rack = compatConn->get("rack", connection.rack).asInt();
             connection.slot = compatConn->get("slot", connection.slot).asInt();
-            connection.handshakeTimeoutMs = compatConn->get("handshakeTimeout", connection.handshakeTimeoutMs).asInt();
-            connection.directProbeTimeoutMs = compatConn->get("directProbeTimeout", connection.directProbeTimeoutMs).asInt();
-            connection.probeMode = normalizeProbeMode(compatConn->get("probeMode", "STANDARD").asString());
             if (auto localTSAP = parseTsapHex((*compatConn)["localTSAP"])) {
                 connection.localTSAP = *localTSAP;
             }
@@ -1910,8 +1873,6 @@ private:
         if (isS7_200) {
             connection.mode = "TSAP";
         }
-        connection.handshakeTimeoutMs = std::clamp(connection.handshakeTimeoutMs, 1000, 30000);
-        connection.directProbeTimeoutMs = std::clamp(connection.directProbeTimeoutMs, 1000, 30000);
         connection.pollIntervalSec = config.get("pollInterval", 5).asInt();
         if (connection.pollIntervalSec < 1) connection.pollIntervalSec = 1;
         return connection;
@@ -2474,34 +2435,6 @@ private:
         return frame;
     }
 
-    void finishAsyncOperationSession(const std::shared_ptr<S7DeviceRuntime>& runtime) {
-        if (!runtime) {
-            return;
-        }
-
-        std::vector<std::uint8_t> disconnectFrame;
-        {
-            std::lock_guard clientLock(runtime->clientMutex);
-            if (runtime->client) {
-                disconnectFrame = runtime->client->buildAsyncDisconnectRequestFrame();
-            }
-        }
-        if (!disconnectFrame.empty() && !sendAsyncSessionFrame(runtime, disconnectFrame, false)) {
-            LOG_WARN << "[S7][Adapter] TX disconnect request failed: "
-                     << deviceLabel(*runtime) << "(id=" << runtime->deviceId << ")";
-        }
-
-        {
-            std::scoped_lock lock(runtime->clientMutex, runtime->mutex);
-            if (runtime->client) {
-                runtime->client->resetAsyncSessionState();
-            }
-            runtime->connected = false;
-            runtime->connectInProgress = false;
-            runtime->asyncRxBuffer.clear();
-        }
-    }
-
     void completeAsyncExchange(
         const std::shared_ptr<S7DeviceRuntime>& runtime,
         const std::shared_ptr<S7DeviceRuntime::AsyncExchange>& exchange,
@@ -2900,10 +2833,10 @@ private:
 
         auto loop = TcpLinkManager::instance().getNextIoLoop();
         if (loop) {
-            int recvTimeoutMs = 5000;
+            int recvTimeoutMs = kDefaultS7RecvTimeoutMs;
             {
                 std::lock_guard lock(runtime->mutex);
-                recvTimeoutMs = runtime->connection.directProbeTimeoutMs;
+                recvTimeoutMs = runtime->connection.recvTimeoutMs;
             }
             const double timeoutSec = static_cast<double>(std::max(1000, recvTimeoutMs)) / 1000.0;
             auto alive = adapterAlive_;
@@ -3161,17 +3094,9 @@ private:
             runtime->asyncConnect = connect;
         }
 
-        if (connection.probeMode == S7ConnectionConfig::ProbeMode::Compatible) {
-            if (!startAsyncConnectDirectReadProbe(runtime, connect)) {
-                completeAsyncConnect(runtime, connect, false);
-            }
-            return true;
-        }
-
         auto loop = TcpLinkManager::instance().getNextIoLoop();
         if (loop) {
-            const double timeoutSec = static_cast<double>(
-                std::max(1000, connection.handshakeTimeoutMs)) / 1000.0;
+            const double timeoutSec = static_cast<double>(std::max(1000, connection.recvTimeoutMs)) / 1000.0;
             auto alive = adapterAlive_;
             connect->timerId = loop->runAfter(timeoutSec, [this, runtime, connect, alive]() {
                 if (!alive->load(std::memory_order_acquire)) {
@@ -3189,13 +3114,7 @@ private:
                     deviceId = runtime->deviceId;
                     label = deviceLabel(*runtime);
                 }
-                S7ConnectionConfig::ProbeMode probeMode = S7ConnectionConfig::ProbeMode::Standard;
-                {
-                    std::lock_guard lock(runtime->mutex);
-                    probeMode = runtime->connection.probeMode;
-                }
-                if (probeMode == S7ConnectionConfig::ProbeMode::Auto
-                    && stage != S7DeviceRuntime::AsyncConnect::Stage::DirectReadProbe
+                if (stage != S7DeviceRuntime::AsyncConnect::Stage::DirectReadProbe
                     && startAsyncConnectDirectReadProbe(runtime, connect)) {
                     LOG_INFO << "[S7][Adapter] Async connect fallback to direct read probe: "
                              << label << "(id=" << deviceId << ")"
@@ -3732,12 +3651,14 @@ private:
         std::vector<ParsedFrameResult> parsedResults;
         Json::Value aggregatedData(Json::objectValue);
         bool anyBlockSucceeded = false;
+        bool pollFailed = context->pollFailed;
 
         for (std::size_t blockIndex = 0; blockIndex < context->plans.size(); ++blockIndex) {
             const auto& block = context->plans[blockIndex];
             auto& buffer = context->buffers[blockIndex];
             const int blockRc = context->results[blockIndex];
             if (blockRc != kS7Ok) {
+                pollFailed = true;
                 LOG_WARN << "[S7][Adapter] Async RX block failed: "
                          << deviceLabel(*runtime) << "(id=" << context->deviceId << ")"
                          << ", area=" << block.area
@@ -3761,6 +3682,7 @@ private:
 
             for (const auto& member : block.members) {
                 if (member.offsetBytes + static_cast<std::size_t>(member.area.size) > buffer.size()) {
+                    pollFailed = true;
                     continue;
                 }
 
@@ -3770,6 +3692,11 @@ private:
                 aggregatedData[member.area.id] = buildReadElement(member.area, areaBuffer);
                 anyBlockSucceeded = true;
             }
+        }
+
+        if (pollFailed && !anyBlockSucceeded) {
+            std::lock_guard clientLock(runtime->clientMutex);
+            runtime->resetClient();
         }
 
         if (aggregatedData.isObject() && !aggregatedData.empty()) {
@@ -3783,7 +3710,6 @@ private:
         if (!parsedResults.empty() && runtimeContext_.submitParsedResults) {
             runtimeContext_.submitParsedResults(std::move(parsedResults));
         }
-        finishAsyncOperationSession(runtime);
         if (pollScheduler_) {
             pollScheduler_->onPollCompleted(context->deviceId, anyBlockSucceeded);
         }
@@ -3808,6 +3734,7 @@ private:
         {
             std::lock_guard clientLock(runtime->clientMutex);
             if (!runtime->client) {
+                context->pollFailed = true;
                 for (std::size_t i = begin; i < end; ++i) {
                     context->results[context->indexes[i]] = kS7ErrInvalidHandle;
                 }
@@ -3838,6 +3765,9 @@ private:
                             ? runtime->client->parseReadResponseForItems(response, context->items, begin, end)
                             : kS7ErrInvalidHandle;
                     }
+                    if (parseRc != kS7Ok) {
+                        context->pollFailed = true;
+                    }
                     for (std::size_t i = begin; i < end; ++i) {
                         context->results[context->indexes[i]] = context->items[i].result == kS7Ok
                             ? (parseRc < kS7Ok ? parseRc : kS7Ok)
@@ -3845,6 +3775,7 @@ private:
                     }
                     startAsyncPollBatch(runtime, context, recvTimeoutMs, std::move(done));
                 })) {
+            context->pollFailed = true;
             for (std::size_t i = begin; i < end; ++i) {
                 context->results[context->indexes[i]] = kS7ErrSocketIo;
             }
@@ -4010,7 +3941,6 @@ private:
                                             }
                                         };
                                         if (!startAsyncPollDevice(runtime, std::move(pollDone))) {
-                                            finishAsyncOperationSession(runtime);
                                             if (pollScheduler_) {
                                                 pollScheduler_->onPollCompleted(deviceId, false);
                                             }
@@ -4091,3 +4021,5 @@ private:
 };
 
 }  // namespace s7
+
+

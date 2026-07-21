@@ -249,10 +249,6 @@ export interface S7Connection {
   localTSAP?: string;
   remoteTSAP?: string;
   connectionType?: S7ConnectionType;
-  /** STANDARD: 完整 ISO/S7 握手；COMPATIBLE: 直接读探测；AUTO: 握手失败后兼容探测 */
-  probeMode?: "STANDARD" | "COMPATIBLE" | "AUTO";
-  handshakeTimeout?: number;
-  directProbeTimeout?: number;
 }
 
 /** S7 配置结构 */
