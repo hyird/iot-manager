@@ -123,9 +123,10 @@ public:
             throw ValidationException("必须关联设备");
         }
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(rule.deviceId_)};
         auto result = co_await db.execSqlCoro(
             "SELECT 1 FROM device WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(rule.deviceId_)}
+            params
         );
         if (result.empty()) {
             throw NotFoundException("关联的设备不存在");
@@ -289,18 +290,19 @@ private:
 
     Task<void> persistCreate(TransactionGuard& tx) {
         std::string condJson = JsonHelper::serialize(conditions_);
+        const std::vector<std::string> params{
+            name_, std::to_string(deviceId_), severity_,
+            condJson, logic_, std::to_string(silenceDuration_),
+            recoveryCondition_, std::to_string(recoveryWaitSeconds_),
+            status_, remark_, TimestampHelper::now()
+        };
 
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO alert_rule (name, device_id, severity, conditions, logic, silence_duration,
                                     recovery_condition, recovery_wait_seconds, status, remark, created_at)
             VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
-        )", {
-            name_, std::to_string(deviceId_), severity_,
-            condJson, logic_, std::to_string(silenceDuration_),
-            recoveryCondition_, std::to_string(recoveryWaitSeconds_),
-            status_, remark_, TimestampHelper::now()
-        });
+        )", params);
 
         setId(FieldHelper::getInt(result[0]["id"]));
         raiseEvent<AlertRuleCreated>(id());
@@ -308,6 +310,12 @@ private:
 
     Task<void> persistUpdate(TransactionGuard& tx) {
         std::string condJson = JsonHelper::serialize(conditions_);
+        const std::vector<std::string> params{
+            name_, std::to_string(deviceId_), severity_,
+            condJson, logic_, std::to_string(silenceDuration_),
+            recoveryCondition_, std::to_string(recoveryWaitSeconds_),
+            status_, remark_, TimestampHelper::now(), std::to_string(id())
+        };
 
         co_await tx.execSqlCoro(R"(
             UPDATE alert_rule
@@ -315,20 +323,16 @@ private:
                 logic = ?, silence_duration = ?, recovery_condition = ?, recovery_wait_seconds = ?,
                 status = ?, remark = ?, updated_at = ?
             WHERE id = ?
-        )", {
-            name_, std::to_string(deviceId_), severity_,
-            condJson, logic_, std::to_string(silenceDuration_),
-            recoveryCondition_, std::to_string(recoveryWaitSeconds_),
-            status_, remark_, TimestampHelper::now(), std::to_string(id())
-        });
+        )", params);
 
         raiseEvent<AlertRuleUpdated>(id());
     }
 
     Task<void> persistDelete(TransactionGuard& tx) {
+        const std::vector<std::string> params{TimestampHelper::now(), std::to_string(id())};
         co_await tx.execSqlCoro(
             "UPDATE alert_rule SET deleted_at = ? WHERE id = ?",
-            {TimestampHelper::now(), std::to_string(id())}
+            params
         );
         raiseEvent<AlertRuleDeleted>(id());
     }

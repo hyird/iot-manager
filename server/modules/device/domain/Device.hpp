@@ -120,6 +120,7 @@ public:
      */
     static Task<Json::Value> options() {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(device.linkId_)};
         auto result = co_await db.execSqlCoro(
             "SELECT id, name, protocol_params->>'device_code' as device_code FROM device WHERE deleted_at IS NULL ORDER BY name ASC"
         );
@@ -187,7 +188,7 @@ public:
         DatabaseService db;
         auto result = co_await db.execSqlCoro(
             "SELECT name, usage FROM link WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(device.linkId_)}
+            params
         );
 
         if (result.empty()) {
@@ -212,9 +213,10 @@ public:
         }
 
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(device.linkId_)};
         auto rows = co_await db.execSqlCoro(
             "SELECT mode, targets FROM link WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(device.linkId_)});
+            params);
         if (rows.empty()) co_return;
 
         const auto mode = FieldHelper::getString(rows[0]["mode"], "");
@@ -252,9 +254,10 @@ public:
         if (device.protocolConfigId_ <= 0) co_return;
 
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(device.protocolConfigId_)};
         auto result = co_await db.execSqlCoro(
             "SELECT 1 FROM protocol_config WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(device.protocolConfigId_)}
+            params
         );
 
         if (result.empty()) {
@@ -278,17 +281,21 @@ public:
         }
 
         DatabaseService db;
+        const std::vector<std::string> agentParams{std::to_string(agentId)};
         auto result = co_await db.execSqlCoro(
             "SELECT 1 FROM agent_node WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(agentId)}
+            agentParams
         );
         if (result.empty()) {
             throw NotFoundException("指定的采集Agent不存在");
         }
 
+        const std::vector<std::string> endpointParams{
+            std::to_string(endpointId), std::to_string(agentId)
+        };
         auto epResult = co_await db.execSqlCoro(
             "SELECT 1 FROM agent_endpoint WHERE id = ? AND agent_id = ? AND deleted_at IS NULL",
-            {std::to_string(endpointId), std::to_string(agentId)}
+            endpointParams
         );
         if (epResult.empty()) {
             throw NotFoundException("指定的接入端点不存在或不属于该Agent");
@@ -308,9 +315,10 @@ public:
         // 确定协议类型（更新时已加载，创建时从 protocol_config 查询）
         std::string protocol = device.protocolType_;
         if (protocol.empty() && device.protocolConfigId_ > 0) {
+            const std::vector<std::string> params{std::to_string(device.protocolConfigId_)};
             auto result = co_await db.execSqlCoro(
                 "SELECT protocol FROM protocol_config WHERE id = ? AND deleted_at IS NULL",
-                {std::to_string(device.protocolConfigId_)}
+                params
             );
             if (!result.empty()) {
                 protocol = FieldHelper::getString(result[0]["protocol"], "");
@@ -319,9 +327,10 @@ public:
 
         if (protocol != Constants::PROTOCOL_MODBUS) co_return;
 
+        const std::vector<std::string> linkParams{std::to_string(device.linkId_)};
         auto linkRows = co_await db.execSqlCoro(
             "SELECT mode FROM link WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(device.linkId_)});
+            linkParams);
         if (linkRows.empty()
             || FieldHelper::getString(linkRows[0]["mode"], "") != Constants::LINK_MODE_TCP_SERVER) {
             co_return;
@@ -797,24 +806,26 @@ private:
 
     Task<void> persistCreate(TransactionGuard& tx) {
         std::string ppJson = JsonHelper::serialize(protocolParams_);
+        const std::vector<std::string> params{
+            name_, std::to_string(linkId_), std::to_string(protocolConfigId_),
+            std::to_string(groupId_), status_, ppJson, remark_,
+            std::to_string(createdBy_), TimestampHelper::now()
+        };
 
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO device (name, link_id, protocol_config_id, group_id,
                                status, protocol_params, remark, created_by, created_at)
             VALUES (?, ?, ?, NULLIF(?, '0')::INT, ?, ?::jsonb, ?, NULLIF(?, '0')::INT, ?) RETURNING id
-        )", {
-            name_, std::to_string(linkId_), std::to_string(protocolConfigId_),
-            std::to_string(groupId_),
-            status_, ppJson, remark_, std::to_string(createdBy_), TimestampHelper::now()
-        });
+        )", params);
 
         setId(FieldHelper::getInt(result[0]["id"]));
 
         // 新建时 protocolType_ 未从 JOIN 加载，需从 protocol_config 查询
         if (protocolType_.empty() && protocolConfigId_ > 0) {
+            const std::vector<std::string> protocolParams{std::to_string(protocolConfigId_)};
             auto pcResult = co_await tx.execSqlCoro(
                 "SELECT protocol FROM protocol_config WHERE id = ? AND deleted_at IS NULL",
-                {std::to_string(protocolConfigId_)});
+                protocolParams);
             if (!pcResult.empty()) {
                 protocolType_ = FieldHelper::getString(pcResult[0]["protocol"], "");
             }
@@ -826,26 +837,28 @@ private:
 
     Task<void> persistUpdate(TransactionGuard& tx) {
         std::string ppJson = JsonHelper::serialize(protocolParams_);
+        const std::vector<std::string> params{
+            name_, std::to_string(linkId_), std::to_string(protocolConfigId_),
+            std::to_string(groupId_), status_, ppJson, remark_,
+            TimestampHelper::now(), std::to_string(id())
+        };
 
         co_await tx.execSqlCoro(R"(
             UPDATE device
             SET name = ?, link_id = ?, protocol_config_id = ?, group_id = NULLIF(?, '0')::INT,
                 status = ?, protocol_params = ?::jsonb, remark = ?, updated_at = ?
             WHERE id = ?
-        )", {
-            name_, std::to_string(linkId_), std::to_string(protocolConfigId_),
-            std::to_string(groupId_),
-            status_, ppJson, remark_, TimestampHelper::now(), std::to_string(id())
-        });
+        )", params);
 
         const int agentId = protocolParams_.get("agent_id", 0).asInt();
         raiseEvent<DeviceUpdated>(id(), linkId_, protocolType_, deviceCode(), registrationChanged_, agentId);
     }
 
     Task<void> persistDelete(TransactionGuard& tx) {
+        const std::vector<std::string> params{TimestampHelper::now(), std::to_string(id())};
         co_await tx.execSqlCoro(
             "UPDATE device SET deleted_at = ? WHERE id = ?",
-            {TimestampHelper::now(), std::to_string(id())}
+            params
         );
 
         const int agentId = protocolParams_.get("agent_id", 0).asInt();

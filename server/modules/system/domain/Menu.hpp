@@ -96,9 +96,10 @@ public:
      */
     static Task<void> noChildren(const Menu& menu) {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(menu.id())};
         auto result = co_await db.execSqlCoro(
             "SELECT COUNT(*) as count FROM sys_menu WHERE parent_id = ? AND deleted_at IS NULL",
-            {std::to_string(menu.id())}
+            params
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
@@ -288,9 +289,10 @@ private:
     }
 
     Task<void> load(int menuId) {
+        const std::vector<std::string> params{std::to_string(menuId)};
         auto result = co_await db().execSqlCoro(
             "SELECT * FROM sys_menu WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(menuId)}
+            params
         );
 
         if (result.empty()) {
@@ -318,47 +320,51 @@ private:
     }
 
     Task<void> persistCreate(TransactionGuard& tx) {
+        const std::vector<std::string> params{
+            name_, path_, icon_, std::to_string(parentId_), std::to_string(sortOrder_),
+            type_, component_, status_, permissionCode_,
+            isDefault_ ? "1" : "0", TimestampHelper::now()
+        };
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO sys_menu (name, path, icon, parent_id, sort_order, type,
                                   component, status, permission_code, is_default, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
-        )", {
-            name_, path_, icon_, std::to_string(parentId_), std::to_string(sortOrder_),
-            type_, component_, status_, permissionCode_,
-            isDefault_ ? "1" : "0", TimestampHelper::now()
-        });
+        )", params);
 
         setId(FieldHelper::getInt(result[0]["id"]));
         raiseEvent<MenuCreated>(id());
     }
 
     Task<void> persistUpdate(TransactionGuard& tx) {
+        const std::vector<std::string> params{
+            name_, path_, icon_, std::to_string(parentId_), std::to_string(sortOrder_),
+            type_, component_, status_, permissionCode_,
+            isDefault_ ? "1" : "0", TimestampHelper::now(), std::to_string(id())
+        };
         co_await tx.execSqlCoro(R"(
             UPDATE sys_menu
             SET name = ?, path = ?, icon = ?, parent_id = ?, sort_order = ?,
                 type = ?, component = ?, status = ?, permission_code = ?,
                 is_default = ?, updated_at = ?
             WHERE id = ?
-        )", {
-            name_, path_, icon_, std::to_string(parentId_), std::to_string(sortOrder_),
-            type_, component_, status_, permissionCode_,
-            isDefault_ ? "1" : "0", TimestampHelper::now(), std::to_string(id())
-        });
+        )", params);
 
         raiseEvent<MenuUpdated>(id());
     }
 
     Task<void> persistDelete(TransactionGuard& tx) {
         // 删除角色菜单关联
+        const std::vector<std::string> idParam{std::to_string(id())};
         co_await tx.execSqlCoro(
             "DELETE FROM sys_role_menu WHERE menu_id = ?",
-            {std::to_string(id())}
+            idParam
         );
 
         // 软删除菜单
+        const std::vector<std::string> deleteParams{TimestampHelper::now(), std::to_string(id())};
         co_await tx.execSqlCoro(
             "UPDATE sys_menu SET deleted_at = ? WHERE id = ?",
-            {TimestampHelper::now(), std::to_string(id())}
+            deleteParams
         );
 
         raiseEvent<MenuDeleted>(id());

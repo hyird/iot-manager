@@ -98,6 +98,7 @@ public:
      */
     static Task<Json::Value> options(const std::string& protocol) {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(config.id())};
         auto result = co_await db.execSqlCoro(
             "SELECT id, name, enabled FROM protocol_config WHERE protocol = ? AND deleted_at IS NULL AND enabled = true ORDER BY name ASC",
             {protocol}
@@ -161,7 +162,7 @@ public:
         DatabaseService db;
         auto result = co_await db.execSqlCoro(
             "SELECT 1 FROM device WHERE protocol_config_id = ? AND deleted_at IS NULL LIMIT 1",
-            {std::to_string(config.id())}
+            params
         );
         if (!result.empty()) {
             throw ConflictException("该协议配置下存在关联设备，无法删除");
@@ -259,9 +260,10 @@ private:
     }
 
     Task<void> load(int configId) {
+        const std::vector<std::string> params{std::to_string(configId)};
         auto result = co_await db().execSqlCoro(
             "SELECT * FROM protocol_config WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(configId)}
+            params
         );
 
         if (result.empty()) {
@@ -302,35 +304,38 @@ private:
     // ==================== 持久化操作 ====================
 
     Task<void> persistCreate(TransactionGuard& tx) {
+        const std::vector<std::string> params{
+            protocol_, name_, enabled_ ? "true" : "false",
+            serializeConfig(), remark_, std::to_string(createdBy_), TimestampHelper::now()
+        };
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO protocol_config (protocol, name, enabled, config, remark, created_by, created_at)
             VALUES (?, ?, ?, ?::jsonb, ?, NULLIF(?, '0')::INT, ?) RETURNING id
-        )", {
-            protocol_, name_, enabled_ ? "true" : "false",
-            serializeConfig(), remark_, std::to_string(createdBy_), TimestampHelper::now()
-        });
+        )", params);
 
         setId(FieldHelper::getInt(result[0]["id"]));
         raiseEvent<ProtocolConfigCreated>(id(), protocol_, name_);
     }
 
     Task<void> persistUpdate(TransactionGuard& tx) {
+        const std::vector<std::string> params{
+            name_, enabled_ ? "true" : "false", serializeConfig(),
+            remark_, TimestampHelper::now(), std::to_string(id())
+        };
         co_await tx.execSqlCoro(R"(
             UPDATE protocol_config
             SET name = ?, enabled = ?, config = ?::jsonb, remark = ?, updated_at = ?
             WHERE id = ?
-        )", {
-            name_, enabled_ ? "true" : "false", serializeConfig(),
-            remark_, TimestampHelper::now(), std::to_string(id())
-        });
+        )", params);
 
         raiseEvent<ProtocolConfigUpdated>(id(), protocol_, name_);
     }
 
     Task<void> persistDelete(TransactionGuard& tx) {
+        const std::vector<std::string> params{TimestampHelper::now(), std::to_string(id())};
         co_await tx.execSqlCoro(
             "UPDATE protocol_config SET deleted_at = ? WHERE id = ?",
-            {TimestampHelper::now(), std::to_string(id())}
+            params
         );
 
         raiseEvent<ProtocolConfigDeleted>(id(), protocol_, name_);

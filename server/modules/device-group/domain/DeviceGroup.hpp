@@ -116,9 +116,10 @@ public:
      */
     static Task<void> noChildren(const DeviceGroup& group) {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(group.id())};
         auto result = co_await db.execSqlCoro(
             "SELECT COUNT(*) as count FROM device_group WHERE parent_id = ? AND deleted_at IS NULL",
-            {std::to_string(group.id())}
+            params
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
@@ -132,9 +133,10 @@ public:
      */
     static Task<void> noDevices(const DeviceGroup& group) {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(group.id())};
         auto result = co_await db.execSqlCoro(
             "SELECT COUNT(*) as count FROM device WHERE group_id = ? AND deleted_at IS NULL",
-            {std::to_string(group.id())}
+            params
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
@@ -150,9 +152,10 @@ public:
         if (group.parentId_ <= 0) co_return;
 
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(group.parentId_)};
         auto result = co_await db.execSqlCoro(
             "SELECT 1 FROM device_group WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(group.parentId_)}
+            params
         );
 
         if (result.empty()) {
@@ -280,9 +283,10 @@ private:
     }
 
     Task<void> load(int groupId) {
+        const std::vector<std::string> params{std::to_string(groupId)};
         auto result = co_await db().execSqlCoro(
             "SELECT * FROM device_group WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(groupId)}
+            params
         );
 
         if (result.empty()) {
@@ -305,37 +309,40 @@ private:
     }
 
     Task<void> persistCreate(TransactionGuard& tx) {
+        const std::vector<std::string> params{
+            name_, std::to_string(parentId_), std::to_string(sortOrder_),
+            status_, remark_, TimestampHelper::now()
+        };
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO device_group (name, parent_id, sort_order, status, remark, created_at)
             VALUES (?, NULLIF(?, '0')::INT, ?, ?, ?, ?)
             RETURNING id
-        )", {
-            name_, std::to_string(parentId_), std::to_string(sortOrder_),
-            status_, remark_, TimestampHelper::now()
-        });
+        )", params);
 
         setId(FieldHelper::getInt(result[0]["id"]));
         raiseEvent<DeviceGroupCreated>(id());
     }
 
     Task<void> persistUpdate(TransactionGuard& tx) {
+        const std::vector<std::string> params{
+            name_, std::to_string(parentId_), std::to_string(sortOrder_),
+            status_, remark_, TimestampHelper::now(), std::to_string(id())
+        };
         co_await tx.execSqlCoro(R"(
             UPDATE device_group
             SET name = ?, parent_id = NULLIF(?, '0')::INT,
                 sort_order = ?, status = ?, remark = ?, updated_at = ?
             WHERE id = ?
-        )", {
-            name_, std::to_string(parentId_), std::to_string(sortOrder_),
-            status_, remark_, TimestampHelper::now(), std::to_string(id())
-        });
+        )", params);
 
         raiseEvent<DeviceGroupUpdated>(id());
     }
 
     Task<void> persistDelete(TransactionGuard& tx) {
+        const std::vector<std::string> params{TimestampHelper::now(), std::to_string(id())};
         co_await tx.execSqlCoro(
             "UPDATE device_group SET deleted_at = ? WHERE id = ?",
-            {TimestampHelper::now(), std::to_string(id())}
+            params
         );
 
         raiseEvent<DeviceGroupDeleted>(id());

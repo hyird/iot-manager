@@ -109,6 +109,7 @@ public:
      */
     static Task<Json::Value> options() {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(link.agentId_)};
         auto result = co_await db.execSqlCoro(
             R"(
                 SELECT l.id, l.name, l.mode, l.protocol, l.ip, l.port, l.targets, l.usage,
@@ -319,7 +320,7 @@ public:
         DatabaseService db;
         auto result = co_await db.execSqlCoro(
             "SELECT 1 FROM agent_node WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(link.agentId_)}
+            params
         );
         if (result.empty()) {
             throw NotFoundException("指定的采集Agent不存在");
@@ -350,6 +351,7 @@ public:
         }
 
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(link.agentId_)};
         auto result = co_await db.execSqlCoro(
             R"(
                 SELECT capabilities
@@ -357,7 +359,7 @@ public:
                 WHERE id = ? AND deleted_at IS NULL
                 LIMIT 1
             )",
-            {std::to_string(link.agentId_)}
+            params
         );
         if (result.empty()) {
             throw NotFoundException("指定的采集Agent不存在");
@@ -423,9 +425,10 @@ public:
      */
     static Task<void> noDevices(const Link& link) {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(link.id())};
         auto result = co_await db.execSqlCoro(
             "SELECT 1 FROM device WHERE link_id = ? AND deleted_at IS NULL LIMIT 1",
-            {std::to_string(link.id())}
+            params
         );
         if (!result.empty()) {
             throw ConflictException("该链路下存在关联设备，无法删除");
@@ -660,6 +663,7 @@ private:
     }
 
     Task<void> load(int linkId) {
+        const std::vector<std::string> params{std::to_string(linkId)};
         auto result = co_await db().execSqlCoro(
             R"(
                 SELECT l.*,
@@ -670,7 +674,7 @@ private:
                 LEFT JOIN agent_node a ON l.agent_id = a.id AND a.deleted_at IS NULL
                 WHERE l.id = ? AND l.deleted_at IS NULL
             )",
-            {std::to_string(linkId)}
+            params
         );
 
         if (result.empty()) {

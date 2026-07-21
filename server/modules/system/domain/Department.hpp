@@ -147,9 +147,10 @@ public:
      */
     static Task<void> noChildren(const Department& dept) {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(dept.id())};
         auto result = co_await db.execSqlCoro(
             "SELECT COUNT(*) as count FROM sys_department WHERE parent_id = ? AND deleted_at IS NULL",
-            {std::to_string(dept.id())}
+            params
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
@@ -163,9 +164,10 @@ public:
      */
     static Task<void> noUsers(const Department& dept) {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(dept.id())};
         auto result = co_await db.execSqlCoro(
             "SELECT COUNT(*) as count FROM sys_user WHERE department_id = ? AND deleted_at IS NULL",
-            {std::to_string(dept.id())}
+            params
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
@@ -276,9 +278,10 @@ private:
     }
 
     Task<void> load(int deptId) {
+        const std::vector<std::string> params{std::to_string(deptId)};
         auto result = co_await db().execSqlCoro(
             "SELECT * FROM sys_department WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(deptId)}
+            params
         );
 
         if (result.empty()) {
@@ -302,37 +305,40 @@ private:
     }
 
     Task<void> persistCreate(TransactionGuard& tx) {
+        const std::vector<std::string> params{
+            name_, code_, std::to_string(parentId_), std::to_string(sortOrder_),
+            std::to_string(leaderId_), status_, TimestampHelper::now()
+        };
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO sys_department (name, code, parent_id, sort_order, leader_id, status, created_at)
             VALUES (?, NULLIF(?, ''), NULLIF(?, '0')::INT, ?, NULLIF(?, '0')::INT, ?, ?)
             RETURNING id
-        )", {
-            name_, code_, std::to_string(parentId_), std::to_string(sortOrder_),
-            std::to_string(leaderId_), status_, TimestampHelper::now()
-        });
+        )", params);
 
         setId(FieldHelper::getInt(result[0]["id"]));
         raiseEvent<DepartmentCreated>(id());
     }
 
     Task<void> persistUpdate(TransactionGuard& tx) {
+        const std::vector<std::string> params{
+            name_, code_, std::to_string(parentId_), std::to_string(sortOrder_),
+            std::to_string(leaderId_), status_, TimestampHelper::now(), std::to_string(id())
+        };
         co_await tx.execSqlCoro(R"(
             UPDATE sys_department
             SET name = ?, code = NULLIF(?, ''), parent_id = NULLIF(?, '0')::INT,
                 sort_order = ?, leader_id = NULLIF(?, '0')::INT, status = ?, updated_at = ?
             WHERE id = ?
-        )", {
-            name_, code_, std::to_string(parentId_), std::to_string(sortOrder_),
-            std::to_string(leaderId_), status_, TimestampHelper::now(), std::to_string(id())
-        });
+        )", params);
 
         raiseEvent<DepartmentUpdated>(id());
     }
 
     Task<void> persistDelete(TransactionGuard& tx) {
+        const std::vector<std::string> params{TimestampHelper::now(), std::to_string(id())};
         co_await tx.execSqlCoro(
             "UPDATE sys_department SET deleted_at = ? WHERE id = ?",
-            {TimestampHelper::now(), std::to_string(id())}
+            params
         );
 
         raiseEvent<DepartmentDeleted>(id());

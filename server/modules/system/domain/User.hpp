@@ -388,12 +388,13 @@ private:
      * @brief 加载用户角色
      */
     Task<void> loadRoles() {
+        const std::vector<std::string> params{std::to_string(id())};
         auto result = co_await db().execSqlCoro(R"(
             SELECT r.id, r.name, r.code
             FROM sys_role r
             INNER JOIN sys_user_role ur ON r.id = ur.role_id
             WHERE ur.user_id = ? AND r.deleted_at IS NULL
-        )", {std::to_string(id())});
+        )", params);
 
         roles_ = Json::Value(Json::arrayValue);
         roleIds_.clear();
@@ -446,44 +447,48 @@ private:
     // ==================== 持久化操作 ====================
 
     Task<void> persistCreate(TransactionGuard& tx) {
+        std::vector<std::string> params{
+            username_, passwordHash_, nickname_, phone_, email_,
+            std::to_string(departmentId_), status_, TimestampHelper::now()
+        };
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO sys_user (username, password_hash, nickname, phone, email,
                                   department_id, status, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
-        )", {
-            username_, passwordHash_, nickname_, phone_, email_,
-            std::to_string(departmentId_), status_, TimestampHelper::now()
-        });
+        )", params);
 
         setId(FieldHelper::getInt(result[0]["id"]));
         raiseEvent<UserCreated>(id(), username_);
     }
 
     Task<void> persistUpdate(TransactionGuard& tx) {
+        std::vector<std::string> params{
+            nickname_, phone_, email_, std::to_string(departmentId_),
+            status_, passwordHash_, TimestampHelper::now(), std::to_string(id())
+        };
         co_await tx.execSqlCoro(R"(
             UPDATE sys_user
             SET nickname = ?, phone = ?, email = ?, department_id = ?,
                 status = ?, password_hash = ?, updated_at = ?
             WHERE id = ?
-        )", {
-            nickname_, phone_, email_, std::to_string(departmentId_),
-            status_, passwordHash_, TimestampHelper::now(), std::to_string(id())
-        });
+        )", params);
 
         raiseEvent<UserUpdated>(id());
     }
 
     Task<void> persistDelete(TransactionGuard& tx) {
         // 删除角色关联
+        const std::vector<std::string> userIdParam{std::to_string(id())};
         co_await tx.execSqlCoro(
             "DELETE FROM sys_user_role WHERE user_id = ?",
-            {std::to_string(id())}
+            userIdParam
         );
 
         // 软删除用户
+        const std::vector<std::string> deleteParams{TimestampHelper::now(), std::to_string(id())};
         co_await tx.execSqlCoro(
             "UPDATE sys_user SET deleted_at = ? WHERE id = ?",
-            {TimestampHelper::now(), std::to_string(id())}
+            deleteParams
         );
 
         raiseEvent<UserDeleted>(id());
@@ -491,9 +496,10 @@ private:
 
     Task<void> persistRoles(TransactionGuard& tx) {
         // 删除现有角色
+        const std::vector<std::string> userIdParam{std::to_string(id())};
         co_await tx.execSqlCoro(
             "DELETE FROM sys_user_role WHERE user_id = ?",
-            {std::to_string(id())}
+            userIdParam
         );
 
         // 插入新角色

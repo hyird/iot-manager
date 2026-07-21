@@ -200,9 +200,10 @@ public:
      */
     static Task<void> notInUse(const Role& role) {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(role.id())};
         auto result = co_await db.execSqlCoro(
             "SELECT COUNT(*) as count FROM sys_user_role WHERE role_id = ?",
-            {std::to_string(role.id())}
+            params
         );
 
         if (!result.empty() && FieldHelper::getInt(result[0]["count"]) > 0) {
@@ -342,9 +343,10 @@ private:
     }
 
     Task<void> load(int roleId) {
+        const std::vector<std::string> params{std::to_string(roleId)};
         auto result = co_await db().execSqlCoro(
             "SELECT * FROM sys_role WHERE id = ? AND deleted_at IS NULL",
-            {std::to_string(roleId)}
+            params
         );
 
         if (result.empty()) {
@@ -368,9 +370,10 @@ private:
     }
 
     Task<void> loadMenuIds() {
+        const std::vector<std::string> params{std::to_string(id())};
         auto result = co_await db().execSqlCoro(
             "SELECT menu_id FROM sys_role_menu WHERE role_id = ?",
-            {std::to_string(id())}
+            params
         );
 
         menuIds_.clear();
@@ -404,41 +407,42 @@ private:
     // ==================== 持久化操作 ====================
 
     Task<void> persistCreate(TransactionGuard& tx) {
+        const std::vector<std::string> params{name_, code_, description_, status_, TimestampHelper::now()};
         auto result = co_await tx.execSqlCoro(R"(
             INSERT INTO sys_role (name, code, description, status, created_at)
             VALUES (?, ?, ?, ?, ?) RETURNING id
-        )", {
-            name_, code_, description_, status_, TimestampHelper::now()
-        });
+        )", params);
 
         setId(FieldHelper::getInt(result[0]["id"]));
         raiseEvent<RoleCreated>(id(), code_);
     }
 
     Task<void> persistUpdate(TransactionGuard& tx) {
+        const std::vector<std::string> params{
+            name_, code_, description_, status_, TimestampHelper::now(), std::to_string(id())
+        };
         co_await tx.execSqlCoro(R"(
             UPDATE sys_role
             SET name = ?, code = ?, description = ?, status = ?, updated_at = ?
             WHERE id = ?
-        )", {
-            name_, code_, description_, status_,
-            TimestampHelper::now(), std::to_string(id())
-        });
+        )", params);
 
         raiseEvent<RoleUpdated>(id());
     }
 
     Task<void> persistDelete(TransactionGuard& tx) {
         // 删除菜单关联
+        const std::vector<std::string> idParam{std::to_string(id())};
         co_await tx.execSqlCoro(
             "DELETE FROM sys_role_menu WHERE role_id = ?",
-            {std::to_string(id())}
+            idParam
         );
 
         // 软删除角色
+        const std::vector<std::string> deleteParams{TimestampHelper::now(), std::to_string(id())};
         co_await tx.execSqlCoro(
             "UPDATE sys_role SET deleted_at = ? WHERE id = ?",
-            {TimestampHelper::now(), std::to_string(id())}
+            deleteParams
         );
 
         raiseEvent<RoleDeleted>(id());
@@ -446,9 +450,10 @@ private:
 
     Task<void> persistMenus(TransactionGuard& tx) {
         // 删除现有菜单
+        const std::vector<std::string> idParam{std::to_string(id())};
         co_await tx.execSqlCoro(
             "DELETE FROM sys_role_menu WHERE role_id = ?",
-            {std::to_string(id())}
+            idParam
         );
 
         // 插入新菜单
