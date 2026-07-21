@@ -759,13 +759,7 @@ private:
     }
 
     Task<void> persistUpdate(TransactionGuard& tx) {
-        co_await tx.execSqlCoro(R"(
-            UPDATE link
-            SET name = ?, mode = ?, protocol = ?, ip = ?, port = ?, targets = ?::jsonb, usage = ?, status = ?,
-                agent_id = NULLIF(?, '0')::INT, agent_interface = ?, agent_bind_ip = ?,
-                agent_prefix_length = NULLIF(?, '0')::INT, agent_gateway = ?, updated_at = ?
-            WHERE id = ?
-        )", {
+        std::vector<std::string> params{
             name_,
             mode_,
             protocol_,
@@ -781,7 +775,14 @@ private:
             agentGateway_,
             TimestampHelper::now(),
             std::to_string(id())
-        });
+        };
+        co_await tx.execSqlCoro(R"(
+            UPDATE link
+            SET name = ?, mode = ?, protocol = ?, ip = ?, port = ?, targets = ?::jsonb, usage = ?, status = ?,
+                agent_id = NULLIF(?, '0')::INT, agent_interface = ?, agent_bind_ip = ?,
+                agent_prefix_length = NULLIF(?, '0')::INT, agent_gateway = ?, updated_at = ?
+            WHERE id = ?
+        )", params);
 
         // 事件处理器会自动重载 TCP 连接
         raiseEvent<LinkUpdated>(
@@ -804,9 +805,10 @@ private:
 
     Task<void> persistDelete(TransactionGuard& tx) {
         // 软删除（事件处理器会自动停止 TCP 连接）
+        std::vector<std::string> params{TimestampHelper::now(), std::to_string(id())};
         co_await tx.execSqlCoro(
             "UPDATE link SET deleted_at = ? WHERE id = ?",
-            {TimestampHelper::now(), std::to_string(id())}
+            params
         );
 
         raiseEvent<LinkDeleted>(id());
