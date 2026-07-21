@@ -41,7 +41,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_compile_options(-Wall -Wextra -Wpedantic "$<$<CONFIG:Release>:-O3>")
+add_compile_options(-Wall -Wextra -Wpedantic)
+if(MINGW)
+    # GCC 15 MinGW ICEs while optimizing C++20 coroutine members at -O3.
+    # Keep Windows Release stable while retaining -O3 on the Linux server build.
+    add_compile_options("$<$<CONFIG:Release>:-O2>")
+else()
+    add_compile_options("$<$<CONFIG:Release>:-O3>")
+endif()
 if(UNIX AND NOT APPLE)
     add_link_options(-static)
 endif()
