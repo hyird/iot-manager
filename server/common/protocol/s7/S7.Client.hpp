@@ -603,6 +603,18 @@ public:
         }
     }
 
+    std::vector<std::uint8_t> buildAsyncDisconnectRequestFrame() {
+        std::lock_guard ioLock(ioMutex_);
+        if (disconnectFrame_.size() < 11) {
+            return {};
+        }
+        const auto clientRef = readBe16(disconnectFrame_.data() + 6);
+        const auto serverRef = readBe16(disconnectFrame_.data() + 8);
+        auto frame = buildDisconnectFrame(serverRef, clientRef, 0x00);
+        traceFrame("iso.dr", true, frame);
+        return frame;
+    }
+
     std::vector<std::uint8_t> buildConnectionRequestFrame() {
         const auto sourceRef = nextSourceRef();
         std::vector<std::uint8_t> frame;
