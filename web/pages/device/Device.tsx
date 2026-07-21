@@ -17,7 +17,6 @@ import type { MenuProps } from "antd";
 import {
   App,
   Button,
-  Card,
   Dropdown,
   Empty,
   Flex,
@@ -525,7 +524,7 @@ const DeviceGridItem = memo(
     );
 
     return (
-      <div className={`flex flex-col ${isWideCard ? "xl:col-span-2" : ""}`}>
+      <div className="flex h-full min-w-0 flex-col">
         <DeviceCard
           title={
             <Flex justify="space-between" align="start" gap={10} className="w-full min-w-0">
@@ -725,7 +724,7 @@ const VirtualizedDeviceGrid = memo(
   }: VirtualizedDeviceGridProps) => {
     const columnCount = useResponsiveDeviceGridColumns();
     const renderDeviceItem = (device: Device.RealTimeData, style?: CSSProperties) => (
-      <div key={device.id} style={style}>
+      <div key={device.id} className="h-full min-w-0" style={style}>
         <DeviceGridItem
           device={device}
           statusNow={statusNow}
@@ -753,13 +752,29 @@ const VirtualizedDeviceGrid = memo(
     );
     const visibleRows = rows.slice(range.start, range.end);
     const gridTemplateColumns = `repeat(${columnCount}, minmax(0, 1fr))`;
+    const renderRow = (row: Device.RealTimeData[], rowIndex?: number) => (
+      <div
+        key={row.map((device) => device.id).join("-")}
+        data-virtual-index={rowIndex}
+        className="grid auto-rows-fr items-stretch gap-3"
+        style={{ gridTemplateColumns }}
+      >
+        {row.map((device) => {
+          const span = getDeviceCardSpan(device, columnCount);
+          const itemStyle: CSSProperties =
+            span > 1 ? { gridColumn: `span ${span} / span ${span}` } : {};
+
+          return renderDeviceItem(device, itemStyle);
+        })}
+      </div>
+    );
 
     if (devices.length === 0) return null;
 
     if (devices.length < DEVICE_CARD_VIRTUAL_MIN_COUNT) {
       return (
-        <div className={`mt-4 ${DEVICE_CARD_GRID_CLASS}`}>
-          {devices.map((device) => renderDeviceItem(device))}
+        <div className="mt-4 flex flex-col gap-3">
+          {rows.map((row) => renderRow(row))}
         </div>
       );
     }
@@ -768,22 +783,9 @@ const VirtualizedDeviceGrid = memo(
       <div ref={containerRef} className="mt-4">
         {topSpacerHeight > 0 ? <div style={{ height: topSpacerHeight }} /> : null}
         <div className="flex flex-col gap-3">
-          {visibleRows.map((row, visibleIndex) => (
-            <div
-              key={row.map((device) => device.id).join("-")}
-              data-virtual-index={range.start + visibleIndex}
-              className="grid gap-3"
-              style={{ gridTemplateColumns, minHeight: DEVICE_CARD_ESTIMATED_ROW_HEIGHT }}
-            >
-              {row.map((device) => {
-                const span = getDeviceCardSpan(device, columnCount);
-                const itemStyle: CSSProperties =
-                  span > 1 ? { gridColumn: `span ${span} / span ${span}` } : {};
-
-                return renderDeviceItem(device, itemStyle);
-              })}
-            </div>
-          ))}
+          {visibleRows.map((row, visibleIndex) =>
+            renderRow(row, range.start + visibleIndex)
+          )}
         </div>
         {bottomSpacerHeight > 0 ? <div style={{ height: bottomSpacerHeight }} /> : null}
       </div>
@@ -1221,9 +1223,12 @@ const DevicePage = () => {
   return (
     <PageContainer
       header={
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <h3 className="text-base font-medium m-0">设备管理</h3>
-          <Space wrap>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <div className="min-w-0">
+            <h3 className="m-0 text-base font-semibold text-slate-900">设备管理</h3>
+            <p className="mt-0.5 mb-0 text-xs text-slate-500">集中查看设备状态、实时数据与远程操作</p>
+          </div>
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2 md:flex-initial">
             <DeviceGroupPanel
               selectedGroupId={selectedGroupId}
               onSelect={setSelectedGroupId}
@@ -1232,9 +1237,9 @@ const DevicePage = () => {
             />
             <Search
               allowClear
-              placeholder="设备名称 / 编码 / 类型"
+              placeholder="搜索名称、编码或类型"
               onChange={(e) => debouncedSearch(e.target.value)}
-              className="w-60"
+              className="min-w-[200px] flex-1 md:w-64 md:flex-none"
             />
             <Tooltip title="拓扑视图">
               <Button icon={<ApartmentOutlined />} onClick={() => setTopologyVisible(true)} />
@@ -1247,90 +1252,48 @@ const DevicePage = () => {
                 新建设备
               </Button>
             )}
-          </Space>
+          </div>
         </div>
       }
     >
       {/* 概况统计 */}
-      <Flex gap={12} className="mb-3" wrap="wrap">
-        <Card
-          size="small"
-          className="flex-1 min-w-[140px]"
-          styles={{ body: { padding: "12px 16px" } }}
-        >
-          <Flex justify="space-between" align="center" className="mb-2.5">
-            <span className="text-gray-500 text-[13px]">设备总数</span>
-            <span className="text-lg font-semibold text-[#1677ff]">{stats.total}</span>
-          </Flex>
-          <Flex gap={6} wrap="wrap">
+      <section className="mb-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="grid grid-cols-2 divide-x divide-y divide-slate-100 lg:grid-cols-4 lg:divide-y-0">
+          {[
+            { label: "设备总数", value: stats.total, tone: "text-blue-600", dot: "bg-blue-500" },
+            { label: "在线设备", value: stats.online, tone: "text-emerald-600", dot: "bg-emerald-500" },
+            { label: "离线设备", value: stats.offline, tone: "text-rose-600", dot: "bg-rose-500" },
+            { label: "已启用", value: stats.enabled, tone: "text-violet-600", dot: "bg-violet-500" },
+          ].map((item) => (
+            <div key={item.label} className="px-4 py-3.5 sm:px-5">
+              <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
+                <span className={`h-2 w-2 rounded-full ${item.dot}`} />
+                {item.label}
+              </div>
+              <div className={`mt-1 text-2xl font-semibold tabular-nums ${item.tone}`}>
+                {item.value}
+                {item.label !== "设备总数" && (
+                  <span className="ml-1 text-xs font-normal text-slate-400">/ {stats.total}</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+        {protocolStatsEntries.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 bg-slate-50/70 px-4 py-2.5 sm:px-5">
+            <span className="mr-1 text-xs font-medium text-slate-500">协议分布</span>
             {protocolStatsEntries.map(([protocol, data]) => (
-              <Tag key={protocol} color="blue" className="!m-0 !px-3 !py-1 !text-sm !leading-5">
-                {protocol}: {data.total}
-              </Tag>
-            ))}
-          </Flex>
-        </Card>
-        <Card
-          size="small"
-          className="flex-1 min-w-[140px]"
-          styles={{ body: { padding: "12px 16px" } }}
-        >
-          <Flex justify="space-between" align="center" className="mb-2.5">
-            <span className="text-gray-500 text-[13px]">在线设备</span>
-            <span className="text-lg font-semibold text-[#52c41a]">
-              {stats.online}
-              <span className="text-[13px] text-gray-400 font-normal"> / {stats.total}</span>
-            </span>
-          </Flex>
-          <Flex gap={6} wrap="wrap">
-            {protocolStatsEntries.map(([protocol, data]) => (
-              <Tag key={protocol} color="green" className="!m-0 !px-3 !py-1 !text-sm !leading-5">
+              <Tag
+                key={protocol}
+                color="blue"
+                className="!m-0 !px-3 !py-1 !text-sm !leading-5"
+              >
                 {protocol}: {data.online}/{data.total}
               </Tag>
             ))}
-          </Flex>
-        </Card>
-        <Card
-          size="small"
-          className="flex-1 min-w-[140px]"
-          styles={{ body: { padding: "12px 16px" } }}
-        >
-          <Flex justify="space-between" align="center" className="mb-2.5">
-            <span className="text-gray-500 text-[13px]">离线设备</span>
-            <span className="text-lg font-semibold text-[#ff4d4f]">
-              {stats.offline}
-              <span className="text-[13px] text-gray-400 font-normal"> / {stats.total}</span>
-            </span>
-          </Flex>
-          <Flex gap={6} wrap="wrap">
-            {protocolStatsEntries.map(([protocol, data]) => (
-              <Tag key={protocol} color="red" className="!m-0 !px-3 !py-1 !text-sm !leading-5">
-                {protocol}: {data.offline}/{data.total}
-              </Tag>
-            ))}
-          </Flex>
-        </Card>
-        <Card
-          size="small"
-          className="flex-1 min-w-[140px]"
-          styles={{ body: { padding: "12px 16px" } }}
-        >
-          <Flex justify="space-between" align="center" className="mb-2.5">
-            <span className="text-gray-500 text-[13px]">已启用</span>
-            <span className="text-lg font-semibold text-[#722ed1]">
-              {stats.enabled}
-              <span className="text-[13px] text-gray-400 font-normal"> / {stats.total}</span>
-            </span>
-          </Flex>
-          <Flex gap={6} wrap="wrap">
-            {protocolStatsEntries.map(([protocol, data]) => (
-              <Tag key={protocol} color="purple" className="!m-0 !px-3 !py-1 !text-sm !leading-5">
-                {protocol}: {data.enabled}/{data.total}
-              </Tag>
-            ))}
-          </Flex>
-        </Card>
-      </Flex>
+          </div>
+        )}
+      </section>
 
       {/* 设备卡片分组展示 */}
       {isLoading && filteredDeviceList.length === 0 ? (

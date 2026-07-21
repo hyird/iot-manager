@@ -288,12 +288,14 @@ const DeviceCard: React.FC<DeviceCardProps> = ({
   );
 
   return (
-    <div className="flex h-full flex-col gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition-shadow hover:shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
+    <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition-shadow hover:shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
       {/* 主标题 */}
-      <div className="min-w-0 text-[15px] font-semibold leading-5 text-slate-950">{title}</div>
+      <div className="flex min-h-10 min-w-0 items-start text-[15px] font-semibold leading-5 text-slate-950">
+        {title}
+      </div>
 
       {/* 副标题（可选） */}
-      {subtitle && <div className="text-xs leading-5 text-slate-500">{subtitle}</div>}
+      {subtitle && <div className="min-h-5 text-xs leading-5 text-slate-500">{subtitle}</div>}
 
       {/* 分割线 */}
       <div className="h-px bg-slate-100" />
