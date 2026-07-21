@@ -109,7 +109,6 @@ public:
      */
     static Task<Json::Value> options() {
         DatabaseService db;
-        const std::vector<std::string> params{std::to_string(link.agentId_)};
         auto result = co_await db.execSqlCoro(
             R"(
                 SELECT l.id, l.name, l.mode, l.protocol, l.ip, l.port, l.targets, l.usage,
@@ -318,6 +317,7 @@ public:
         }
 
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(link.agentId_)};
         auto result = co_await db.execSqlCoro(
             "SELECT 1 FROM agent_node WHERE id = ? AND deleted_at IS NULL",
             params
@@ -351,7 +351,7 @@ public:
         }
 
         DatabaseService db;
-        const std::vector<std::string> params{std::to_string(link.agentId_)};
+        const std::vector<std::string> agentParams{std::to_string(link.agentId_)};
         auto result = co_await db.execSqlCoro(
             R"(
                 SELECT capabilities
@@ -359,7 +359,7 @@ public:
                 WHERE id = ? AND deleted_at IS NULL
                 LIMIT 1
             )",
-            params
+            agentParams
         );
         if (result.empty()) {
             throw NotFoundException("指定的采集Agent不存在");

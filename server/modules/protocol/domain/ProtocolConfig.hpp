@@ -98,10 +98,10 @@ public:
      */
     static Task<Json::Value> options(const std::string& protocol) {
         DatabaseService db;
-        const std::vector<std::string> params{std::to_string(config.id())};
+        const std::vector<std::string> params{protocol};
         auto result = co_await db.execSqlCoro(
             "SELECT id, name, enabled FROM protocol_config WHERE protocol = ? AND deleted_at IS NULL AND enabled = true ORDER BY name ASC",
-            {protocol}
+            params
         );
 
         Json::Value items(Json::arrayValue);
@@ -160,6 +160,7 @@ public:
      */
     static Task<void> noDevices(const ProtocolConfig& config) {
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(config.id())};
         auto result = co_await db.execSqlCoro(
             "SELECT 1 FROM device WHERE protocol_config_id = ? AND deleted_at IS NULL LIMIT 1",
             params

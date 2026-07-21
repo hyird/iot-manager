@@ -120,7 +120,6 @@ public:
      */
     static Task<Json::Value> options() {
         DatabaseService db;
-        const std::vector<std::string> params{std::to_string(device.linkId_)};
         auto result = co_await db.execSqlCoro(
             "SELECT id, name, protocol_params->>'device_code' as device_code FROM device WHERE deleted_at IS NULL ORDER BY name ASC"
         );
@@ -186,6 +185,7 @@ public:
         if (device.linkId_ <= 0) co_return;
 
         DatabaseService db;
+        const std::vector<std::string> params{std::to_string(device.linkId_)};
         auto result = co_await db.execSqlCoro(
             "SELECT name, usage FROM link WHERE id = ? AND deleted_at IS NULL",
             params
