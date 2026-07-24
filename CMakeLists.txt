@@ -23,13 +23,20 @@ if(NOT CMAKE_TOOLCHAIN_FILE)
     endforeach()
 endif()
 
+if(NOT VCPKG_TARGET_TRIPLET AND WIN32)
+    set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "")
+endif()
+
 # CMake Tools may receive absolute compiler paths without adding their directory
-# to PATH. vcpkg starts separate compiler-detection processes, so expose the
+# to PATH. vcpkg starts separate compiler-detection processes, so expose a
 # selected MinGW toolchain to those child processes before project() runs.
 if(CMAKE_HOST_WIN32 AND CMAKE_CXX_COMPILER)
-    get_filename_component(MINGW_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
-    if(MINGW_COMPILER_DIR)
-        set(ENV{PATH} "${MINGW_COMPILER_DIR};$ENV{PATH}")
+    get_filename_component(SELECTED_COMPILER_NAME "${CMAKE_CXX_COMPILER}" NAME_WE)
+    if(SELECTED_COMPILER_NAME MATCHES "^(g\\+\\+|c\\+\\+|clang\\+\\+)$")
+        get_filename_component(MINGW_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        if(MINGW_COMPILER_DIR)
+            set(ENV{PATH} "${MINGW_COMPILER_DIR};$ENV{PATH}")
+        endif()
     endif()
 endif()
 
@@ -41,9 +48,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_compile_options(-Wall -Wextra -Wpedantic "$<$<CONFIG:Release>:-O3>")
-if(UNIX AND NOT APPLE)
-    add_link_options(-static)
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    add_compile_options(/W4 /EHsc /bigobj /MP /utf-8 /wd4068 /wd4996 /wd4244 /wd4267)
+    add_compile_options("$<$<CONFIG:Release>:/Zi>")
+    add_link_options("$<$<CONFIG:Release>:/DEBUG:FULL>")
+else()
+    add_compile_options(-Wall -Wextra -Wpedantic "$<$<CONFIG:Release>:-O3>")
+    if(UNIX AND NOT APPLE)
+        add_link_options(-static)
+    endif()
 endif()
 
 find_package(Drogon CONFIG REQUIRED)
